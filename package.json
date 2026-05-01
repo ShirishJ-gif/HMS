@@ -1,0 +1,29 @@
+{
+  "name": "hms",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Hotel Management System MVP monorepo",
+  "workspaces": [
+    "apps/backend",
+    "apps/frontend"
+  ],
+  "scripts": {
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "backend:build": "npm --workspace apps/backend run build",
+    "backend:test": "npm --workspace apps/backend test",
+    "backend:start:dev": "npm --workspace apps/backend run start:dev",
+    "backend:prisma:generate": "npm --workspace apps/backend run prisma:generate",
+    "backend:prisma:migrate": "npm --workspace apps/backend run prisma:migrate",
+    "backend:seed": "npm --workspace apps/backend run seed",
+    "frontend:dev": "npm --workspace apps/frontend run dev",
+    "frontend:build": "npm --workspace apps/frontend run build",
+    "frontend:preview": "npm --workspace apps/frontend run preview",
+    "test": "npm run backend:test",
+    "build": "npm run backend:build && npm run frontend:build"
+  },
+  "engines": {
+    "node": ">=20.11.0",
+    "npm": ">=10.0.0"
+  }
+}

@@ -1,0 +1,339 @@
+@baseUrl = http://localhost:3000
+@roomId = replace-with-room-id
+@guestId = replace-with-guest-id
+@bookingId = replace-with-booking-id
+@billingId = replace-with-billing-id
+@paymentId = replace-with-payment-id
+@channelId = replace-with-channel-id
+@propertyId = replace-with-property-id
+@roomCategoryId = replace-with-room-category-id
+@ratePlanId = replace-with-rate-plan-id
+@token = replace-with-access-token
+
+### Login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@hms.local",
+  "password": "Admin@12345"
+}
+
+### Health check
+GET {{baseUrl}}/health
+
+### Dashboard summary
+GET {{baseUrl}}/dashboard/summary
+Authorization: Bearer {{token}}
+
+### Availability
+GET {{baseUrl}}/availability?property_id={{propertyId}}&from=2026-05-01&to=2026-05-03
+Authorization: Bearer {{token}}
+
+### Create property
+POST {{baseUrl}}/properties
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "name": "Harbour Residency",
+  "code": "HARBOUR-MUM",
+  "phone": "+912212345678",
+  "email": "ops@harbour.example.com",
+  "address": "Bandra West, Mumbai, Maharashtra",
+  "timezone": "Asia/Kolkata"
+}
+
+### List properties
+GET {{baseUrl}}/properties
+Authorization: Bearer {{token}}
+
+### Upload property image
+POST {{baseUrl}}/properties/{{propertyId}}/images
+Authorization: Bearer {{token}}
+Content-Type: multipart/form-data
+
+image=<choose-file>
+caption=Front exterior
+is_primary=true
+
+### Create room category
+POST {{baseUrl}}/room-categories
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "property_id": "{{propertyId}}",
+  "name": "Deluxe",
+  "code": "DELUXE",
+  "description": "Premium room with upgraded amenities.",
+  "max_occupancy": 3
+}
+
+### List room categories
+GET {{baseUrl}}/room-categories
+Authorization: Bearer {{token}}
+
+### Upload room category image
+POST {{baseUrl}}/room-categories/{{roomCategoryId}}/images
+Authorization: Bearer {{token}}
+Content-Type: multipart/form-data
+
+image=<choose-file>
+caption=Deluxe king bed
+is_primary=true
+
+### Create rate plan
+POST {{baseUrl}}/rate-plans
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "property_id": "{{propertyId}}",
+  "room_category_id": "{{roomCategoryId}}",
+  "name": "Deluxe Flexible",
+  "code": "DELUXE-FLEX",
+  "base_rate": "7500.00",
+  "currency": "INR"
+}
+
+### List rate plans
+GET {{baseUrl}}/rate-plans
+Authorization: Bearer {{token}}
+
+### Create pricing rule
+POST {{baseUrl}}/pricing-rules
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "property_id": "{{propertyId}}",
+  "rate_plan_id": "{{ratePlanId}}",
+  "name": "Weekend surcharge",
+  "type": "WEEKEND",
+  "adjustment_percent": "20.00"
+}
+
+### List pricing rules
+GET {{baseUrl}}/pricing-rules
+Authorization: Bearer {{token}}
+
+### Create room
+POST {{baseUrl}}/rooms
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "property_id": "{{propertyId}}",
+  "room_category_id": "{{roomCategoryId}}",
+  "room_number": "301",
+  "status": "AVAILABLE"
+}
+
+### List rooms
+GET {{baseUrl}}/rooms
+Authorization: Bearer {{token}}
+
+### Update room
+PUT {{baseUrl}}/rooms/{{roomId}}
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "status": "MAINTENANCE"
+}
+
+### Delete room
+DELETE {{baseUrl}}/rooms/{{roomId}}
+Authorization: Bearer {{token}}
+
+### Create guest
+POST {{baseUrl}}/guests
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "property_id": "{{propertyId}}",
+  "name": "Priya Nair",
+  "phone": "+919812345678",
+  "email": "priya.nair@example.com",
+  "id_proof": "PASSPORT-M1234567",
+  "address": "Indiranagar, Bengaluru, Karnataka"
+}
+
+### List guests
+GET {{baseUrl}}/guests
+Authorization: Bearer {{token}}
+
+### Create booking
+POST {{baseUrl}}/bookings
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "property_id": "{{propertyId}}",
+  "guest_id": "{{guestId}}",
+  "room_category_id": "{{roomCategoryId}}",
+  "rate_plan_id": "{{ratePlanId}}",
+  "check_in_date": "2026-05-01",
+  "check_out_date": "2026-05-03"
+}
+
+### List bookings
+GET {{baseUrl}}/bookings
+Authorization: Bearer {{token}}
+
+### Check in
+PUT {{baseUrl}}/bookings/{{bookingId}}/checkin
+Authorization: Bearer {{token}}
+
+### Check out
+PUT {{baseUrl}}/bookings/{{bookingId}}/checkout
+Authorization: Bearer {{token}}
+
+### Send mock check-in reminder
+POST {{baseUrl}}/bookings/{{bookingId}}/checkin-reminder
+Authorization: Bearer {{token}}
+
+### Generate invoice
+POST {{baseUrl}}/billings
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "booking_id": "{{bookingId}}",
+  "tax": "600.00"
+}
+
+### List invoices
+GET {{baseUrl}}/billings
+Authorization: Bearer {{token}}
+
+### Get invoice
+GET {{baseUrl}}/billings/{{billingId}}
+Authorization: Bearer {{token}}
+
+### Add extra charge
+POST {{baseUrl}}/billings/{{billingId}}/extra-charges
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "description": "Airport pickup",
+  "amount": "900.00"
+}
+
+### Mark invoice paid
+PUT {{baseUrl}}/billings/{{billingId}}/payment-status
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "payment_status": "PAID"
+}
+
+### List payments
+GET {{baseUrl}}/payments
+Authorization: Bearer {{token}}
+
+### Collect payment
+POST {{baseUrl}}/payments/collect
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "billing_id": "{{billingId}}",
+  "amount": "5000.00",
+  "provider": "MOCK",
+  "provider_reference": "front-desk-cash-001"
+}
+
+### Refund payment
+POST {{baseUrl}}/payments/{{paymentId}}/refund
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "amount": "1000.00",
+  "reason": "Guest refund"
+}
+
+### List channel connections
+GET {{baseUrl}}/channels
+Authorization: Bearer {{token}}
+
+### Create channel connection
+POST {{baseUrl}}/channels
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "property_id": "{{propertyId}}",
+  "provider": "MOCK",
+  "name": "Mock OTA Gateway",
+  "external_hotel_id": "MOCK-HOTEL-001"
+}
+
+### Map room category to channel
+POST {{baseUrl}}/channels/{{channelId}}/room-mappings
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "room_category_id": "{{roomCategoryId}}",
+  "external_room_id": "MOCK-DELUXE",
+  "external_room_name": "Mock Deluxe Room"
+}
+
+### Map rate plan to channel
+POST {{baseUrl}}/channels/{{channelId}}/rate-mappings
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "rate_plan_id": "{{ratePlanId}}",
+  "external_rate_id": "MOCK-DELUXE-FLEX",
+  "external_rate_name": "Mock Deluxe Flexible"
+}
+
+### Trigger channel sync
+POST {{baseUrl}}/channels/{{channelId}}/sync
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "sync_type": "INVENTORY",
+  "from": "2026-05-01",
+  "to": "2026-05-03"
+}
+
+### List channel sync logs
+GET {{baseUrl}}/channels/{{channelId}}/sync-logs
+Authorization: Bearer {{token}}
+
+### List housekeeping tasks
+GET {{baseUrl}}/housekeeping
+Authorization: Bearer {{token}}
+
+### Create housekeeping task
+POST {{baseUrl}}/housekeeping
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "property_id": "{{propertyId}}",
+  "room_id": "{{roomId}}",
+  "status": "DIRTY",
+  "priority": "NORMAL",
+  "due_date": "2026-05-01",
+  "notes": "Post check-out cleaning"
+}
+
+### Update housekeeping task
+PUT {{baseUrl}}/housekeeping/{{roomId}}
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "status": "INSPECTED"
+}

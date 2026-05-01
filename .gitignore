@@ -1,0 +1,72 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.cjs
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+apps/backend/dist/
+apps/frontend/dist/
+apps/frontend/.vite/
+*.tsbuildinfo
+
+# Test and coverage outputs
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+apps/backend/.env
+apps/backend/.env.*
+!apps/backend/.env.example
+apps/frontend/.env
+apps/frontend/.env.*
+!apps/frontend/.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Prisma/local database artifacts
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+prisma/dev.db
+apps/backend/prisma/dev.db
+
+# Docker/local runtime
+.docker/
+docker-data/
+uploads/
+apps/backend/uploads/
+tmp/
+temp/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Package manager/cache artifacts
+.npm/
+.yarn/
+.pnpm-store/
+
+# Misc generated files
+.turbo/
+.cache/

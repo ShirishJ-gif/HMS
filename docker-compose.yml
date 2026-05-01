@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hms-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hms
+      POSTGRES_PASSWORD: hms_password
+      POSTGRES_DB: hms
+    ports:
+      - "5432:5432"
+    volumes:
+      - hms-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hms -d hms"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  hms-postgres-data:

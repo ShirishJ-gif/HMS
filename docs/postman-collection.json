@@ -1,0 +1,337 @@
+{
+  "info": {
+    "name": "HMS MVP API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "roomId",
+      "value": "replace-with-room-id"
+    },
+    {
+      "key": "guestId",
+      "value": "replace-with-guest-id"
+    },
+    {
+      "key": "bookingId",
+      "value": "replace-with-booking-id"
+    },
+    {
+      "key": "billingId",
+      "value": "replace-with-billing-id"
+    },
+    {
+      "key": "paymentId",
+      "value": "replace-with-payment-id"
+    },
+    {
+      "key": "channelId",
+      "value": "replace-with-channel-id"
+    },
+    {
+      "key": "propertyId",
+      "value": "replace-with-property-id"
+    },
+    {
+      "key": "roomCategoryId",
+      "value": "replace-with-room-category-id"
+    },
+    {
+      "key": "ratePlanId",
+      "value": "replace-with-rate-plan-id"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/health"
+      }
+    },
+    {
+      "name": "Dashboard Summary",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/dashboard/summary"
+      }
+    },
+    {
+      "name": "Create Property",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Harbour Residency\",\n  \"code\": \"HARBOUR-MUM\",\n  \"phone\": \"+912212345678\",\n  \"email\": \"ops@harbour.example.com\",\n  \"address\": \"Bandra West, Mumbai, Maharashtra\",\n  \"timezone\": \"Asia/Kolkata\"\n}"
+        },
+        "url": "{{baseUrl}}/properties"
+      }
+    },
+    {
+      "name": "Create Room Category",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"property_id\": \"{{propertyId}}\",\n  \"name\": \"Deluxe\",\n  \"code\": \"DELUXE\",\n  \"description\": \"Premium room with upgraded amenities.\",\n  \"max_occupancy\": 3\n}"
+        },
+        "url": "{{baseUrl}}/room-categories"
+      }
+    },
+    {
+      "name": "Upload Property Image",
+      "request": {
+        "method": "POST",
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "image", "type": "file", "src": [] },
+            { "key": "caption", "type": "text", "value": "Front exterior" },
+            { "key": "is_primary", "type": "text", "value": "true" }
+          ]
+        },
+        "url": "{{baseUrl}}/properties/{{propertyId}}/images"
+      }
+    },
+    {
+      "name": "Create Rate Plan",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"property_id\": \"{{propertyId}}\",\n  \"room_category_id\": \"{{roomCategoryId}}\",\n  \"name\": \"Deluxe Flexible\",\n  \"code\": \"DELUXE-FLEX\",\n  \"base_rate\": \"7500.00\",\n  \"currency\": \"INR\"\n}"
+        },
+        "url": "{{baseUrl}}/rate-plans"
+      }
+    },
+    {
+      "name": "Upload Room Category Image",
+      "request": {
+        "method": "POST",
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "image", "type": "file", "src": [] },
+            { "key": "caption", "type": "text", "value": "Deluxe king bed" },
+            { "key": "is_primary", "type": "text", "value": "true" }
+          ]
+        },
+        "url": "{{baseUrl}}/room-categories/{{roomCategoryId}}/images"
+      }
+    },
+    {
+      "name": "Create Room",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"property_id\": \"{{propertyId}}\",\n  \"room_category_id\": \"{{roomCategoryId}}\",\n  \"room_number\": \"301\",\n  \"status\": \"AVAILABLE\"\n}"
+        },
+        "url": "{{baseUrl}}/rooms"
+      }
+    },
+    {
+      "name": "List Rooms",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/rooms"
+      }
+    },
+    {
+      "name": "Create Guest",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"property_id\": \"{{propertyId}}\",\n  \"name\": \"Priya Nair\",\n  \"phone\": \"+919812345678\",\n  \"email\": \"priya.nair@example.com\",\n  \"id_proof\": \"PASSPORT-M1234567\",\n  \"address\": \"Indiranagar, Bengaluru, Karnataka\"\n}"
+        },
+        "url": "{{baseUrl}}/guests"
+      }
+    },
+    {
+      "name": "List Guests",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/guests"
+      }
+    },
+    {
+      "name": "Create Booking",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"property_id\": \"{{propertyId}}\",\n  \"guest_id\": \"{{guestId}}\",\n  \"room_category_id\": \"{{roomCategoryId}}\",\n  \"rate_plan_id\": \"{{ratePlanId}}\",\n  \"check_in_date\": \"2026-05-01\",\n  \"check_out_date\": \"2026-05-03\"\n}"
+        },
+        "url": "{{baseUrl}}/bookings"
+      }
+    },
+    {
+      "name": "List Bookings",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/bookings"
+      }
+    },
+    {
+      "name": "Check In",
+      "request": {
+        "method": "PUT",
+        "url": "{{baseUrl}}/bookings/{{bookingId}}/checkin"
+      }
+    },
+    {
+      "name": "Check Out",
+      "request": {
+        "method": "PUT",
+        "url": "{{baseUrl}}/bookings/{{bookingId}}/checkout"
+      }
+    },
+    {
+      "name": "Generate Invoice",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"booking_id\": \"{{bookingId}}\",\n  \"tax\": \"600.00\"\n}"
+        },
+        "url": "{{baseUrl}}/billings"
+      }
+    },
+    {
+      "name": "List Invoices",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/billings"
+      }
+    },
+    {
+      "name": "Add Extra Charge",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"description\": \"Airport pickup\",\n  \"amount\": \"900.00\"\n}"
+        },
+        "url": "{{baseUrl}}/billings/{{billingId}}/extra-charges"
+      }
+    },
+    {
+      "name": "Mark Invoice Paid",
+      "request": {
+        "method": "PUT",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"payment_status\": \"PAID\"\n}"
+        },
+        "url": "{{baseUrl}}/billings/{{billingId}}/payment-status"
+      }
+    },
+    {
+      "name": "List Payments",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/payments"
+      }
+    },
+    {
+      "name": "Collect Payment",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"billing_id\": \"{{billingId}}\",\n  \"amount\": \"5000.00\",\n  \"provider\": \"MOCK\",\n  \"provider_reference\": \"front-desk-cash-001\"\n}"
+        },
+        "url": "{{baseUrl}}/payments/collect"
+      }
+    },
+    {
+      "name": "Refund Payment",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"amount\": \"1000.00\",\n  \"reason\": \"Guest refund\"\n}"
+        },
+        "url": "{{baseUrl}}/payments/{{paymentId}}/refund"
+      }
+    },
+    {
+      "name": "List Channel Connections",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/channels"
+      }
+    },
+    {
+      "name": "Create Channel Connection",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"property_id\": \"{{propertyId}}\",\n  \"provider\": \"MOCK\",\n  \"name\": \"Mock OTA Gateway\",\n  \"external_hotel_id\": \"MOCK-HOTEL-001\"\n}"
+        },
+        "url": "{{baseUrl}}/channels"
+      }
+    },
+    {
+      "name": "Map Channel Room Category",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"room_category_id\": \"{{roomCategoryId}}\",\n  \"external_room_id\": \"MOCK-DELUXE\",\n  \"external_room_name\": \"Mock Deluxe Room\"\n}"
+        },
+        "url": "{{baseUrl}}/channels/{{channelId}}/room-mappings"
+      }
+    },
+    {
+      "name": "Map Channel Rate Plan",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"rate_plan_id\": \"{{ratePlanId}}\",\n  \"external_rate_id\": \"MOCK-DELUXE-FLEX\",\n  \"external_rate_name\": \"Mock Deluxe Flexible\"\n}"
+        },
+        "url": "{{baseUrl}}/channels/{{channelId}}/rate-mappings"
+      }
+    },
+    {
+      "name": "Trigger Channel Sync",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sync_type\": \"INVENTORY\",\n  \"from\": \"2026-05-01\",\n  \"to\": \"2026-05-03\"\n}"
+        },
+        "url": "{{baseUrl}}/channels/{{channelId}}/sync"
+      }
+    },
+    {
+      "name": "List Channel Sync Logs",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/channels/{{channelId}}/sync-logs"
+      }
+    }
+  ]
+}
