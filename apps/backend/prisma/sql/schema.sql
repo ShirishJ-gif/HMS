@@ -32,7 +32,8 @@ CREATE TYPE "ChannelConnectionStatus" AS ENUM ('ACTIVE', 'PAUSED', 'ERROR');
 CREATE TYPE "ChannelSyncType" AS ENUM ('INVENTORY', 'RATES', 'BOOKINGS');
 
 -- CreateEnum
-CREATE TYPE "ChannelSyncStatus" AS ENUM ('QUEUED', 'SUCCEEDED', 'FAILED');
+CREATE TYPE "ChannelSyncStatus" AS ENUM ('QUEUED', 'SUCCEEDED', 'PARTIAL_FAILED', 'FAILED');
+CREATE TYPE "InventorySyncRowStatus" AS ENUM ('SUCCEEDED', 'FAILED');
 
 -- CreateEnum
 CREATE TYPE "WebhookDomain" AS ENUM ('PAYMENT', 'CHANNEL');
@@ -156,6 +157,21 @@ CREATE TABLE "rooms" (
 );
 
 -- CreateTable
+CREATE TABLE "room_out_of_service_periods" (
+    "id" UUID NOT NULL,
+    "room_id" UUID NOT NULL,
+    "property_id" UUID NOT NULL,
+    "from_date" DATE NOT NULL,
+    "to_date" DATE NOT NULL,
+    "reason" VARCHAR(180) NOT NULL,
+    "notes" TEXT,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "room_out_of_service_periods_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "bookings" (
     "id" UUID NOT NULL,
     "property_id" UUID NOT NULL,
@@ -174,9 +190,58 @@ CREATE TABLE "bookings" (
 );
 
 -- CreateTable
+CREATE TABLE "reservation_groups" (
+    "id" UUID NOT NULL,
+    "property_id" UUID NOT NULL,
+    "primary_guest_id" UUID,
+    "channel_connection_id" UUID NOT NULL,
+    "external_reservation_id" VARCHAR(160) NOT NULL,
+    "external_reservation_version" VARCHAR(160),
+    "external_status" VARCHAR(80),
+    "source" VARCHAR(80),
+    "currency" VARCHAR(8),
+    "total_amount" DECIMAL(10,2),
+    "reservation_status" "BookingStatus" NOT NULL DEFAULT 'BOOKED',
+    "remarks" TEXT,
+    "booked_at" TIMESTAMP(3),
+    "modified_at" TIMESTAMP(3),
+    "raw_payload" JSONB,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "reservation_groups_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "reservation_rooms" (
+    "id" UUID NOT NULL,
+    "reservation_group_id" UUID NOT NULL,
+    "property_id" UUID NOT NULL,
+    "external_room_reservation_id" VARCHAR(160) NOT NULL,
+    "external_room_id" VARCHAR(160) NOT NULL,
+    "room_category_id" UUID NOT NULL,
+    "rate_plan_id" UUID NOT NULL,
+    "room_id" UUID,
+    "arrival_date" DATE NOT NULL,
+    "departure_date" DATE NOT NULL,
+    "total_amount" DECIMAL(10,2),
+    "currency" VARCHAR(8),
+    "reservation_status" "BookingStatus" NOT NULL DEFAULT 'BOOKED',
+    "guest_name" VARCHAR(160),
+    "adults" INTEGER,
+    "children" INTEGER,
+    "raw_payload" JSONB,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "reservation_rooms_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "billings" (
     "id" UUID NOT NULL,
-    "booking_id" UUID NOT NULL,
+    "booking_id" UUID,
+    "reservation_room_id" UUID,
     "amount" DECIMAL(10,2) NOT NULL,
     "tax" DECIMAL(10,2) NOT NULL DEFAULT 0,
     "total" DECIMAL(10,2) NOT NULL,
@@ -218,6 +283,7 @@ CREATE TABLE "housekeeping_tasks" (
     "id" UUID NOT NULL,
     "property_id" UUID NOT NULL,
     "room_id" UUID NOT NULL,
+    "reservation_room_id" UUID,
     "status" "HousekeepingStatus" NOT NULL DEFAULT 'DIRTY',
     "priority" "HousekeepingPriority" NOT NULL DEFAULT 'NORMAL',
     "notes" TEXT,
@@ -289,6 +355,7 @@ CREATE TABLE "channel_rate_mappings" (
     "id" UUID NOT NULL,
     "channel_connection_id" UUID NOT NULL,
     "rate_plan_id" UUID NOT NULL,
+    "external_room_id" VARCHAR(120),
     "external_rate_id" VARCHAR(120) NOT NULL,
     "external_rate_name" VARCHAR(160),
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -310,6 +377,22 @@ CREATE TABLE "channel_sync_logs" (
     "updated_at" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "channel_sync_logs_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "inventory_sync_rows" (
+    "id" UUID NOT NULL,
+    "channel_sync_log_id" UUID NOT NULL,
+    "channel_connection_id" UUID NOT NULL,
+    "sync_date" DATE NOT NULL,
+    "external_room_id" VARCHAR(120) NOT NULL,
+    "available" INTEGER NOT NULL,
+    "status" "InventorySyncRowStatus" NOT NULL,
+    "error_message" TEXT,
+    "provider_response" JSONB,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "inventory_sync_rows_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -420,6 +503,12 @@ CREATE INDEX "rooms_status_idx" ON "rooms"("status");
 CREATE UNIQUE INDEX "rooms_property_id_room_number_key" ON "rooms"("property_id", "room_number");
 
 -- CreateIndex
+CREATE INDEX "room_out_of_service_periods_room_id_from_date_to_date_idx" ON "room_out_of_service_periods"("room_id", "from_date", "to_date");
+
+-- CreateIndex
+CREATE INDEX "room_out_of_service_periods_property_id_from_date_to_date_idx" ON "room_out_of_service_periods"("property_id", "from_date", "to_date");
+
+-- CreateIndex
 CREATE INDEX "bookings_property_id_idx" ON "bookings"("property_id");
 
 -- CreateIndex
@@ -441,7 +530,55 @@ CREATE INDEX "bookings_booking_status_idx" ON "bookings"("booking_status");
 CREATE INDEX "bookings_check_in_date_check_out_date_idx" ON "bookings"("check_in_date", "check_out_date");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "reservation_groups_channel_connection_id_external_reservat_key" ON "reservation_groups"("channel_connection_id", "external_reservation_id");
+
+-- CreateIndex
+CREATE INDEX "reservation_groups_property_id_idx" ON "reservation_groups"("property_id");
+
+-- CreateIndex
+CREATE INDEX "reservation_groups_primary_guest_id_idx" ON "reservation_groups"("primary_guest_id");
+
+-- CreateIndex
+CREATE INDEX "reservation_groups_channel_connection_id_idx" ON "reservation_groups"("channel_connection_id");
+
+-- CreateIndex
+CREATE INDEX "reservation_groups_reservation_status_idx" ON "reservation_groups"("reservation_status");
+
+-- CreateIndex
+CREATE INDEX "reservation_groups_external_status_idx" ON "reservation_groups"("external_status");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "reservation_rooms_reservation_group_id_external_room_reservat_key" ON "reservation_rooms"("reservation_group_id", "external_room_reservation_id");
+
+-- CreateIndex
+CREATE INDEX "reservation_rooms_reservation_group_id_idx" ON "reservation_rooms"("reservation_group_id");
+
+-- CreateIndex
+CREATE INDEX "reservation_rooms_property_id_idx" ON "reservation_rooms"("property_id");
+
+-- CreateIndex
+CREATE INDEX "reservation_rooms_room_category_id_idx" ON "reservation_rooms"("room_category_id");
+
+-- CreateIndex
+CREATE INDEX "reservation_rooms_rate_plan_id_idx" ON "reservation_rooms"("rate_plan_id");
+
+-- CreateIndex
+CREATE INDEX "reservation_rooms_room_id_idx" ON "reservation_rooms"("room_id");
+
+-- CreateIndex
+CREATE INDEX "reservation_rooms_reservation_status_idx" ON "reservation_rooms"("reservation_status");
+
+-- CreateIndex
+CREATE INDEX "reservation_rooms_arrival_date_departure_date_idx" ON "reservation_rooms"("arrival_date", "departure_date");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "billings_booking_id_key" ON "billings"("booking_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "billings_reservation_room_id_key" ON "billings"("reservation_room_id");
+
+-- CreateIndex
+CREATE INDEX "billings_reservation_room_id_idx" ON "billings"("reservation_room_id");
 
 -- CreateIndex
 CREATE INDEX "billings_payment_status_idx" ON "billings"("payment_status");
@@ -463,6 +600,9 @@ CREATE INDEX "housekeeping_tasks_property_id_idx" ON "housekeeping_tasks"("prope
 
 -- CreateIndex
 CREATE INDEX "housekeeping_tasks_room_id_idx" ON "housekeeping_tasks"("room_id");
+
+-- CreateIndex
+CREATE INDEX "housekeeping_tasks_reservation_room_id_idx" ON "housekeeping_tasks"("reservation_room_id");
 
 -- CreateIndex
 CREATE INDEX "housekeeping_tasks_status_idx" ON "housekeeping_tasks"("status");
@@ -510,7 +650,10 @@ CREATE INDEX "channel_rate_mappings_rate_plan_id_idx" ON "channel_rate_mappings"
 CREATE UNIQUE INDEX "channel_rate_mappings_channel_connection_id_rate_plan_id_key" ON "channel_rate_mappings"("channel_connection_id", "rate_plan_id");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "channel_rate_mappings_channel_connection_id_external_rate_i_key" ON "channel_rate_mappings"("channel_connection_id", "external_rate_id");
+CREATE UNIQUE INDEX "channel_rate_mappings_channel_connection_id_external_room_i_key" ON "channel_rate_mappings"("channel_connection_id", "external_room_id", "external_rate_id");
+
+-- CreateIndex
+CREATE INDEX "channel_rate_mappings_external_room_id_idx" ON "channel_rate_mappings"("external_room_id");
 
 -- CreateIndex
 CREATE INDEX "channel_sync_logs_channel_connection_id_idx" ON "channel_sync_logs"("channel_connection_id");
@@ -520,6 +663,10 @@ CREATE INDEX "channel_sync_logs_sync_type_idx" ON "channel_sync_logs"("sync_type
 
 -- CreateIndex
 CREATE INDEX "channel_sync_logs_status_idx" ON "channel_sync_logs"("status");
+CREATE UNIQUE INDEX "inventory_sync_rows_channel_sync_log_id_sync_date_external_room_id_key" ON "inventory_sync_rows"("channel_sync_log_id", "sync_date", "external_room_id");
+CREATE INDEX "inventory_sync_rows_channel_connection_id_status_sync_date_idx" ON "inventory_sync_rows"("channel_connection_id", "status", "sync_date");
+CREATE INDEX "inventory_sync_rows_channel_sync_log_id_idx" ON "inventory_sync_rows"("channel_sync_log_id");
+CREATE INDEX "inventory_sync_rows_external_room_id_idx" ON "inventory_sync_rows"("external_room_id");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "webhook_events_dedupe_key_key" ON "webhook_events"("dedupe_key");
@@ -573,6 +720,12 @@ ALTER TABLE "rooms" ADD CONSTRAINT "rooms_property_id_fkey" FOREIGN KEY ("proper
 ALTER TABLE "rooms" ADD CONSTRAINT "rooms_room_category_id_fkey" FOREIGN KEY ("room_category_id") REFERENCES "room_categories"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "room_out_of_service_periods" ADD CONSTRAINT "room_out_of_service_periods_room_id_fkey" FOREIGN KEY ("room_id") REFERENCES "rooms"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "room_out_of_service_periods" ADD CONSTRAINT "room_out_of_service_periods_property_id_fkey" FOREIGN KEY ("property_id") REFERENCES "properties"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "bookings" ADD CONSTRAINT "bookings_property_id_fkey" FOREIGN KEY ("property_id") REFERENCES "properties"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -588,7 +741,34 @@ ALTER TABLE "bookings" ADD CONSTRAINT "bookings_rate_plan_id_fkey" FOREIGN KEY (
 ALTER TABLE "bookings" ADD CONSTRAINT "bookings_room_id_fkey" FOREIGN KEY ("room_id") REFERENCES "rooms"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "reservation_groups" ADD CONSTRAINT "reservation_groups_property_id_fkey" FOREIGN KEY ("property_id") REFERENCES "properties"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "reservation_groups" ADD CONSTRAINT "reservation_groups_primary_guest_id_fkey" FOREIGN KEY ("primary_guest_id") REFERENCES "guests"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "reservation_groups" ADD CONSTRAINT "reservation_groups_channel_connection_id_fkey" FOREIGN KEY ("channel_connection_id") REFERENCES "channel_connections"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "reservation_rooms" ADD CONSTRAINT "reservation_rooms_reservation_group_id_fkey" FOREIGN KEY ("reservation_group_id") REFERENCES "reservation_groups"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "reservation_rooms" ADD CONSTRAINT "reservation_rooms_property_id_fkey" FOREIGN KEY ("property_id") REFERENCES "properties"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "reservation_rooms" ADD CONSTRAINT "reservation_rooms_room_category_id_fkey" FOREIGN KEY ("room_category_id") REFERENCES "room_categories"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "reservation_rooms" ADD CONSTRAINT "reservation_rooms_rate_plan_id_fkey" FOREIGN KEY ("rate_plan_id") REFERENCES "rate_plans"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "reservation_rooms" ADD CONSTRAINT "reservation_rooms_room_id_fkey" FOREIGN KEY ("room_id") REFERENCES "rooms"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "billings" ADD CONSTRAINT "billings_booking_id_fkey" FOREIGN KEY ("booking_id") REFERENCES "bookings"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "billings" ADD CONSTRAINT "billings_reservation_room_id_fkey" FOREIGN KEY ("reservation_room_id") REFERENCES "reservation_rooms"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "payment_transactions" ADD CONSTRAINT "payment_transactions_billing_id_fkey" FOREIGN KEY ("billing_id") REFERENCES "billings"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -601,6 +781,9 @@ ALTER TABLE "housekeeping_tasks" ADD CONSTRAINT "housekeeping_tasks_property_id_
 
 -- AddForeignKey
 ALTER TABLE "housekeeping_tasks" ADD CONSTRAINT "housekeeping_tasks_room_id_fkey" FOREIGN KEY ("room_id") REFERENCES "rooms"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "housekeeping_tasks" ADD CONSTRAINT "housekeeping_tasks_reservation_room_id_fkey" FOREIGN KEY ("reservation_room_id") REFERENCES "reservation_rooms"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "property_images" ADD CONSTRAINT "property_images_property_id_fkey" FOREIGN KEY ("property_id") REFERENCES "properties"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -625,6 +808,12 @@ ALTER TABLE "channel_rate_mappings" ADD CONSTRAINT "channel_rate_mappings_rate_p
 
 -- AddForeignKey
 ALTER TABLE "channel_sync_logs" ADD CONSTRAINT "channel_sync_logs_channel_connection_id_fkey" FOREIGN KEY ("channel_connection_id") REFERENCES "channel_connections"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "inventory_sync_rows" ADD CONSTRAINT "inventory_sync_rows_channel_sync_log_id_fkey" FOREIGN KEY ("channel_sync_log_id") REFERENCES "channel_sync_logs"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "inventory_sync_rows" ADD CONSTRAINT "inventory_sync_rows_channel_connection_id_fkey" FOREIGN KEY ("channel_connection_id") REFERENCES "channel_connections"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "webhook_events" ADD CONSTRAINT "webhook_events_property_id_fkey" FOREIGN KEY ("property_id") REFERENCES "properties"("id") ON DELETE SET NULL ON UPDATE CASCADE;

@@ -12,7 +12,8 @@
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "validate:legacy-migration": "tsx prisma/validate-legacy-booking-migration.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.7",

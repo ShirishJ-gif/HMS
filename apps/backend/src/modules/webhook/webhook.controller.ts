@@ -13,6 +13,19 @@ export class WebhookController {
   constructor(private readonly webhookService: WebhookService) {}
 
   @Public()
+  @Post('webhooks/zodomus')
+  async ingestZodomus(
+    @Body() body: Record<string, unknown>,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Req() request: Request & { rawBody?: Buffer },
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.webhookService.ingest('channel', 'zodomus', body, headers, request.rawBody);
+    response.status(result.duplicate ? 200 : 201);
+    return result;
+  }
+
+  @Public()
   @Post('webhooks/:domain/:provider')
   async ingest(
     @Param('domain') domain: string,

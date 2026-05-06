@@ -2,7 +2,7 @@ import { IsDecimal, IsOptional, IsUUID } from 'class-validator';
 
 export class CreateInvoiceDto {
   @IsUUID()
-  booking_id: string;
+  reservation_room_id!: string;
 
   @IsOptional()
   @IsDecimal({ decimal_digits: '0,2' })

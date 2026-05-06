@@ -1,3 +1,7 @@
+> Obsolete document.
+>
+> This schema note reflects an older conceptual model and does not match the active reservation-centric Prisma schema. Use `apps/backend/prisma/schema.prisma` and [docs/README.md](/Users/cronberry/Hms/docs/README.md) instead.
+
 -- =========================
 -- 1. ORGANIZATION & HOTELS
 -- =========================

@@ -21,6 +21,19 @@ export class BillingController {
     return this.billingService.findAll(query, user);
   }
 
+  @Get('reservation-groups/:id/folio')
+  findReservationGroupFolio(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.billingService.findReservationGroupFolio(id, user);
+  }
+
+  @Post('reservation-groups/:id/generate-missing-invoices')
+  generateMissingInvoicesForReservationGroup(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.billingService.generateMissingInvoicesForReservationGroup(id, user);
+  }
+
   @Get(':id')
   findOne(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.billingService.findOne(id, user);

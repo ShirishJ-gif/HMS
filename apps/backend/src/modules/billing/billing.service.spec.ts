@@ -4,13 +4,13 @@ import { BillingService } from './billing.service';
 
 describe('BillingService', () => {
   const tx = {
-    booking: { findUnique: jest.fn() },
+    reservationRoom: { findUnique: jest.fn() },
     billing: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
     billingExtraCharge: { create: jest.fn() },
   };
   const prisma = {
     $transaction: jest.fn(),
-    billing: { findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+    billing: { findMany: jest.fn(), findUnique: jest.fn(), findUniqueOrThrow: jest.fn(), update: jest.fn() },
   };
 
   const property = {
@@ -66,25 +66,52 @@ describe('BillingService', () => {
     createdAt: new Date('2026-04-28T00:00:00.000Z'),
     updatedAt: new Date('2026-04-28T00:00:00.000Z'),
   };
-  const booking = {
+  const reservationGroup = {
     id: '3ffbbafc-1023-4ee0-9ed6-13c31c7fe29f',
     propertyId: property.id,
-    guestId: guest.id,
+    primaryGuestId: guest.id,
+    channelConnectionId: '4ffbbafc-1023-4ee0-9ed6-13c31c7fe29f',
+    externalReservationId: 'ota-res-1',
+    externalReservationVersion: null,
+    externalStatus: 'booked',
+    source: 'ZODOMUS',
+    currency: 'INR',
+    totalAmount: new Prisma.Decimal('15000.00'),
+    status: BookingStatus.BOOKED,
+    remarks: null,
+    bookedAt: null,
+    modifiedAt: null,
+    rawPayload: null,
+    property,
+    primaryGuest: guest,
+    createdAt: new Date('2026-04-28T00:00:00.000Z'),
+    updatedAt: new Date('2026-04-28T00:00:00.000Z'),
+  };
+  const reservationRoom = {
+    id: '5ffbbafc-1023-4ee0-9ed6-13c31c7fe29f',
+    reservationGroupId: reservationGroup.id,
+    propertyId: property.id,
+    externalRoomReservationId: 'ota-room-1',
+    externalRoomId: 'ext-room-1',
     roomCategoryId: roomCategory.id,
     ratePlanId: ratePlan.id,
     roomId: room.id,
-    checkInDate: new Date('2026-05-01T00:00:00.000Z'),
-    checkOutDate: new Date('2026-05-03T00:00:00.000Z'),
+    arrivalDate: new Date('2026-05-01T00:00:00.000Z'),
+    departureDate: new Date('2026-05-03T00:00:00.000Z'),
     totalAmount: new Prisma.Decimal('15000.00'),
+    currency: 'INR',
     status: BookingStatus.BOOKED,
-    property,
-    guest,
+    guestName: guest.name,
+    adults: 2,
+    children: 0,
+    rawPayload: null,
+    reservationGroup,
     roomCategory,
     ratePlan,
     room,
-    billing: null,
     createdAt: new Date('2026-04-28T00:00:00.000Z'),
     updatedAt: new Date('2026-04-28T00:00:00.000Z'),
+    billings: [],
   };
 
   let service: BillingService;
@@ -95,20 +122,21 @@ describe('BillingService', () => {
     service = new BillingService(prisma as never);
   });
 
-  it('generates an invoice from booking total and tax', async () => {
+  it('generates an invoice from imported room-stay total and tax', async () => {
     const billing = billingRecord();
 
-    tx.booking.findUnique.mockResolvedValue(booking);
+    tx.reservationRoom.findUnique.mockResolvedValue(reservationRoom);
     tx.billing.create.mockResolvedValue(billing);
+    prisma.billing.findUniqueOrThrow.mockResolvedValue(billing);
 
     await expect(
       service.createInvoice({
-        booking_id: booking.id,
+        reservation_room_id: reservationRoom.id,
         tax: '1800.00',
       }),
     ).resolves.toMatchObject({
       id: billing.id,
-      booking_id: booking.id,
+      reservation_room_id: reservationRoom.id,
       amount: 15000,
       tax: 1800,
       total: 16800,
@@ -116,21 +144,23 @@ describe('BillingService', () => {
     });
   });
 
-  it('prevents duplicate invoices for a booking', async () => {
-    tx.booking.findUnique.mockResolvedValue({
-      ...booking,
-      billing: { id: 'b4ddf4f6-3ea0-47f7-a39d-49180e9f54d2' },
-    });
+  it('prevents duplicate invoices for an imported room stay', async () => {
+    prisma.$transaction.mockImplementation(async (callback) => callback({
+      ...tx,
+      reservationRoom: { findUnique: jest.fn().mockResolvedValue(reservationRoom) },
+      billing: { ...tx.billing, findUnique: jest.fn().mockResolvedValue({ id: 'b4ddf4f6-3ea0-47f7-a39d-49180e9f54d2' }) },
+    }));
 
-    await expect(service.createInvoice({ booking_id: booking.id })).rejects.toBeInstanceOf(
+    await expect(service.createInvoice({ reservation_room_id: reservationRoom.id })).rejects.toBeInstanceOf(
       ConflictException,
     );
   });
 
-  it('returns not found when booking is missing', async () => {
-    tx.booking.findUnique.mockResolvedValue(null);
+  it('returns not found when imported room stay is missing', async () => {
+    prisma.$transaction.mockImplementation((callback) => callback(tx));
+    tx.reservationRoom.findUnique.mockResolvedValue(null);
 
-    await expect(service.createInvoice({ booking_id: booking.id })).rejects.toBeInstanceOf(
+    await expect(service.createInvoice({ reservation_room_id: reservationRoom.id })).rejects.toBeInstanceOf(
       NotFoundException,
     );
   });
@@ -150,12 +180,12 @@ describe('BillingService', () => {
   function billingRecord(overrides: Record<string, unknown> = {}): any {
     return {
       id: 'b4ddf4f6-3ea0-47f7-a39d-49180e9f54d2',
-      bookingId: booking.id,
+      reservationRoomId: reservationRoom.id,
       amount: new Prisma.Decimal('15000.00'),
       tax: new Prisma.Decimal('1800.00'),
       total: new Prisma.Decimal('16800.00'),
       paymentStatus: PaymentStatus.PENDING,
-      booking,
+      reservationRoom,
       extraCharges: [],
       payments: [],
       createdAt: new Date('2026-04-28T00:00:00.000Z'),

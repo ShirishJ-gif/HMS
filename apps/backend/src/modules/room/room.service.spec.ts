@@ -13,9 +13,18 @@ describe('RoomService', () => {
       update: jest.fn(),
       delete: jest.fn(),
     },
+    roomOutOfServicePeriod: {
+      findFirst: jest.fn(),
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      delete: jest.fn(),
+    },
   };
   const auditLogService = {
     record: jest.fn(),
+  };
+  const backgroundJobService = {
+    queueInventorySyncsForProperty: jest.fn(),
   };
 
   const property = {
@@ -35,7 +44,7 @@ describe('RoomService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     prisma.$transaction.mockImplementation((queries) => Promise.all(queries));
-    service = new RoomService(prisma as never, auditLogService as never);
+    service = new RoomService(prisma as never, auditLogService as never, backgroundJobService as never);
   });
 
   it('creates a property-scoped physical room', async () => {
@@ -72,6 +81,9 @@ describe('RoomService', () => {
         property: true,
         roomCategory: true,
       },
+    });
+    expect(backgroundJobService.queueInventorySyncsForProperty).toHaveBeenCalledWith(property.id, {
+      trigger: 'room_created',
     });
   });
 
@@ -135,7 +147,21 @@ describe('RoomService', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('prevents deleting rooms with dependent bookings', async () => {
+  it('queues inventory syncs when room inventory state changes', async () => {
+    prisma.room.findUnique.mockResolvedValue(roomRecord());
+    prisma.room.update.mockResolvedValue({
+      ...roomRecord(),
+      status: RoomStatus.MAINTENANCE,
+    });
+
+    await service.update(roomRecord().id, { status: RoomStatus.MAINTENANCE });
+
+    expect(backgroundJobService.queueInventorySyncsForProperty).toHaveBeenCalledWith(property.id, {
+      trigger: 'room_updated',
+    });
+  });
+
+  it('prevents deleting rooms with dependent reservation stays', async () => {
     prisma.room.findUnique.mockResolvedValue(roomRecord());
     prisma.room.delete.mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', {
@@ -147,6 +173,45 @@ describe('RoomService', () => {
     await expect(service.remove('7f43ac6b-743c-4e21-b3a3-931025058655')).rejects.toBeInstanceOf(
       ConflictException,
     );
+  });
+
+  it('creates dated out-of-service periods and queues inventory syncs', async () => {
+    prisma.room.findUnique.mockResolvedValue(roomRecord());
+    prisma.roomOutOfServicePeriod.findFirst.mockResolvedValue(null);
+    prisma.roomOutOfServicePeriod.create.mockResolvedValue({
+      id: 'period-1',
+      roomId: roomRecord().id,
+      propertyId: property.id,
+      fromDate: new Date('2026-06-10T00:00:00.000Z'),
+      toDate: new Date('2026-06-12T00:00:00.000Z'),
+      reason: 'Bathroom repair',
+      notes: 'Plumbing',
+      createdAt: new Date('2026-06-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-01T00:00:00.000Z'),
+    });
+
+    await expect(
+      service.createOutOfServicePeriod(
+        roomRecord().id,
+        {
+          from_date: '2026-06-10',
+          to_date: '2026-06-12',
+          reason: 'Bathroom repair',
+          notes: 'Plumbing',
+        },
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        room_id: roomRecord().id,
+        property_id: property.id,
+        from_date: '2026-06-10',
+        to_date: '2026-06-12',
+      }),
+    );
+
+    expect(backgroundJobService.queueInventorySyncsForProperty).toHaveBeenCalledWith(property.id, {
+      trigger: 'room_out_of_service_created',
+    });
   });
 
   function roomRecord() {

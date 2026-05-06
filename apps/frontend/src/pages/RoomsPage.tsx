@@ -1,7 +1,7 @@
 import { FormEvent, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { PaginatedResponse, unwrapList } from '../api/pagination';
-import { Property, Room, RoomCategory, RoomStatus } from '../api/types';
+import { Property, Room, RoomCategory, RoomOutOfServicePeriod, RoomStatus } from '../api/types';
 import { FilterBar } from '../components/FilterBar';
 import { useAsync } from '../hooks/useAsync';
 
@@ -10,6 +10,13 @@ const defaultForm = {
   room_category_id: '',
   room_number: '',
   status: 'AVAILABLE' as RoomStatus,
+};
+
+const defaultOutOfServiceForm = {
+  from_date: '',
+  to_date: '',
+  reason: '',
+  notes: '',
 };
 
 export function RoomsPage() {
@@ -22,6 +29,11 @@ export function RoomsPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [deletingRoomId, setDeletingRoomId] = useState<string | null>(null);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [periodReloadKey, setPeriodReloadKey] = useState(0);
+  const [outOfServiceForm, setOutOfServiceForm] = useState(defaultOutOfServiceForm);
+  const [outOfServiceSubmitting, setOutOfServiceSubmitting] = useState(false);
+  const [deletingPeriodId, setDeletingPeriodId] = useState<string | null>(null);
   const roomsState = useAsync(
     async () => (await api.get<PaginatedResponse<Room>>('/rooms', { params: { search: search || undefined } })).data,
     [reloadKey, search],
@@ -33,6 +45,18 @@ export function RoomsPage() {
   const categoriesState = useAsync(
     async () => unwrapList((await api.get<PaginatedResponse<RoomCategory>>('/room-categories', { params: { limit: 100 } })).data),
     [],
+  );
+  const outOfServicePeriodsState = useAsync(
+    async () => {
+      if (!selectedRoomId) {
+        return [];
+      }
+
+      return (
+        await api.get<RoomOutOfServicePeriod[]>(`/rooms/${selectedRoomId}/out-of-service-periods`)
+      ).data;
+    },
+    [selectedRoomId, periodReloadKey],
   );
   const properties = propertiesState.data ?? [];
   const categories = categoriesState.data ?? [];
@@ -47,6 +71,7 @@ export function RoomsPage() {
 
     return true;
   });
+  const selectedRoom = rooms.find((room) => room.id === selectedRoomId) ?? null;
 
   async function submitRoom(event: FormEvent) {
     event.preventDefault();
@@ -79,6 +104,50 @@ export function RoomsPage() {
       setActionError(getApiErrorMessage(error));
     } finally {
       setDeletingRoomId(null);
+    }
+  }
+
+  async function submitOutOfServicePeriod(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedRoomId) {
+      return;
+    }
+
+    setMessage(null);
+    setActionError(null);
+    setOutOfServiceSubmitting(true);
+
+    try {
+      await api.post(`/rooms/${selectedRoomId}/out-of-service-periods`, outOfServiceForm);
+      setOutOfServiceForm(defaultOutOfServiceForm);
+      setMessage('Out-of-service period saved.');
+      setPeriodReloadKey((value) => value + 1);
+      setReloadKey((value) => value + 1);
+    } catch (error) {
+      setActionError(getApiErrorMessage(error));
+    } finally {
+      setOutOfServiceSubmitting(false);
+    }
+  }
+
+  async function deleteOutOfServicePeriod(periodId: string) {
+    if (!selectedRoomId) {
+      return;
+    }
+
+    setMessage(null);
+    setActionError(null);
+    setDeletingPeriodId(periodId);
+
+    try {
+      await api.delete(`/rooms/${selectedRoomId}/out-of-service-periods/${periodId}`);
+      setMessage('Out-of-service period removed.');
+      setPeriodReloadKey((value) => value + 1);
+      setReloadKey((value) => value + 1);
+    } catch (error) {
+      setActionError(getApiErrorMessage(error));
+    } finally {
+      setDeletingPeriodId(null);
     }
   }
 
@@ -212,7 +281,7 @@ export function RoomsPage() {
               <th>Property</th>
               <th>Category</th>
               <th>Status</th>
-              <th>Action</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -227,6 +296,17 @@ export function RoomsPage() {
                 <td>
                   <button
                     className="link-button"
+                    onClick={() => {
+                      setSelectedRoomId(room.id);
+                      setOutOfServiceForm(defaultOutOfServiceForm);
+                    }}
+                    type="button"
+                  >
+                    {selectedRoomId === room.id ? 'Managing blocks' : 'Manage blocks'}
+                  </button>
+                  {' · '}
+                  <button
+                    className="link-button"
                     disabled={deletingRoomId === room.id}
                     onClick={() => void deleteRoom(room.id)}
                     type="button"
@@ -239,6 +319,109 @@ export function RoomsPage() {
           </tbody>
         </table>
       </div>
+
+      {selectedRoom && (
+        <div className="card">
+          <div className="table-heading">
+            <div>
+              <p className="eyebrow">Date blocks</p>
+              <h3>
+                {selectedRoom.room_number} · {selectedRoom.property.name}
+              </h3>
+              <p className="page-subtitle">
+                Use dated out-of-service periods for temporary maintenance instead of leaving the room in permanent
+                `MAINTENANCE` status.
+              </p>
+            </div>
+          </div>
+
+          <form className="form-grid" onSubmit={submitOutOfServicePeriod}>
+            <label>
+              From date
+              <input
+                onChange={(event) => setOutOfServiceForm({ ...outOfServiceForm, from_date: event.target.value })}
+                required
+                type="date"
+                value={outOfServiceForm.from_date}
+              />
+            </label>
+            <label>
+              To date
+              <input
+                onChange={(event) => setOutOfServiceForm({ ...outOfServiceForm, to_date: event.target.value })}
+                required
+                type="date"
+                value={outOfServiceForm.to_date}
+              />
+            </label>
+            <label>
+              Reason
+              <input
+                onChange={(event) => setOutOfServiceForm({ ...outOfServiceForm, reason: event.target.value })}
+                placeholder="Bathroom repair"
+                required
+                value={outOfServiceForm.reason}
+              />
+            </label>
+            <label>
+              Notes
+              <input
+                onChange={(event) => setOutOfServiceForm({ ...outOfServiceForm, notes: event.target.value })}
+                placeholder="Optional details"
+                value={outOfServiceForm.notes}
+              />
+            </label>
+            <button className="primary-button" disabled={outOfServiceSubmitting} type="submit">
+              {outOfServiceSubmitting ? 'Saving...' : 'Add date block'}
+            </button>
+          </form>
+
+          {outOfServicePeriodsState.loading && <p className="muted">Loading date blocks...</p>}
+          {outOfServicePeriodsState.error && <p className="error">{outOfServicePeriodsState.error}</p>}
+
+          {!outOfServicePeriodsState.loading && !outOfServicePeriodsState.error && (
+            <table>
+              <thead>
+                <tr>
+                  <th>From</th>
+                  <th>To</th>
+                  <th>Reason</th>
+                  <th>Notes</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {outOfServicePeriodsState.data?.length ? (
+                  outOfServicePeriodsState.data.map((period) => (
+                    <tr key={period.id}>
+                      <td>{period.from_date}</td>
+                      <td>{period.to_date}</td>
+                      <td>{period.reason}</td>
+                      <td>{period.notes ?? '—'}</td>
+                      <td>
+                        <button
+                          className="link-button"
+                          disabled={deletingPeriodId === period.id}
+                          onClick={() => void deleteOutOfServicePeriod(period.id)}
+                          type="button"
+                        >
+                          {deletingPeriodId === period.id ? 'Removing...' : 'Remove'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td className="muted" colSpan={5}>
+                      No dated out-of-service periods configured for this room.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
     </section>
   );
 }

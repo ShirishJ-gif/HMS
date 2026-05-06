@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { BookingStatus, Prisma, PricingRuleType, RoomStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RoomOutOfServiceCalendarService } from '../room-out-of-service/room-out-of-service-calendar.service';
 
 type DbClient = PrismaService | Prisma.TransactionClient;
 
@@ -30,7 +31,10 @@ type OccupancySnapshot = {
 
 @Injectable()
 export class PricingService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly roomOutOfServiceCalendarService: RoomOutOfServiceCalendarService,
+  ) {}
 
   async calculateStayPricing(input: {
     db?: DbClient;
@@ -171,32 +175,48 @@ export class PricingService {
       return cached;
     }
 
-    const [totalInventory, bookedInventory] = await Promise.all([
-      db.room.count({
+    const [rooms, bookedReservationRooms] = await Promise.all([
+      db.room.findMany({
         where: {
           propertyId,
           roomCategoryId,
-          status: {
-            not: RoomStatus.MAINTENANCE,
-          },
+        },
+        select: {
+          id: true,
+          status: true,
         },
       }),
-      db.booking.count({
+      db.reservationRoom.count({
         where: {
           propertyId,
           roomCategoryId,
           status: {
             in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN],
           },
-          checkInDate: {
+          arrivalDate: {
             lte: date,
           },
-          checkOutDate: {
+          departureDate: {
             gt: date,
           },
         },
       }),
     ]);
+    const roomDateMap = await this.roomOutOfServiceCalendarService.loadRoomDateMap(
+      {
+        roomIds: rooms.map((room) => room.id),
+        from: date,
+        to: date,
+      },
+      db,
+    );
+    const totalInventory = rooms.filter(
+      (room) =>
+        room.status !== RoomStatus.MAINTENANCE &&
+        !this.roomOutOfServiceCalendarService.isRoomOutOfServiceOnDate(room.id, date, roomDateMap),
+    ).length;
+
+    const bookedInventory = bookedReservationRooms;
 
     const snapshot = {
       totalInventory,

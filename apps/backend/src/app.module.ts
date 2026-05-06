@@ -11,6 +11,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { GuestModule } from './modules/guest/guest.module';
 import { HealthModule } from './modules/health/health.module';
 import { HousekeepingModule } from './modules/housekeeping/housekeeping.module';
+import { InventoryModule } from './modules/inventory/inventory.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { PaymentModule } from './modules/payment/payment.module';
@@ -32,6 +33,7 @@ import { PrismaModule } from './prisma/prisma.module';
     ChannelModule,
     BillingModule,
     DashboardModule,
+    InventoryModule,
     PropertyModule,
     AuthModule,
     HealthModule,

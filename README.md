@@ -7,7 +7,7 @@ Production-ready MVP structure for a Hotel Management System using NestJS, Prism
 Implemented MVP:
 
 - NestJS backend with Prisma, PostgreSQL, modular services, validation, and unit tests
-- REST APIs for properties, room categories, rate plans, rooms, guests, bookings, billing, payments, channel mappings, dashboard metrics, and mock WhatsApp notifications
+- REST APIs for properties, room categories, rate plans, rooms, guests, reservation groups, billing, payments, channel mappings, dashboard metrics, and mock WhatsApp notifications
 - Dynamic pricing rules for weekend, date-range/festival, and occupancy-based surcharges
 - Audit-log API for sensitive operational actions, including booking lifecycle, room changes, payments, and channel syncs
 - JWT authentication with `SUPER_ADMIN`, `ADMIN`, and `STAFF` roles
@@ -21,6 +21,8 @@ Implemented MVP:
 - Metrics endpoints for scrape and dashboard foundations
 - Concrete dashboard panel and alert threshold definitions in [docs/metrics-alerting.md](/Users/cronberry/Hms/docs/metrics-alerting.md)
 - React admin dashboard with login, dashboard, property setup, availability, rooms, bookings, guests, housekeeping, payments, channel manager, and audit log pages
+- Reservation-group and reservation-room persistence for imported multi-room OTA stays
+- Zodomus provider adapter with property check, property activation, provider catalog fetch, availability sync, rate sync, reservation queue polling, reservation detail fetch, and reservation import
 - Local image uploads for property and room-category photos
 - WhatsApp notifications queued through background jobs, with mock or WhatsApp Cloud API delivery mode
 - Docker Compose PostgreSQL, Prisma schema, SQL schema, and sample seed data
@@ -28,6 +30,7 @@ Implemented MVP:
 - Implemented feature inventory in [docs/implemented-features.md](/Users/cronberry/Hms/docs/implemented-features.md)
 - AI handoff context in [docs/ai-handoff.md](/Users/cronberry/Hms/docs/ai-handoff.md)
 - Production-readiness notes in [docs/production-readiness.md](/Users/cronberry/Hms/docs/production-readiness.md)
+- Documentation index in [docs/README.md](/Users/cronberry/Hms/docs/README.md)
 
 ## Prerequisites
 
@@ -125,18 +128,20 @@ GET /metrics
 GET /metrics/summary
 ```
 
-## Future Integration Notes
+## Integration Notes
 
-- Channel managers and OTAs should be added behind dedicated integration modules that translate external reservations into the internal booking service.
+- The active reservation domain is `ReservationGroup` plus `ReservationRoom`, with OTA/channel import as the only supported intake path.
+- Zodomus is the first real external channel adapter in the backend. Availability sync, rate sync, reservation queue polling, reservation detail fetch, and reservation import are implemented behind the channel module.
+- Zodomus onboarding is still incomplete in one important area: the provider-side `rooms-activation` flow described in the newer Zodomus docs is not yet wired into the backend setup path.
 - WhatsApp automation is isolated behind `WhatsAppNotificationService`, so Twilio or Gupshup can replace the mock sender without changing booking logic.
-- Booking creation notifies the guest and also notifies the hotel owner using the property phone number. Set `WHATSAPP_PROVIDER=cloud_api`, `WABA_ACCESS_TOKEN`, and `WABA_PHONE_NUMBER_ID` to send through WhatsApp Cloud API; otherwise mock logs are used.
+- Imported reservation intake notifies the guest and also notifies the hotel owner using the property phone number. Set `WHATSAPP_PROVIDER=cloud_api`, `WABA_ACCESS_TOKEN`, and `WABA_PHONE_NUMBER_ID` to send through WhatsApp Cloud API; otherwise mock logs are used.
 - Payments are isolated behind a provider service. The current provider is mock/local, but the boundary is ready for Razorpay, Stripe, or terminal/cash workflows with webhook reconciliation.
 - Webhook foundations are available through `POST /webhooks/:domain/:provider` with HMAC verification using `PAYMENT_WEBHOOK_SECRET` and `CHANNEL_WEBHOOK_SECRET`, but live provider-specific signature formats and event handlers still need to be implemented.
 - Accepted webhooks and channel sync requests enqueue background jobs that can be inspected through `GET /background-jobs` and retried from dead-letter state through `POST /background-jobs/:id/retry`.
-- Booking confirmations, hotel-owner booking notifications, and check-in reminders also enqueue background jobs so delivery can retry and dead-letter safely.
+- Reservation confirmations, hotel-owner reservation notifications, and check-in reminders also enqueue background jobs so delivery can retry and dead-letter safely.
 - Recommended first dashboard panels and alert thresholds are defined in [docs/metrics-alerting.md](/Users/cronberry/Hms/docs/metrics-alerting.md).
-- Razorpay, Stripe, SiteMinder, Booking.com, and Airbnb provider paths are explicit adapter placeholders that reject live calls until credentials, webhook verification, and idempotency are implemented.
-- Channel managers and OTAs must integrate through availability/rate/booking translation modules, not by writing directly to booking tables.
+- Razorpay and Stripe are still payment placeholders. SiteMinder, Booking.com direct, and Airbnb direct adapters are still channel placeholders. Zodomus is the only real external channel adapter currently implemented.
+- Channel integrations must continue to flow through provider adapters, mappings, sync logs, and reservation import services rather than writing directly to reservation tables.
 
 Base URL: `http://localhost:3000`
 
@@ -356,62 +361,18 @@ GET /guests?page=1&limit=25&search=Priya
 
 ### Create Booking
 
-```http
-POST /bookings
-Content-Type: application/json
-```
+Reservation intake comes from OTA/channel import into `ReservationGroup` and `ReservationRoom`.
 
-```json
-{
-  "property_id": "property-id",
-  "guest_id": "9ddcb1e2-4388-4a16-b7f6-98549f5b73ef",
-  "room_category_id": "room-category-id",
-  "rate_plan_id": "rate-plan-id",
-  "check_in_date": "2026-05-01",
-  "check_out_date": "2026-05-03"
-}
-```
-
-Rules:
-
-- Dates must use `YYYY-MM-DD`.
-- `check_out_date` must be after `check_in_date`.
-- Active overlapping bookings are checked against room-category inventory.
-- Concurrent booking creation for the same property and room category is serialized with a PostgreSQL advisory transaction lock before inventory is counted.
-- `total_amount` is calculated as the sum of per-night computed rates from the rate-plan base rate plus active pricing rules.
-- Supported pricing-rule types are `WEEKEND`, `DATE_RANGE`, and `OCCUPANCY`.
-- A physical room is assigned during check-in.
-- Booking creation sends a mock WhatsApp confirmation.
-
-### List Bookings
+### Reservation Groups
 
 ```http
-GET /bookings?page=1&limit=25&search=Priya
+GET /bookings/groups?page=1&limit=25&search=Priya
+PUT /bookings/groups/rooms/:id/checkin
+PUT /bookings/groups/rooms/:id/checkout
+POST /bookings/groups/rooms/:id/checkin-reminder
 ```
 
-### Check In
-
-```http
-PUT /bookings/:id/checkin
-```
-
-Marks the booking as `CHECKED_IN` and the assigned room as `OCCUPIED`.
-
-### Check Out
-
-```http
-PUT /bookings/:id/checkout
-```
-
-Marks the booking as `CHECKED_OUT` and the assigned room as `AVAILABLE`.
-
-### Send Check-In Reminder
-
-```http
-POST /bookings/:id/checkin-reminder
-```
-
-Sends a mock WhatsApp reminder. This route is intentionally thin so it can later be replaced or called by a scheduler integrated with Twilio, Gupshup, or another WhatsApp Business API provider.
+Operational actions now happen at imported reservation-room line level.
 
 ## Billing API
 
@@ -609,7 +570,7 @@ Audit logs are available to `SUPER_ADMIN` and `ADMIN` users and are property-sco
 GET /audit-logs?page=1&limit=25&search=refund
 ```
 
-Audit logs are recorded for booking creation, check-in, checkout, room create/update/delete, payment collection/refunds, channel connection/mapping creation, and channel sync success/failure.
+Audit logs are recorded for reservation-room check-in/checkout, room create/update/delete, payment collection/refunds, channel connection/mapping creation, and channel sync success/failure.
 
 ## Media Uploads
 

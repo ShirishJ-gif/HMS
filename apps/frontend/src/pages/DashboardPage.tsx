@@ -24,13 +24,13 @@ export function DashboardPage() {
       {data && (
         <>
           <div className="metric-grid">
-            <MetricCard label="Bookings today" value={data.total_bookings_today.toString()} tone="gold" />
+            <MetricCard label="Reservation groups today" value={data.reservation_groups_today.toString()} tone="gold" />
             <MetricCard label="Occupancy" value={`${data.occupancy_rate}%`} tone="green" />
             <MetricCard label="Revenue today" value={formatCurrency(data.revenue_today)} tone="blue" />
             <MetricCard label="Rooms occupied" value={`${data.occupied_rooms}/${data.total_rooms}`} tone="rose" />
           </div>
 
-          <div className="ops-layout">
+          <div className="dashboard-compact-grid">
             <article className="insight-panel insight-panel-primary">
               <div className="section-heading">
                 <div>
@@ -44,8 +44,8 @@ export function DashboardPage() {
               <div className="signal-grid">
                 <SignalCard
                   label="Check-in pressure"
-                  value={data.total_bookings_today > 6 ? 'Busy' : 'Normal'}
-                  detail={`${data.total_bookings_today} bookings created today`}
+                  value={data.reservation_room_arrivals_today > 6 ? 'Busy' : 'Normal'}
+                  detail={`${data.reservation_room_arrivals_today} room-stay arrivals due today`}
                 />
                 <SignalCard
                   label="Room coverage"
@@ -57,20 +57,11 @@ export function DashboardPage() {
                   value={data.revenue_today > 0 ? 'Collecting' : 'Flat'}
                   detail={formatCurrency(data.revenue_today)}
                 />
-              </div>
-            </article>
-
-            <article className="insight-panel">
-              <div className="section-heading">
-                <div>
-                  <p className="eyebrow">Workflow</p>
-                  <h3>Daily runbook</h3>
-                </div>
-              </div>
-              <div className="workflow-list">
-                <SetupStep number="01" title="Commercial setup" text="Keep rate plans, pricing rules, and category inventory current." />
-                <SetupStep number="02" title="Front desk" text="Create bookings, register guests, and assign physical rooms at check-in." />
-                <SetupStep number="03" title="Operations" text="Track housekeeping, revenue collection, and channel sync health." />
+                <SignalCard
+                  label="Departures"
+                  value={data.reservation_room_departures_today > 0 ? data.reservation_room_departures_today.toString() : 'Quiet'}
+                  detail={`${data.reservation_room_departures_today} room-stay departures due today`}
+                />
               </div>
             </article>
 
@@ -84,15 +75,15 @@ export function DashboardPage() {
               <ul className="attention-list">
                 <li>
                   <strong>Inventory</strong>
-                  <span>Check availability and maintenance rooms before accepting more high-demand dates.</span>
+                  <span>{data.active_reservation_groups} active reservation groups are currently in play across imported OTA stays.</span>
                 </li>
                 <li>
                   <strong>Payments</strong>
-                  <span>Reconcile checked-out bookings against pending invoices and partial collections.</span>
+                  <span>{formatCurrency(data.pending_balance_total)} remains open across pending and partial invoices.</span>
                 </li>
                 <li>
-                  <strong>Integrations</strong>
-                  <span>Review channel syncs and background-job failures from the integrations and audit sections.</span>
+                  <strong>Operations</strong>
+                  <span>{data.open_housekeeping_tasks} housekeeping tasks are still open and should be cleared before the next arrival wave.</span>
                 </li>
               </ul>
             </article>
@@ -108,16 +99,6 @@ function MetricCard({ label, value, tone }: { label: string; value: string; tone
     <article className={`metric-card ${tone}`}>
       <p>{label}</p>
       <strong>{value}</strong>
-    </article>
-  );
-}
-
-function SetupStep({ number, title, text }: { number: string; title: string; text: string }) {
-  return (
-    <article className="setup-card workflow-step">
-      <span>{number}</span>
-      <h3>{title}</h3>
-      <p>{text}</p>
     </article>
   );
 }

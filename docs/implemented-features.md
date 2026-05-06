@@ -50,13 +50,30 @@ This document lists the features currently implemented in the Hotel Management S
 ## Room Inventory
 
 - Create physical rooms.
+- Alias endpoint: `POST /physical-rooms`.
 - List physical rooms with pagination/search.
 - Update room details/status.
 - Delete rooms when no dependent records block deletion.
 - Room statuses: `AVAILABLE`, `OCCUPIED`, `MAINTENANCE`.
-- Maintenance rooms are excluded from sellable inventory.
-- Frontend Rooms page supports room creation, search, list view, status display, and delete action.
+- Create, list, and delete date-ranged room out-of-service periods.
+- Temporary room blocks can now be modeled by date range instead of only with permanent `MAINTENANCE` status.
+- Both `MAINTENANCE` rooms and dated out-of-service periods are excluded from sellable inventory.
+- Frontend Rooms page supports room creation, search, list view, status display, delete action, and dated out-of-service period management.
 - Room create/delete actions now disable duplicate submits while requests are in flight and surface backend request-aware error messages.
+- Centralized inventory calendar is now persisted per property + room category + date.
+- Inventory rows store:
+  - total rooms
+  - blocked rooms
+  - reserved rooms
+  - available rooms
+  - stop-sell
+  - minimum stay
+  - maximum stay
+- Manual category-level inventory blocks are supported through `POST /inventory/block`.
+- Inventory restriction management is supported through `POST /inventory/restrictions`.
+- `GET /inventory-calendar` returns room-type/date-level inventory truth.
+- Restriction values are currently enforced inside HMS only.
+- Stop-sell, minimum stay, and maximum stay are not yet synced outward to Zodomus or OTAs.
 
 ## Guest Registry
 
@@ -68,28 +85,41 @@ This document lists the features currently implemented in the Hotel Management S
 
 ## Booking And Reservations
 
-- Create bookings against room-category inventory.
-- Booking date validation using `YYYY-MM-DD`.
+- Reservation intake now supports:
+  - OTA/channel import
+  - direct reservation creation
+- Direct reservation endpoint: `POST /reservations/direct`.
+- Reservation date validation using `YYYY-MM-DD`.
 - `check_out_date` must be after `check_in_date`.
-- Booking total is calculated as the sum of per-night dynamic rates.
+- Reservation-room totals are calculated as the sum of per-night dynamic rates.
 - Dynamic nightly pricing starts from the rate-plan base rate and adds all applicable active pricing-rule percentages against that base.
-- Overlapping bookings are allowed until category inventory is sold out.
+- Overlapping reservation-room stays are allowed until category inventory is sold out.
 - Active overlap statuses are `BOOKED` and `CHECKED_IN`.
-- Booking creation serializes concurrent sells per property and room category with a PostgreSQL advisory transaction lock to prevent last-slot oversell races.
+- Direct bookings allocate room-type inventory transactionally against the persisted inventory calendar.
+- OTA/Zodomus reservation import now uses the same centralized allocation/release core as direct reservations.
+- Reservation allocation now enforces:
+  - stop-sell
+  - minimum stay
+  - maximum stay
 - Check-in assigns an available physical room and marks the room `OCCUPIED`.
-- Check-out marks the booking `CHECKED_OUT` and room `AVAILABLE`.
-- Check-out creates or preserves a pending invoice for the booking.
-- List bookings with pagination/search.
-- Frontend Bookings page supports creation, search, timeline/ledger views, inline booking detail expansion, check-in, and checkout.
-- Booking actions now disable duplicate submits while requests are in flight and surface backend request-aware error messages.
+- Check-out marks the reservation room `CHECKED_OUT` and room `AVAILABLE`.
+- Check-out creates or preserves a pending invoice for the reservation room.
+- List reservation groups with pagination/search.
+- Frontend Bookings page supports imported-reservation operations, search, timeline/ledger views, inline detail expansion, check-in, and checkout.
+- Reservation actions now disable duplicate submits while requests are in flight and surface backend request-aware error messages.
 
 ## Availability
 
 - Category-level availability endpoint.
 - Availability accepts property and date range query params.
-- Availability is calculated from physical inventory minus active overlapping bookings.
-- Maintenance rooms are counted as out of service and excluded from available inventory.
-- Frontend Availability page displays a queried-night calendar strip plus category inventory, booked count, out-of-service count, available count, and starting dynamic rate for the selected start date.
+- Availability is now backed by the persisted inventory calendar.
+- Maintenance rooms and dated out-of-service periods are counted as out of service and excluded from available inventory.
+- Frontend Availability page displays:
+  - queried-night inventory summary
+  - restriction management form
+  - per-night inventory calendar rows
+  - stop-sell / min-stay / max-stay visibility
+- Restriction controls are labeled as internal-only until outbound Zodomus restriction sync is implemented.
 
 ## Housekeeping
 
@@ -104,13 +134,13 @@ This document lists the features currently implemented in the Hotel Management S
 
 ## Billing
 
-- Generate invoices for bookings.
+- Generate invoices for reservation rooms.
 - List invoices.
 - Get invoice details.
 - Add extra charges to invoices.
 - Administrative payment-status correction endpoint.
-- Billing allows one invoice per booking.
-- Billing total is booking amount plus tax plus extra charges.
+- Billing allows one invoice per reservation room.
+- Billing total is reservation-room amount plus tax plus extra charges.
 - Billing responses expose paid total, refunded total, and balance due.
 
 ## Payments
@@ -126,28 +156,46 @@ This document lists the features currently implemented in the Hotel Management S
 - Successful collections update invoice status to `PARTIAL` or `PAID`.
 - Refunds are recorded as separate immutable transactions.
 - Refunds recalculate invoice payment status.
-- Frontend Payments page supports invoice generation for checked-out bookings, payment collection, compact filters, invoice view, and transaction view.
+- Frontend Payments page supports invoice generation for checked-out imported room stays, reservation folios, payment collection, compact filters, invoice view, and transaction view.
 - Payment actions now disable duplicate submits while requests are in flight and surface backend request-aware error messages.
 
 ## Channel Manager Boundary
 
 - List channel connections.
 - Create channel connections.
+- Alias endpoints:
+  - `POST /zodomus/mapping/property`
+  - `POST /zodomus/mapping/room`
+  - `POST /zodomus/mapping/rate`
+  - `POST /zodomus/sync/availability`
+  - `POST /zodomus/sync/rates`
+- Zodomus sync currently covers availability and rates only.
+- Stop-sell, minimum stay, and maximum stay are not pushed to Zodomus yet.
 - Create room-category mappings to external room IDs.
 - Create rate-plan mappings to external rate IDs.
 - Trigger syncs for `INVENTORY`, `RATES`, and `BOOKINGS`.
+- Inventory sync builds daily provider room/date rows from the centralized inventory calendar instead of one window-level aggregate payload.
+- Inventory sync excludes both permanent maintenance rooms and dated out-of-service periods on the affected dates.
 - Channel sync supports `Idempotency-Key`.
 - Idempotent channel sync requests are serialized per idempotency key so concurrent replays do not create duplicate sync-side effects or duplicate sync logs.
 - Store channel sync request/response payloads and errors in sync logs.
+- Inventory syncs can now end as `SUCCEEDED`, `PARTIAL_FAILED`, or `FAILED`.
+- Inventory sync provider responses now store room/date `row_results` plus success/failure summary counts.
+- Failed inventory rows can be retried through `POST /channels/:id/sync-logs/:syncLogId/retry-failed-rows`.
+- HMS persists each inventory row result in `inventory_sync_rows`.
+- HMS exposes inventory reconciliation through `GET /channels/:id/inventory-reconciliation`.
+- HMS exposes persisted row-level inventory analytics through `GET /channels/:id/inventory-row-results`.
 - Channel sync requests now return a queued sync log immediately and run provider pushes through the background-job worker.
 - `MOCK` channel provider accepts sync payloads locally.
 - `SITEMINDER`, `BOOKING_COM`, and `AIRBNB` are explicit adapter placeholders that reject live syncs until provider credentials, retry policy, and webhook reconciliation are implemented.
 - Channel syncs build payloads from internal inventory/rate mappings and do not write directly to booking or room tables.
-- Frontend Channels page includes summary tiles, active connection workspace, mapping forms, sync controls, mapping tables, connection table, recent sync logs, background-job surfaces, webhook-event surfaces, dead-letter retry controls, and metrics-summary snapshots.
+- HMS can update a Zodomus connection external hotel/property mapping without recreating the connection.
+- Frontend Channels page includes summary tiles, active connection workspace, mapping forms, sync controls, inventory reconciliation, persisted failed-row analytics, mapping tables, connection table, recent sync logs, background-job surfaces, webhook-event surfaces, dead-letter retry controls, and metrics-summary snapshots.
 - Channel connection, mapping, and sync actions now disable duplicate submits while requests are in flight and surface backend request-aware error messages.
 
 ## Webhook Foundation
 
+- Zodomus-specific webhook alias: `POST /webhooks/zodomus`.
 - Generic inbound webhook endpoint: `POST /webhooks/:domain/:provider`.
 - Admin webhook-event listing endpoint: `GET /webhook-events`.
 - Admin background-job listing endpoint: `GET /background-jobs`.
@@ -159,6 +207,13 @@ This document lists the features currently implemented in the Hotel Management S
 - Background jobs are persisted with retry state, scheduled run time, attempt counts, and dead-letter status.
 - Webhook replays are deduplicated through a persisted dedupe key and advisory-lock serialization.
 - Signed webhook replay handling, queued channel sync execution, background-job visibility, and dead-letter retry behavior are covered by PostgreSQL-backed integration tests.
+- Docker-backed backend integration tests also cover:
+  - direct reservation allocation
+  - OTA multi-room import
+  - centralized inventory reconciliation
+  - stop-sell enforcement
+  - minimum-stay enforcement
+  - maximum-stay enforcement
 
 ## Audit Logs
 
@@ -168,14 +223,14 @@ This document lists the features currently implemented in the Hotel Management S
 - Hotel admins see property-scoped audit records.
 - List audit logs with pagination/search.
 - Audit actions include `CREATE`, `UPDATE`, `DELETE`, `CHECK_IN`, `CHECK_OUT`, `PAYMENT_COLLECT`, `PAYMENT_REFUND`, and `CHANNEL_SYNC`.
-- Current audit coverage includes booking creation, check-in, checkout, room create/update/delete, payment collection/refunds, channel connection creation, channel mappings, and channel sync success/failure.
+- Current audit coverage includes reservation-room check-in/checkout, room create/update/delete, payment collection/refunds, channel connection creation, channel mappings, and channel sync success/failure.
 - Frontend Audit Logs page supports search, actor/action filters, summary tiles, and event-stream review of recorded actions.
 
 ## Notifications
 
 - WhatsApp notification service with `mock` and WhatsApp Cloud API modes.
-- Booking creation sends a mock booking confirmation.
-- Booking creation sends a hotel-owner notification to the property phone when configured.
+- Imported reservation intake sends a mock booking confirmation.
+- Imported reservation intake sends a hotel-owner notification to the property phone when configured.
 - Owner booking notifications include quick-reply options for viewing the booking and calling the guest.
 - Check-in reminder endpoint sends a mock reminder.
 - Booking confirmations, owner notifications, and check-in reminders now enqueue `NOTIFICATION_SEND` background jobs with retry and dead-letter handling instead of sending inline from the request path.
@@ -185,7 +240,7 @@ This document lists the features currently implemented in the Hotel Management S
 ## Dashboard
 
 - Dashboard summary endpoint.
-- Metrics include bookings today, occupancy rate, occupied rooms, total rooms, and revenue today.
+- Metrics include reservation groups today, occupancy rate, occupied rooms, total rooms, and revenue today.
 - Today-based metrics use Asia/Kolkata day boundaries.
 - Frontend Dashboard page displays operational metric cards and setup guidance.
 
@@ -210,6 +265,8 @@ This document lists the features currently implemented in the Hotel Management S
 - Dashboard page.
 - Property Setup page.
 - Availability page.
+- Availability page now includes restriction management for room types and date ranges.
+- Availability page clearly labels restriction controls as internal-only / not synced to Zodomus yet.
 - Rooms page.
 - Bookings page.
 - Guests page.
@@ -249,7 +306,7 @@ Implemented paginated/searchable endpoints:
 - `GET /rate-plans`
 - `GET /rooms`
 - `GET /guests`
-- `GET /bookings`
+- `GET /bookings/groups`
 - `GET /billings`
 - `GET /payments`
 - `GET /housekeeping`

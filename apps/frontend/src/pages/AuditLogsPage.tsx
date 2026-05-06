@@ -40,7 +40,7 @@ export function AuditLogsPage() {
         <div>
           <p className="eyebrow">Governance</p>
           <h2>Audit Logs</h2>
-          <p className="page-subtitle">Review sensitive operational actions across rooms, bookings, payments, and channels.</p>
+          <p className="page-subtitle">Review sensitive operational actions across rooms, reservations, payments, and channels.</p>
         </div>
       </div>
 

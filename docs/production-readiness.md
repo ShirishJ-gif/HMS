@@ -77,7 +77,7 @@ WABA_PHONE_NUMBER_ID=...
 WABA_API_VERSION=v20.0
 ```
 
-Booking creation sends a guest confirmation and a hotel-owner notification to `property.phone`. Check-in reminders also run through the same delivery path. These notifications are now queued through background jobs so delivery failures can retry and dead-letter. Production should add webhook handling for replies, delivery status tracking, opt-in/consent policy, and approved template messages where required.
+Imported reservation intake sends a guest confirmation and a hotel-owner notification to `property.phone`. Check-in reminders also run through the same delivery path. These notifications are now queued through background jobs so delivery failures can retry and dead-letter. Production should add webhook handling for replies, delivery status tracking, opt-in/consent policy, and approved template messages where required.
 
 ## Deployment Checklist
 

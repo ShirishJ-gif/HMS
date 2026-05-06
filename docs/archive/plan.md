@@ -1,3 +1,7 @@
+> Obsolete document.
+>
+> This is an older SiteMinder-focused planning note from before the current Zodomus-first reservation-centric direction. Use [docs/README.md](/Users/cronberry/Hms/docs/README.md) to find current docs.
+
  # SiteMinder Integration Plan for HMS
 
   ## Summary

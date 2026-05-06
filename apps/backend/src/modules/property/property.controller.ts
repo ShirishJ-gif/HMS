@@ -34,6 +34,12 @@ export class PropertyController {
     return this.propertyService.createProperty(createPropertyDto);
   }
 
+  @Post('hotels')
+  @Roles(UserRole.SUPER_ADMIN)
+  createHotel(@Body() createPropertyDto: CreatePropertyDto) {
+    return this.propertyService.createProperty(createPropertyDto);
+  }
+
   @Get('properties')
   findProperties(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationQueryDto) {
     return this.propertyService.findProperties(query, user);
@@ -54,6 +60,12 @@ export class PropertyController {
   @Post('room-categories')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   createRoomCategory(@CurrentUser() user: AuthenticatedUser, @Body() createRoomCategoryDto: CreateRoomCategoryDto) {
+    return this.propertyService.createRoomCategory(createRoomCategoryDto, user);
+  }
+
+  @Post('room-types')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  createRoomType(@CurrentUser() user: AuthenticatedUser, @Body() createRoomCategoryDto: CreateRoomCategoryDto) {
     return this.propertyService.createRoomCategory(createRoomCategoryDto, user);
   }
 

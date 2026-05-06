@@ -1,19 +1,10 @@
-import { FormEvent, Fragment, useState } from 'react';
+import { Fragment, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { PaginatedResponse, unwrapList } from '../api/pagination';
-import { Booking, Guest, Property, RatePlan, RoomCategory } from '../api/types';
+import { Property, ReservationGroup } from '../api/types';
 import { FilterBar } from '../components/FilterBar';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
-
-const defaultForm = {
-  property_id: '',
-  guest_id: '',
-  room_category_id: '',
-  rate_plan_id: '',
-  check_in_date: '',
-  check_out_date: '',
-};
 
 export function BookingsPage() {
   const [reloadKey, setReloadKey] = useState(0);
@@ -21,282 +12,116 @@ export function BookingsPage() {
   const [propertyFilter, setPropertyFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [viewMode, setViewMode] = useState<'timeline' | 'ledger'>('timeline');
-  const [expandedBookingId, setExpandedBookingId] = useState<string | null>(null);
-  const [form, setForm] = useState(defaultForm);
+  const [expandedReservationGroupId, setExpandedReservationGroupId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [pendingBookingActionId, setPendingBookingActionId] = useState<string | null>(null);
-  const bookingsState = useAsync(
-    async () => (await api.get<PaginatedResponse<Booking>>('/bookings', { params: { search: search || undefined } })).data,
+  const [pendingReservationRoomActionId, setPendingReservationRoomActionId] = useState<string | null>(null);
+  const reservationGroupsState = useAsync(
+    async () =>
+      (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/groups', { params: { search: search || undefined } })).data,
     [reloadKey, search],
   );
   const propertiesState = useAsync(
     async () => unwrapList((await api.get<PaginatedResponse<Property>>('/properties', { params: { limit: 100 } })).data),
     [],
   );
-  const guestsState = useAsync(async () => (await api.get<PaginatedResponse<Guest>>('/guests', { params: { limit: 100 } })).data, []);
-  const categoriesState = useAsync(
-    async () => unwrapList((await api.get<PaginatedResponse<RoomCategory>>('/room-categories', { params: { limit: 100 } })).data),
-    [],
-  );
-  const ratePlansState = useAsync(
-    async () => unwrapList((await api.get<PaginatedResponse<RatePlan>>('/rate-plans', { params: { limit: 100 } })).data),
-    [],
-  );
 
-  async function submitBooking(event: FormEvent) {
-    event.preventDefault();
+  async function checkInReservationRoom(id: string) {
     setActionError(null);
-    setSubmitting(true);
+    setPendingReservationRoomActionId(id);
 
     try {
-      await api.post('/bookings', form);
-      setForm(defaultForm);
+      await api.put(`/bookings/groups/rooms/${id}/checkin`);
       setReloadKey((value) => value + 1);
     } catch (error) {
       setActionError(getApiErrorMessage(error));
     } finally {
-      setSubmitting(false);
+      setPendingReservationRoomActionId(null);
     }
   }
 
-  async function checkIn(id: string) {
+  async function checkOutReservationRoom(id: string) {
     setActionError(null);
-    setPendingBookingActionId(id);
+    setPendingReservationRoomActionId(id);
 
     try {
-      await api.put(`/bookings/${id}/checkin`);
+      await api.put(`/bookings/groups/rooms/${id}/checkout`);
       setReloadKey((value) => value + 1);
     } catch (error) {
       setActionError(getApiErrorMessage(error));
     } finally {
-      setPendingBookingActionId(null);
+      setPendingReservationRoomActionId(null);
     }
   }
 
-  async function checkOut(id: string) {
+  async function sendReservationRoomReminder(id: string) {
     setActionError(null);
-    setPendingBookingActionId(id);
+    setPendingReservationRoomActionId(id);
 
     try {
-      await api.put(`/bookings/${id}/checkout`);
+      await api.post(`/bookings/groups/rooms/${id}/checkin-reminder`);
       setReloadKey((value) => value + 1);
     } catch (error) {
       setActionError(getApiErrorMessage(error));
     } finally {
-      setPendingBookingActionId(null);
+      setPendingReservationRoomActionId(null);
     }
   }
 
-  const guests = guestsState.data?.data ?? [];
   const properties = propertiesState.data ?? [];
-  const categories = categoriesState.data ?? [];
-  const ratePlans = ratePlansState.data ?? [];
-  const bookings = (bookingsState.data?.data ?? []).filter((booking) => {
-    if (propertyFilter !== 'ALL' && booking.property.id !== propertyFilter) {
+  const reservationGroups = (reservationGroupsState.data?.data ?? []).filter((group) => {
+    if (propertyFilter !== 'ALL' && group.property.id !== propertyFilter) {
       return false;
     }
 
-    if (statusFilter !== 'ALL' && booking.booking_status !== statusFilter) {
+    if (statusFilter !== 'ALL' && group.reservation_status !== statusFilter) {
       return false;
     }
 
     return true;
   });
-  const selectedRatePlan = ratePlans.find((ratePlan) => ratePlan.id === form.rate_plan_id);
-  const estimatedNights = calculateNights(form.check_in_date, form.check_out_date);
-  const estimatedBaseTotal =
-    selectedRatePlan && estimatedNights > 0 ? selectedRatePlan.base_rate * estimatedNights : null;
-  const bookedCount = bookings.filter((booking) => booking.booking_status === 'BOOKED').length;
-  const checkedInCount = bookings.filter((booking) => booking.booking_status === 'CHECKED_IN').length;
-  const checkedOutCount = bookings.filter((booking) => booking.booking_status === 'CHECKED_OUT').length;
-  const timeline = buildTimelineWindow(bookings, 14);
+  const bookedCount = reservationGroups.filter((group) => group.reservation_status === 'BOOKED').length;
+  const checkedInCount = reservationGroups.filter((group) => group.reservation_status === 'CHECKED_IN').length;
+  const checkedOutCount = reservationGroups.filter((group) => group.reservation_status === 'CHECKED_OUT').length;
+  const timelineRows = [
+    ...reservationGroups.flatMap((group) =>
+      group.rooms.map((room) => ({
+        id: `reservation-room:${room.id}`,
+        label: room.guest_name ?? group.primary_guest?.name ?? group.external_reservation_id,
+        secondary: `${group.property.name} · ${group.external_reservation_id}`,
+        detail: `${room.room_category.name} · ${room.total_amount == null ? '-' : formatCurrency(room.total_amount)}`,
+        check_in_date: room.arrival_date,
+        check_out_date: room.departure_date,
+        status: room.reservation_status,
+      })),
+    ),
+  ];
+  const timeline = buildTimelineWindow(timelineRows, 14);
 
   return (
     <section>
       <div className="page-header">
         <div>
           <p className="eyebrow">Reservations</p>
-          <h2>Bookings</h2>
-          <p className="page-subtitle">Create reservations, manage room assignment at arrival, and track reservation status from one ledger.</p>
+          <h2>Reservations</h2>
+          <p className="page-subtitle">Review imported reservations, manage room assignment at arrival, and track reservation status from one ledger.</p>
         </div>
       </div>
 
-      <div className="booking-layout">
-        <form className="card booking-form-card" onSubmit={submitBooking}>
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">New reservation</p>
-              <h3>Create booking</h3>
-            </div>
-          </div>
-          <div className="form-grid booking-form-grid">
-            <label>
-              Property
-              <select
-                onChange={(event) =>
-                  setForm({
-                    ...form,
-                    property_id: event.target.value,
-                    guest_id: '',
-                    room_category_id: '',
-                    rate_plan_id: '',
-                  })
-                }
-                required
-                value={form.property_id}
-              >
-                <option value="">Select property</option>
-                {properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Guest
-              <select
-                onChange={(event) => setForm({ ...form, guest_id: event.target.value })}
-                required
-                value={form.guest_id}
-              >
-                <option value="">Select guest</option>
-                {guests
-                  .filter((guest) => !form.property_id || guest.property_id === form.property_id)
-                  .map((guest) => (
-                    <option key={guest.id} value={guest.id}>
-                      {guest.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label>
-              Category
-              <select
-                onChange={(event) => setForm({ ...form, room_category_id: event.target.value, rate_plan_id: '' })}
-                required
-                value={form.room_category_id}
-              >
-                <option value="">Select category</option>
-                {categories
-                  .filter((category) => !form.property_id || category.property_id === form.property_id)
-                  .map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label>
-              Rate plan
-              <select
-                onChange={(event) => setForm({ ...form, rate_plan_id: event.target.value })}
-                required
-                value={form.rate_plan_id}
-              >
-                <option value="">Select rate</option>
-                {ratePlans
-                  .filter(
-                    (ratePlan) =>
-                      (!form.property_id || ratePlan.property_id === form.property_id) &&
-                      (!form.room_category_id || ratePlan.room_category_id === form.room_category_id),
-                  )
-                  .map((ratePlan) => (
-                    <option key={ratePlan.id} value={ratePlan.id}>
-                      {ratePlan.name} - {formatCurrency(ratePlan.base_rate)}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label>
-              Check-in
-              <input
-                onChange={(event) => setForm({ ...form, check_in_date: event.target.value })}
-                placeholder="2026-05-01"
-                required
-                type="date"
-                value={form.check_in_date}
-              />
-            </label>
-            <label>
-              Check-out
-              <input
-                onChange={(event) => setForm({ ...form, check_out_date: event.target.value })}
-                placeholder="2026-05-03"
-                required
-                type="date"
-                value={form.check_out_date}
-              />
-            </label>
-          </div>
-          <div className="booking-form-footer">
-            <button className="primary-button" type="submit">
-              {submitting ? 'Creating...' : 'Create booking'}
-            </button>
-          </div>
-        </form>
-
-        <aside className="booking-sidepanel">
-          <article className="insight-panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Reservation mix</p>
-                <h3>Status snapshot</h3>
-              </div>
-            </div>
-            <div className="signal-grid compact-signal-grid">
-              <SignalStat label="Booked" value={bookedCount.toString()} />
-              <SignalStat label="Checked in" value={checkedInCount.toString()} />
-              <SignalStat label="Checked out" value={checkedOutCount.toString()} />
-            </div>
-          </article>
-
-          <article className="insight-panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Quote context</p>
-                <h3>Current selection</h3>
-              </div>
-            </div>
-            <dl className="detail-list">
-              <div>
-                <dt>Rate plan</dt>
-                <dd>{selectedRatePlan?.name ?? 'Not selected'}</dd>
-              </div>
-              <div>
-                <dt>Base rate</dt>
-                <dd>{selectedRatePlan ? formatCurrency(selectedRatePlan.base_rate) : '-'}</dd>
-              </div>
-              <div>
-                <dt>Nights</dt>
-                <dd>{estimatedNights > 0 ? estimatedNights : '-'}</dd>
-              </div>
-              <div>
-                <dt>Base total</dt>
-                <dd>{estimatedBaseTotal == null ? '-' : formatCurrency(estimatedBaseTotal)}</dd>
-              </div>
-            </dl>
-            <p className="muted booking-note">
-              Final booking totals apply active dynamic pricing rules at confirmation time.
-            </p>
-          </article>
-        </aside>
+      <div className="channel-summary-grid booking-summary-grid">
+        <SignalStat label="Booked" value={bookedCount.toString()} />
+        <SignalStat label="Checked in" value={checkedInCount.toString()} />
+        <SignalStat label="Checked out" value={checkedOutCount.toString()} />
       </div>
 
       {actionError && <p className="error">{actionError}</p>}
 
-      {(bookingsState.loading ||
-        propertiesState.loading ||
-        guestsState.loading ||
-        categoriesState.loading ||
-        ratePlansState.loading) && (
-        <p className="muted">Loading booking data...</p>
+      {(reservationGroupsState.loading || propertiesState.loading) && (
+        <p className="muted">Loading reservation data...</p>
       )}
 
       <FilterBar title="Reservation filters">
         <label>
-          Search bookings
+          Search reservations
           <input
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Guest, phone, property, category, or room"
@@ -341,18 +166,8 @@ export function BookingsPage() {
           Ledger
         </button>
       </div>
-      {(bookingsState.error ||
-        propertiesState.error ||
-        guestsState.error ||
-        categoriesState.error ||
-        ratePlansState.error) && (
-        <p className="error">
-          {bookingsState.error ??
-            propertiesState.error ??
-            guestsState.error ??
-            categoriesState.error ??
-            ratePlansState.error}
-        </p>
+      {(reservationGroupsState.error || propertiesState.error) && (
+        <p className="error">{reservationGroupsState.error ?? propertiesState.error}</p>
       )}
 
       {viewMode === 'timeline' && timeline.days.length > 0 && (
@@ -370,7 +185,7 @@ export function BookingsPage() {
             className="timeline-header-grid"
             style={{ gridTemplateColumns: `18rem repeat(${timeline.days.length}, minmax(2.3rem, 1fr))` }}
           >
-            <div className="timeline-header-title">Booking</div>
+            <div className="timeline-header-title">Reservation room</div>
             {timeline.days.map((day) => (
               <div className="timeline-header-day" key={day.date}>
                 <strong>{day.dayLabel}</strong>
@@ -379,24 +194,22 @@ export function BookingsPage() {
             ))}
           </div>
           <div className="timeline-body">
-            {bookings.map((booking) => (
-              <article className="timeline-row-card" key={booking.id}>
+            {timelineRows.map((stay) => (
+              <article className="timeline-row-card" key={stay.id}>
                 <div
                   className="timeline-grid"
                   style={{ gridTemplateColumns: `18rem repeat(${timeline.days.length}, minmax(2.3rem, 1fr))` }}
                 >
                   <div className="timeline-row-summary">
-                    <strong>{booking.guest.name}</strong>
-                    <span>{booking.property.name}</span>
-                    <span className="cell-note">
-                      {booking.room_category.name} · {formatCurrency(booking.total_amount)}
-                    </span>
+                    <strong>{stay.label}</strong>
+                    <span>{stay.secondary}</span>
+                    <span className="cell-note">{stay.detail}</span>
                   </div>
                   {timeline.days.map((day) => {
-                    const occupied = isDateWithinStay(day.date, booking.check_in_date, booking.check_out_date);
+                    const occupied = isDateWithinStay(day.date, stay.check_in_date, stay.check_out_date);
                     return (
-                      <div className={occupied ? 'timeline-cell occupied' : 'timeline-cell'} key={`${booking.id}-${day.date}`}>
-                        {occupied ? <span className={`timeline-cell-status ${booking.booking_status.toLowerCase()}`} /> : null}
+                      <div className={occupied ? 'timeline-cell occupied' : 'timeline-cell'} key={`${stay.id}-${day.date}`}>
+                        {occupied ? <span className={`timeline-cell-status ${stay.status.toLowerCase()}`} /> : null}
                       </div>
                     );
                   })}
@@ -410,97 +223,240 @@ export function BookingsPage() {
       <div className="table-card">
         <div className="table-heading">
           <div>
-            <p className="eyebrow">Reservation ledger</p>
-            <h3>{bookings.length} bookings</h3>
+            <p className="eyebrow">Imported OTA reservations</p>
+            <h3>{reservationGroups.length} reservation groups</h3>
           </div>
         </div>
         <table>
           <thead>
             <tr>
-              <th>Guest</th>
+              <th>Source / reservation</th>
               <th>Property</th>
-              <th>Category / Room</th>
-              <th>Dates</th>
+              <th>Primary guest</th>
+              <th>Rooms</th>
               <th>Total</th>
               <th>Status</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {bookings.map((booking) => (
-              <Fragment key={booking.id}>
+            {reservationGroups.map((group) => (
+              <Fragment key={group.id}>
                 <tr>
-                  <td>{booking.guest.name}</td>
-                  <td>{booking.property.name}</td>
                   <td>
-                    {booking.room_category.name}
+                    <strong>{group.source ?? 'ZODOMUS'}</strong>
                     <br />
-                    <span className="muted">Assigned: {booking.room.room_number ?? 'At check-in'}</span>
+                    <span className="muted">{group.external_reservation_id}</span>
+                    <br />
+                    <span className="cell-note">{group.external_status ?? 'Provider status unavailable'}</span>
+                  </td>
+                  <td>{group.property.name}</td>
+                  <td>
+                    {group.primary_guest?.name ?? 'Imported guest'}
+                    <br />
+                    <span className="muted">{group.primary_guest?.phone ?? '-'}</span>
                   </td>
                   <td>
-                    <div className="date-stack">
-                      <strong>{booking.check_in_date}</strong>
-                      <span>{booking.check_out_date}</span>
-                    </div>
+                    {group.rooms.length} room{group.rooms.length === 1 ? '' : 's'}
+                    <br />
+                    <span className="muted">
+                      {group.rooms
+                        .map((room) => room.room_category.name)
+                        .filter((value, index, array) => array.indexOf(value) === index)
+                        .join(', ')}
+                    </span>
                   </td>
-                  <td>{formatCurrency(booking.total_amount)}</td>
+                  <td>{group.total_amount == null ? '-' : formatCurrency(group.total_amount)}</td>
                   <td>
-                    <span className="status-pill">{booking.booking_status}</span>
+                    <span className="status-pill">{group.reservation_status}</span>
                   </td>
                   <td>
-                    <div className="compact-action-row">
-                      <button
-                        className="secondary-button compact-button"
-                        onClick={() => setExpandedBookingId((current) => (current === booking.id ? null : booking.id))}
-                        type="button"
-                      >
-                        {expandedBookingId === booking.id ? 'Hide' : 'Details'}
-                      </button>
-                      {booking.booking_status === 'BOOKED' && (
-                        <button
-                          className="link-button compact-button"
-                          disabled={pendingBookingActionId === booking.id}
-                          onClick={() => void checkIn(booking.id)}
-                          type="button"
-                        >
-                          {pendingBookingActionId === booking.id ? 'Processing...' : 'Check in'}
-                        </button>
-                      )}
-                      {booking.booking_status === 'CHECKED_IN' && (
-                        <button
-                          className="link-button compact-button"
-                          disabled={pendingBookingActionId === booking.id}
-                          onClick={() => void checkOut(booking.id)}
-                          type="button"
-                        >
-                          {pendingBookingActionId === booking.id ? 'Processing...' : 'Check out'}
-                        </button>
-                      )}
-                    </div>
+                    <button
+                      className="secondary-button compact-button"
+                      onClick={() =>
+                        setExpandedReservationGroupId((current) => (current === group.id ? null : group.id))
+                      }
+                      type="button"
+                    >
+                      {expandedReservationGroupId === group.id ? 'Hide' : 'Details'}
+                    </button>
                   </td>
                 </tr>
-                {expandedBookingId === booking.id && (
+                {expandedReservationGroupId === group.id && (
                   <tr>
                     <td className="inline-detail-cell" colSpan={7}>
                       <div className="inline-detail-panel">
+                        <div className="split-panels">
+                          <div className="mapping-card">
+                            <div className="section-heading">
+                              <div>
+                                <p className="eyebrow">Import trace</p>
+                                <h3>Provider metadata</h3>
+                              </div>
+                            </div>
+                            <dl className="detail-list">
+                              <div>
+                                <dt>Source</dt>
+                                <dd>{group.source ?? 'ZODOMUS'}</dd>
+                              </div>
+                              <div>
+                                <dt>External reservation</dt>
+                                <dd>{group.external_reservation_id}</dd>
+                              </div>
+                              <div>
+                                <dt>External status</dt>
+                                <dd>{group.external_status ?? '-'}</dd>
+                              </div>
+                              <div>
+                                <dt>Booked at</dt>
+                                <dd>{group.booked_at ? formatDateTime(group.booked_at) : '-'}</dd>
+                              </div>
+                              <div>
+                                <dt>Modified at</dt>
+                                <dd>{group.modified_at ? formatDateTime(group.modified_at) : '-'}</dd>
+                              </div>
+                            </dl>
+                          </div>
+                          <div className="mapping-card">
+                            <div className="section-heading">
+                              <div>
+                                <p className="eyebrow">Operational state</p>
+                                <h3>HMS handling</h3>
+                              </div>
+                            </div>
+                            <dl className="detail-list">
+                              <div>
+                                <dt>Reservation status</dt>
+                                <dd>{group.reservation_status}</dd>
+                              </div>
+                              <div>
+                                <dt>Rooms in group</dt>
+                                <dd>{group.rooms.length}</dd>
+                              </div>
+                              <div>
+                                <dt>Assigned rooms</dt>
+                                <dd>{group.rooms.filter((room) => room.room.room_number).length}</dd>
+                              </div>
+                              <div>
+                                <dt>Checked in room stays</dt>
+                                <dd>{group.rooms.filter((room) => room.reservation_status === 'CHECKED_IN').length}</dd>
+                              </div>
+                              <div>
+                                <dt>Checked out room stays</dt>
+                                <dd>{group.rooms.filter((room) => room.reservation_status === 'CHECKED_OUT').length}</dd>
+                              </div>
+                            </dl>
+                          </div>
+                        </div>
                         <dl className="detail-list">
                           <div>
-                            <dt>Guest phone</dt>
-                            <dd>{booking.guest.phone}</dd>
+                            <dt>External status</dt>
+                            <dd>{group.external_status ?? '-'}</dd>
                           </div>
                           <div>
-                            <dt>Guest email</dt>
-                            <dd>{booking.guest.email ?? '-'}</dd>
+                            <dt>Currency</dt>
+                            <dd>{group.currency ?? '-'}</dd>
                           </div>
                           <div>
-                            <dt>Rate plan</dt>
-                            <dd>{booking.rate_plan.name}</dd>
+                            <dt>Booked at</dt>
+                            <dd>{group.booked_at ? formatDateTime(group.booked_at) : '-'}</dd>
                           </div>
                           <div>
-                            <dt>Assigned room</dt>
-                            <dd>{booking.room.room_number ?? 'At check-in'}</dd>
+                            <dt>Modified at</dt>
+                            <dd>{group.modified_at ? formatDateTime(group.modified_at) : '-'}</dd>
                           </div>
                         </dl>
+                        <div className="table-card embedded-table-card">
+                          <div className="table-heading">
+                            <div>
+                              <p className="eyebrow">Room lines</p>
+                              <h3>{group.rooms.length} imported stays</h3>
+                            </div>
+                          </div>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Room line</th>
+                                <th>Category / Room</th>
+                                <th>Dates</th>
+                                <th>Rate</th>
+                                <th>Total</th>
+                                <th>Guests</th>
+                                <th>Status</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {group.rooms.map((room) => (
+                                <tr key={room.id}>
+                                  <td>
+                                    <strong>{room.external_room_reservation_id}</strong>
+                                    <br />
+                                    <span className="muted">External room: {room.external_room_id}</span>
+                                  </td>
+                                  <td>
+                                    {room.room_category.name}
+                                    <br />
+                                    <span className="muted">Assigned: {room.room.room_number ?? 'Not assigned'}</span>
+                                  </td>
+                                  <td>
+                                    <div className="date-stack">
+                                      <strong>{room.arrival_date}</strong>
+                                      <span>{room.departure_date}</span>
+                                    </div>
+                                  </td>
+                                  <td>
+                                    {room.rate_plan.name}
+                                    <br />
+                                    <span className="muted">{formatCurrency(room.rate_plan.base_rate)}</span>
+                                  </td>
+                                  <td>{room.total_amount == null ? '-' : formatCurrency(room.total_amount)}</td>
+                                  <td>
+                                    {room.guest_name ?? group.primary_guest?.name ?? '-'}
+                                    <br />
+                                    <span className="muted">
+                                      {room.adults ?? 0} adults / {room.children ?? 0} children
+                                    </span>
+                                  </td>
+                                  <td>
+                                    <span className="status-pill">{room.reservation_status}</span>
+                                    <div className="compact-action-row">
+                                      {room.reservation_status === 'BOOKED' && (
+                                        <button
+                                          className="link-button compact-button"
+                                          disabled={pendingReservationRoomActionId === room.id}
+                                          onClick={() => void checkInReservationRoom(room.id)}
+                                          type="button"
+                                        >
+                                          {pendingReservationRoomActionId === room.id ? 'Processing...' : 'Check in'}
+                                        </button>
+                                      )}
+                                      {room.reservation_status === 'CHECKED_IN' && (
+                                        <button
+                                          className="link-button compact-button"
+                                          disabled={pendingReservationRoomActionId === room.id}
+                                          onClick={() => void checkOutReservationRoom(room.id)}
+                                          type="button"
+                                        >
+                                          {pendingReservationRoomActionId === room.id ? 'Processing...' : 'Check out'}
+                                        </button>
+                                      )}
+                                      {room.reservation_status === 'BOOKED' && (
+                                        <button
+                                          className="secondary-button compact-button"
+                                          disabled={pendingReservationRoomActionId === room.id}
+                                          onClick={() => void sendReservationRoomReminder(room.id)}
+                                          type="button"
+                                        >
+                                          {pendingReservationRoomActionId === room.id ? 'Processing...' : 'Send reminder'}
+                                        </button>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
                     </td>
                   </tr>
@@ -535,13 +491,19 @@ function calculateNights(checkInDate: string, checkOutDate: string) {
   return Number.isInteger(diff) && diff > 0 ? diff : 0;
 }
 
-function buildTimelineWindow(bookings: Booking[], maxDays: number) {
-  if (bookings.length === 0) {
+function buildTimelineWindow(
+  stays: Array<{
+    check_in_date: string;
+    check_out_date: string;
+  }>,
+  maxDays: number,
+) {
+  if (stays.length === 0) {
     return { days: [] as Array<{ date: string; label: string; dayLabel: string; shortDate: string }>, truncated: false };
   }
 
-  const sortedDates = bookings
-    .flatMap((booking) => [booking.check_in_date, booking.check_out_date])
+  const sortedDates = stays
+    .flatMap((stay) => [stay.check_in_date, stay.check_out_date])
     .sort((left, right) => left.localeCompare(right));
   const start = sortedDates[0];
   const end = addDays(start, maxDays);
@@ -594,4 +556,8 @@ function formatLongDate(date: string) {
     day: 'numeric',
     year: 'numeric',
   });
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString();
 }

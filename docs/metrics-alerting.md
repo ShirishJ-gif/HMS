@@ -25,6 +25,8 @@ Use a 5-minute scrape interval or faster. These are the first panels to build in
 - Queued channel sync volume by provider and sync type from `hms_channel_sync_queued_total`
 - Channel sync completion outcomes by provider, sync type, and status from `hms_channel_sync_completed_total`
 - Current failed channel sync logs by sync type from `hms_channel_sync_logs_current`
+- Track persisted failed inventory rows per connection from `GET /channels/:id/inventory-row-results`
+- Track recurring failed provider rooms from `GET /channels/:id/inventory-row-results`
 
 ### Webhooks
 
@@ -95,6 +97,21 @@ These thresholds are intentionally conservative for a small single-region PMS de
   - Condition: any dead-letter `CHANNEL_SYNC` job exists for 5 minutes
   - Severity: critical
 
+- `InventoryPartialFailuresPresent`
+  - Condition: any inventory sync completions with status `PARTIAL_FAILED` in 15 minutes
+  - Severity: warning
+  - Why: some room/date rows are drifting even though the sync pipeline is still partially working
+
+- `RecurringInventoryRoomFailures`
+  - Condition: the same provider room appears in failed inventory rows 3 or more times in 1 hour
+  - Severity: warning
+  - Why: this usually indicates a room-specific provider rejection or stale mapping problem
+
+- `InventoryFailedRowSpike`
+  - Condition: a connection accumulates 10 or more failed inventory rows in 1 hour
+  - Severity: critical
+  - Why: provider-side inventory truth is actively diverging from HMS
+
 ### Webhooks
 
 - `WebhookSignatureFailures`
@@ -156,6 +173,10 @@ sum(increase(hms_channel_sync_completed_total{status="FAILED"}[15m]))
 ```
 
 ```promql
+sum(increase(hms_channel_sync_completed_total{sync_type="INVENTORY",status="PARTIAL_FAILED"}[15m]))
+```
+
+```promql
 sum(increase(hms_webhook_rejected_total{reason="invalid_signature"}[15m]))
 ```
 
@@ -167,5 +188,6 @@ sum(increase(hms_notification_send_total{result="failed"}[15m]))
 
 - `GET /metrics` is the scrape endpoint.
 - `GET /metrics/summary` is useful for lightweight internal dashboards and sanity checks, but alerts should be driven from scraped time-series metrics.
+- Persisted failed inventory row analytics come from `GET /channels/:id/inventory-row-results`; they are not yet exported as first-class Prometheus series.
 - Start with warning alerts routed to Slack/email and critical alerts routed to pager/on-call.
 - Keep notification and channel alerts property-agnostic until provider-specific handlers add richer labels.

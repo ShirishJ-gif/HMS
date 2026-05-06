@@ -11,9 +11,20 @@ export class DashboardService {
   async getSummary(referenceDate = new Date(), user?: AuthenticatedUser) {
     const { startOfDay, endOfDay } = this.getAsiaKolkataDayWindow(referenceDate);
     const scopedPropertyId = propertyIdFilter(user);
+    const serviceDate = this.formatAsiaKolkataDate(referenceDate);
 
-    const [totalBookingsToday, occupiedRooms, totalRooms, revenueToday] = await Promise.all([
-      this.prisma.booking.count({
+    const [
+      reservationGroupsToday,
+      occupiedRooms,
+      totalRooms,
+      revenueToday,
+      reservationRoomArrivalsToday,
+      reservationRoomDeparturesToday,
+      activeReservationGroups,
+      openHousekeepingTasks,
+      pendingBalance,
+    ] = await Promise.all([
+      this.prisma.reservationGroup.count({
         where: {
           propertyId: scopedPropertyId,
           createdAt: {
@@ -39,11 +50,46 @@ export class DashboardService {
         },
         where: {
           paymentStatus: PaymentStatus.PAID,
-          booking: scopedPropertyId ? { propertyId: scopedPropertyId } : undefined,
+          reservationRoom: scopedPropertyId ? { propertyId: scopedPropertyId } : undefined,
           updatedAt: {
             gte: startOfDay,
             lt: endOfDay,
           },
+        },
+      }),
+      this.prisma.reservationRoom.count({
+        where: {
+          propertyId: scopedPropertyId,
+          status: { in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN] },
+          arrivalDate: new Date(`${serviceDate}T00:00:00.000Z`),
+        },
+      }),
+      this.prisma.reservationRoom.count({
+        where: {
+          propertyId: scopedPropertyId,
+          status: { in: [BookingStatus.CHECKED_IN, BookingStatus.CHECKED_OUT] },
+          departureDate: new Date(`${serviceDate}T00:00:00.000Z`),
+        },
+      }),
+      this.prisma.reservationGroup.count({
+        where: {
+          propertyId: scopedPropertyId,
+          status: { in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN] },
+        },
+      }),
+      this.prisma.housekeepingTask.count({
+        where: {
+          propertyId: scopedPropertyId,
+          status: { in: ['DIRTY', 'CLEANING', 'OUT_OF_SERVICE'] },
+        },
+      }),
+      this.prisma.billing.aggregate({
+        _sum: {
+          total: true,
+        },
+        where: {
+          paymentStatus: { in: [PaymentStatus.PENDING, PaymentStatus.PARTIAL] },
+          reservationRoom: scopedPropertyId ? { propertyId: scopedPropertyId } : undefined,
         },
       }),
     ]);
@@ -52,11 +98,16 @@ export class DashboardService {
 
     return {
       date: this.formatAsiaKolkataDate(referenceDate),
-      total_bookings_today: totalBookingsToday,
+      reservation_groups_today: reservationGroupsToday,
       occupancy_rate: Number(occupancyRate.toFixed(2)),
       occupied_rooms: occupiedRooms,
       total_rooms: totalRooms,
       revenue_today: revenueToday._sum.total?.toNumber() ?? 0,
+      reservation_room_arrivals_today: reservationRoomArrivalsToday,
+      reservation_room_departures_today: reservationRoomDeparturesToday,
+      active_reservation_groups: activeReservationGroups,
+      open_housekeeping_tasks: openHousekeepingTasks,
+      pending_balance_total: pendingBalance._sum.total?.toNumber() ?? 0,
     };
   }
 

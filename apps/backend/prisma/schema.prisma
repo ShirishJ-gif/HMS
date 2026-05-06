@@ -65,6 +65,7 @@ enum PaymentTransactionStatus {
 
 enum ChannelProvider {
   MOCK
+  ZODOMUS
   SITEMINDER
   BOOKING_COM
   AIRBNB
@@ -84,6 +85,12 @@ enum ChannelSyncType {
 
 enum ChannelSyncStatus {
   QUEUED
+  SUCCEEDED
+  PARTIAL_FAILED
+  FAILED
+}
+
+enum InventorySyncRowStatus {
   SUCCEEDED
   FAILED
 }
@@ -138,7 +145,7 @@ model Guest {
   idProof   String    @map("id_proof") @db.VarChar(120)
   address   String    @db.Text
   property  Property  @relation(fields: [propertyId], references: [id], onDelete: Restrict)
-  bookings  Booking[]
+  reservationGroups ReservationGroup[] @relation("PrimaryGuestReservationGroups")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
@@ -160,11 +167,15 @@ model Property {
   roomCategories RoomCategory[]
   ratePlans      RatePlan[]
   rooms          Room[]
-  bookings       Booking[]
+  roomOutOfServicePeriods RoomOutOfServicePeriod[]
+  reservationGroups ReservationGroup[]
+  reservationRooms ReservationRoom[]
   pricingRules   PricingRule[]
   users          User[]
   housekeepingTasks HousekeepingTask[]
   channelConnections ChannelConnection[]
+  inventoryCalendar InventoryCalendar[]
+  inventoryBlocks InventoryBlock[]
   webhookEvents  WebhookEvent[]
   backgroundJobs BackgroundJob[]
   images         PropertyImage[]
@@ -273,8 +284,10 @@ model RoomCategory {
   property    Property   @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   ratePlans   RatePlan[]
   rooms       Room[]
-  bookings    Booking[]
+  reservationRooms ReservationRoom[]
   channelRoomMappings ChannelRoomMapping[]
+  inventoryCalendar InventoryCalendar[]
+  inventoryBlocks InventoryBlock[]
   images      RoomCategoryImage[]
   createdAt   DateTime   @default(now()) @map("created_at")
   updatedAt   DateTime   @updatedAt @map("updated_at")
@@ -295,7 +308,7 @@ model RatePlan {
   isActive       Boolean      @default(true) @map("is_active")
   property       Property     @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   roomCategory   RoomCategory @relation(fields: [roomCategoryId], references: [id], onDelete: Restrict)
-  bookings       Booking[]
+  reservationRooms ReservationRoom[]
   pricingRules   PricingRule[]
   channelRateMappings ChannelRateMapping[]
   createdAt      DateTime     @default(now()) @map("created_at")
@@ -338,7 +351,8 @@ model Room {
   status        RoomStatus @default(AVAILABLE)
   property      Property   @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   roomCategory  RoomCategory @relation(fields: [roomCategoryId], references: [id], onDelete: Restrict)
-  bookings      Booking[]
+  outOfServicePeriods RoomOutOfServicePeriod[]
+  reservationRooms ReservationRoom[]
   housekeepingTasks HousekeepingTask[]
   createdAt     DateTime   @default(now()) @map("created_at")
   updatedAt     DateTime   @updatedAt @map("updated_at")
@@ -350,50 +364,153 @@ model Room {
   @@map("rooms")
 }
 
-model Booking {
-  id           String        @id @default(uuid()) @db.Uuid
-  propertyId   String        @map("property_id") @db.Uuid
-  guestId      String        @map("guest_id") @db.Uuid
-  roomCategoryId String      @map("room_category_id") @db.Uuid
-  ratePlanId   String        @map("rate_plan_id") @db.Uuid
-  roomId       String?       @map("room_id") @db.Uuid
-  checkInDate  DateTime      @map("check_in_date") @db.Date
-  checkOutDate DateTime      @map("check_out_date") @db.Date
-  totalAmount  Decimal       @map("total_amount") @db.Decimal(10, 2)
-  status       BookingStatus @default(BOOKED) @map("booking_status")
-  property     Property      @relation(fields: [propertyId], references: [id], onDelete: Restrict)
-  guest        Guest         @relation(fields: [guestId], references: [id], onDelete: Restrict)
-  roomCategory RoomCategory  @relation(fields: [roomCategoryId], references: [id], onDelete: Restrict)
-  ratePlan     RatePlan      @relation(fields: [ratePlanId], references: [id], onDelete: Restrict)
-  room         Room?         @relation(fields: [roomId], references: [id], onDelete: Restrict)
-  billing      Billing?
-  createdAt    DateTime      @default(now()) @map("created_at")
-  updatedAt    DateTime      @updatedAt @map("updated_at")
+model RoomOutOfServicePeriod {
+  id         String   @id @default(uuid()) @db.Uuid
+  roomId     String   @map("room_id") @db.Uuid
+  propertyId String   @map("property_id") @db.Uuid
+  fromDate   DateTime @map("from_date") @db.Date
+  toDate     DateTime @map("to_date") @db.Date
+  reason     String   @db.VarChar(180)
+  notes      String?  @db.Text
+  room       Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
 
+  @@index([roomId, fromDate, toDate])
+  @@index([propertyId, fromDate, toDate])
+  @@map("room_out_of_service_periods")
+}
+
+model ReservationGroup {
+  id                         String            @id @default(uuid()) @db.Uuid
+  propertyId                 String            @map("property_id") @db.Uuid
+  primaryGuestId            String?           @map("primary_guest_id") @db.Uuid
+  channelConnectionId       String?           @map("channel_connection_id") @db.Uuid
+  externalReservationId     String            @map("external_reservation_id") @db.VarChar(160)
+  externalReservationVersion String?          @map("external_reservation_version") @db.VarChar(160)
+  externalStatus            String?           @map("external_status") @db.VarChar(80)
+  source                    String?           @db.VarChar(80)
+  currency                  String?           @db.VarChar(8)
+  totalAmount               Decimal?          @map("total_amount") @db.Decimal(10, 2)
+  status                    BookingStatus     @default(BOOKED) @map("reservation_status")
+  remarks                   String?           @db.Text
+  bookedAt                  DateTime?         @map("booked_at")
+  modifiedAt                DateTime?         @map("modified_at")
+  rawPayload                Json?             @map("raw_payload")
+  property                  Property          @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  primaryGuest              Guest?            @relation("PrimaryGuestReservationGroups", fields: [primaryGuestId], references: [id], onDelete: SetNull)
+  channelConnection         ChannelConnection? @relation(fields: [channelConnectionId], references: [id], onDelete: SetNull)
+  rooms                     ReservationRoom[]
+  createdAt                 DateTime          @default(now()) @map("created_at")
+  updatedAt                 DateTime          @updatedAt @map("updated_at")
+
+  @@unique([channelConnectionId, externalReservationId])
   @@index([propertyId])
-  @@index([guestId])
-  @@index([roomId])
+  @@index([primaryGuestId])
+  @@index([channelConnectionId])
+  @@index([status])
+  @@index([externalStatus])
+  @@map("reservation_groups")
+}
+
+model InventoryCalendar {
+  id             String       @id @default(uuid()) @db.Uuid
+  propertyId     String       @map("property_id") @db.Uuid
+  roomCategoryId String       @map("room_category_id") @db.Uuid
+  stayDate       DateTime     @map("stay_date") @db.Date
+  totalRooms     Int          @default(0) @map("total_rooms")
+  blockedRooms   Int          @default(0) @map("blocked_rooms")
+  reservedRooms  Int          @default(0) @map("reserved_rooms")
+  availableRooms Int          @default(0) @map("available_rooms")
+  stopSell       Boolean      @default(false) @map("stop_sell")
+  minStay        Int?         @map("min_stay")
+  maxStay        Int?         @map("max_stay")
+  property       Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  roomCategory   RoomCategory @relation(fields: [roomCategoryId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  @@unique([propertyId, roomCategoryId, stayDate])
+  @@index([propertyId, stayDate])
+  @@index([roomCategoryId, stayDate])
+  @@map("inventory_calendar")
+}
+
+model InventoryBlock {
+  id              String       @id @default(uuid()) @db.Uuid
+  propertyId      String       @map("property_id") @db.Uuid
+  roomCategoryId  String       @map("room_category_id") @db.Uuid
+  fromDate        DateTime     @map("from_date") @db.Date
+  toDate          DateTime     @map("to_date") @db.Date
+  blockedRooms    Int          @default(1) @map("blocked_rooms")
+  reason          String       @db.VarChar(180)
+  source          String       @default("MANUAL") @db.VarChar(40)
+  createdByUserId String?      @map("created_by_user_id") @db.Uuid
+  property        Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  roomCategory    RoomCategory @relation(fields: [roomCategoryId], references: [id], onDelete: Cascade)
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  @@index([propertyId, fromDate, toDate])
+  @@index([roomCategoryId, fromDate, toDate])
+  @@map("inventory_blocks")
+}
+
+model ReservationRoom {
+  id                        String           @id @default(uuid()) @db.Uuid
+  reservationGroupId        String           @map("reservation_group_id") @db.Uuid
+  propertyId                String           @map("property_id") @db.Uuid
+  externalRoomReservationId String           @map("external_room_reservation_id") @db.VarChar(160)
+  externalRoomId            String           @map("external_room_id") @db.VarChar(160)
+  roomCategoryId            String           @map("room_category_id") @db.Uuid
+  ratePlanId                String           @map("rate_plan_id") @db.Uuid
+  roomId                    String?          @map("room_id") @db.Uuid
+  arrivalDate               DateTime         @map("arrival_date") @db.Date
+  departureDate             DateTime         @map("departure_date") @db.Date
+  totalAmount               Decimal?         @map("total_amount") @db.Decimal(10, 2)
+  currency                  String?          @db.VarChar(8)
+  status                    BookingStatus    @default(BOOKED) @map("reservation_status")
+  guestName                 String?          @map("guest_name") @db.VarChar(160)
+  adults                    Int?
+  children                  Int?
+  rawPayload                Json?            @map("raw_payload")
+  reservationGroup          ReservationGroup @relation(fields: [reservationGroupId], references: [id], onDelete: Cascade)
+  property                  Property         @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  roomCategory              RoomCategory     @relation(fields: [roomCategoryId], references: [id], onDelete: Restrict)
+  ratePlan                  RatePlan         @relation(fields: [ratePlanId], references: [id], onDelete: Restrict)
+  room                      Room?            @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  billings                  Billing[]
+  housekeepingTasks         HousekeepingTask[]
+  createdAt                 DateTime         @default(now()) @map("created_at")
+  updatedAt                 DateTime         @updatedAt @map("updated_at")
+
+  @@unique([reservationGroupId, externalRoomReservationId])
+  @@index([reservationGroupId])
+  @@index([propertyId])
   @@index([roomCategoryId])
   @@index([ratePlanId])
+  @@index([roomId])
   @@index([status])
-  @@index([checkInDate, checkOutDate])
-  @@map("bookings")
+  @@index([arrivalDate, departureDate])
+  @@map("reservation_rooms")
 }
 
 model Billing {
   id            String               @id @default(uuid()) @db.Uuid
-  bookingId     String               @unique @map("booking_id") @db.Uuid
+  reservationRoomId String?          @unique @map("reservation_room_id") @db.Uuid
   amount        Decimal              @db.Decimal(10, 2)
   tax           Decimal              @default(0) @db.Decimal(10, 2)
   total         Decimal              @db.Decimal(10, 2)
   paymentStatus PaymentStatus        @default(PENDING) @map("payment_status")
-  booking       Booking              @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  reservationRoom ReservationRoom?   @relation(fields: [reservationRoomId], references: [id], onDelete: Restrict)
   extraCharges  BillingExtraCharge[]
   payments      PaymentTransaction[]
   createdAt     DateTime             @default(now()) @map("created_at")
   updatedAt     DateTime             @updatedAt @map("updated_at")
 
   @@index([paymentStatus])
+  @@index([reservationRoomId])
   @@map("billings")
 }
 
@@ -431,17 +548,20 @@ model HousekeepingTask {
   id          String               @id @default(uuid()) @db.Uuid
   propertyId  String               @map("property_id") @db.Uuid
   roomId      String               @map("room_id") @db.Uuid
+  reservationRoomId String?        @map("reservation_room_id") @db.Uuid
   status      HousekeepingStatus   @default(DIRTY)
   priority    HousekeepingPriority @default(NORMAL)
   notes       String?              @db.Text
   dueDate     DateTime?            @map("due_date") @db.Date
   property    Property             @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   room        Room                 @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  reservationRoom ReservationRoom? @relation(fields: [reservationRoomId], references: [id], onDelete: SetNull)
   createdAt   DateTime             @default(now()) @map("created_at")
   updatedAt   DateTime             @updatedAt @map("updated_at")
 
   @@index([propertyId])
   @@index([roomId])
+  @@index([reservationRoomId])
   @@index([status])
   @@index([dueDate])
   @@map("housekeeping_tasks")
@@ -490,7 +610,9 @@ model ChannelConnection {
   property    Property                @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   roomMappings ChannelRoomMapping[]
   rateMappings ChannelRateMapping[]
+  reservationGroups ReservationGroup[]
   syncLogs    ChannelSyncLog[]
+  inventorySyncRows InventorySyncRow[]
   createdAt   DateTime                @default(now()) @map("created_at")
   updatedAt   DateTime                @updatedAt @map("updated_at")
 
@@ -522,6 +644,7 @@ model ChannelRateMapping {
   id                  String            @id @default(uuid()) @db.Uuid
   channelConnectionId String            @map("channel_connection_id") @db.Uuid
   ratePlanId          String            @map("rate_plan_id") @db.Uuid
+  externalRoomId      String?           @map("external_room_id") @db.VarChar(120)
   externalRateId      String            @map("external_rate_id") @db.VarChar(120)
   externalRateName    String?           @map("external_rate_name") @db.VarChar(160)
   channelConnection   ChannelConnection @relation(fields: [channelConnectionId], references: [id], onDelete: Cascade)
@@ -530,7 +653,8 @@ model ChannelRateMapping {
   updatedAt           DateTime          @updatedAt @map("updated_at")
 
   @@unique([channelConnectionId, ratePlanId])
-  @@unique([channelConnectionId, externalRateId])
+  @@unique([channelConnectionId, externalRoomId, externalRateId])
+  @@index([externalRoomId])
   @@index([ratePlanId])
   @@map("channel_rate_mappings")
 }
@@ -544,6 +668,7 @@ model ChannelSyncLog {
   responsePayload     Json?             @map("response_payload")
   errorMessage        String?           @map("error_message") @db.Text
   channelConnection   ChannelConnection @relation(fields: [channelConnectionId], references: [id], onDelete: Cascade)
+  inventoryRows       InventorySyncRow[]
   createdAt           DateTime          @default(now()) @map("created_at")
   updatedAt           DateTime          @updatedAt @map("updated_at")
 
@@ -551,6 +676,27 @@ model ChannelSyncLog {
   @@index([syncType])
   @@index([status])
   @@map("channel_sync_logs")
+}
+
+model InventorySyncRow {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  channelSyncLogId    String                 @map("channel_sync_log_id") @db.Uuid
+  channelConnectionId String                 @map("channel_connection_id") @db.Uuid
+  syncDate            DateTime               @map("sync_date") @db.Date
+  externalRoomId      String                 @map("external_room_id") @db.VarChar(120)
+  available           Int
+  status              InventorySyncRowStatus
+  errorMessage        String?                @map("error_message") @db.Text
+  providerResponse    Json?                  @map("provider_response")
+  channelSyncLog      ChannelSyncLog         @relation(fields: [channelSyncLogId], references: [id], onDelete: Cascade)
+  channelConnection   ChannelConnection      @relation(fields: [channelConnectionId], references: [id], onDelete: Cascade)
+  createdAt           DateTime               @default(now()) @map("created_at")
+
+  @@unique([channelSyncLogId, syncDate, externalRoomId])
+  @@index([channelConnectionId, status, syncDate])
+  @@index([channelSyncLogId])
+  @@index([externalRoomId])
+  @@map("inventory_sync_rows")
 }
 
 model WebhookEvent {

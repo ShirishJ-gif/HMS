@@ -9,6 +9,7 @@ The app is structured as an npm monorepo:
 - `apps/backend`: NestJS REST API
 - `apps/frontend`: React/Vite admin dashboard
 - `docs`: API request examples and Postman collection
+- `docs/README.md`: canonical doc index and document status guide
 
 ## Current Functionality
 
@@ -27,7 +28,7 @@ Implemented modules:
 - Health check
 - Dashboard metrics
 - Mock WhatsApp notifications
-- WhatsApp booking confirmations, hotel-owner notifications, and check-in reminders through mock or Cloud API mode
+- WhatsApp reservation confirmations, hotel-owner notifications, and check-in reminders through mock or Cloud API mode
 - Dynamic pricing rules for weekend, date-range/festival, and occupancy-based surcharges
 - Pricing-rule admin lifecycle: create, list, update, disable/enable, and delete
 - Generic signed webhook ingestion and webhook-event logging
@@ -38,6 +39,8 @@ Implemented modules:
 - Property-scoped authorization for multi-hotel isolation
 - Availability calendar
 - Housekeeping task management
+- Reservation-group persistence and reservation-room operations for imported OTA stays
+- Zodomus provider adapter and reservation import workflow
 
 ### Frontend
 
@@ -70,6 +73,8 @@ Main models:
 - `RatePlan`
 - `Room`
 - `Booking`
+- `ReservationGroup`
+- `ReservationRoom`
 - `Billing`
 - `BillingExtraCharge`
 - `PaymentTransaction`
@@ -83,11 +88,14 @@ Main models:
 
 Important relations:
 
-- Property has many room categories, rate plans, physical rooms, guests, and bookings.
+- Property has many room categories, rate plans, physical rooms, guests, bookings, reservation groups, and reservation rooms.
 - Room category has many physical rooms, rate plans, and bookings.
 - Rate plan belongs to a room category and provides the booking base rate.
 - Booking reserves room-category inventory and may have an assigned physical room.
+- Reservation group preserves one imported OTA reservation header.
+- Reservation room preserves one room-stay line inside that imported reservation and may have a physical room assigned later.
 - Booking has one billing invoice.
+- Reservation room can also have one billing invoice.
 - Billing has many extra charges.
 - Billing has many payment transactions for collections and refunds.
 - Audit logs optionally reference a user and property and store immutable action metadata for operational traceability.
@@ -102,7 +110,7 @@ Important enums:
 - `PaymentStatus`: `PAID`, `PARTIAL`, `PENDING`, `REFUNDED`
 - `PaymentProvider`: `MOCK`, `CASH`, `CARD`, `UPI`, `RAZORPAY`, `STRIPE`
 - `PaymentTransactionStatus`: `SUCCEEDED`, `FAILED`, `REFUNDED`
-- `ChannelProvider`: `MOCK`, `SITEMINDER`, `BOOKING_COM`, `AIRBNB`
+- `ChannelProvider`: `MOCK`, `ZODOMUS`, `SITEMINDER`, `BOOKING_COM`, `AIRBNB`
 - `ChannelConnectionStatus`: `ACTIVE`, `PAUSED`, `ERROR`
 - `ChannelSyncType`: `INVENTORY`, `RATES`, `BOOKINGS`
 - `ChannelSyncStatus`: `QUEUED`, `SUCCEEDED`, `FAILED`
@@ -120,14 +128,16 @@ Schema files:
 
 - Bookings require valid date ranges.
 - `check_out_date` must be after `check_in_date`.
-- Booking total is calculated as the sum of per-night computed rates from the rate-plan base rate plus active pricing-rule adjustments.
+- Reservation-room totals are calculated as the sum of per-night computed rates from the rate-plan base rate plus active pricing-rule adjustments.
 - Active overlapping bookings are rejected only when room-category inventory is sold out.
 - Active booking statuses for overlap checks are `BOOKED` and `CHECKED_IN`.
-- Booking creation uses a PostgreSQL transaction-scoped advisory lock per `property_id` and `room_category_id` before inventory counting so concurrent requests cannot oversell the last available category slot.
+- Imported OTA reservations are stored as one `ReservationGroup` with one or more `ReservationRoom` lines.
 - Check-in assigns an available physical room, changes booking status to `CHECKED_IN`, and room status to `OCCUPIED`.
 - Check-out changes booking status to `CHECKED_OUT` and room status to `AVAILABLE`.
+- Imported reservation-room lines also support line-level check-in and check-out, with group status recomputed from room-line states.
 - Rooms in `MAINTENANCE` cannot be booked or checked in.
-- Billing allows one invoice per booking.
+- Billing allows one invoice per reservation room.
+- Billing also allows one invoice per imported reservation room.
 - Billing total is `amount + tax + extra_charges_total`.
 - Payments are recorded as immutable transactions against a billing invoice.
 - Successful collections update billing status to `PARTIAL` or `PAID`.
@@ -146,16 +156,16 @@ Schema files:
 - Idempotent channel sync requests are serialized per idempotency key before response persistence so concurrent retries do not create duplicate sync-side effects or duplicate sync logs.
 - Payment and channel webhooks are verified with HMAC secrets, persisted as webhook events, and deduplicated through a stored replay key plus advisory-lock serialization.
 - Accepted webhook events enqueue persisted background jobs with retry scheduling and dead-letter state instead of completing all processing inline.
-- Booking confirmations, hotel-owner booking notifications, and check-in reminders enqueue persisted notification jobs with retry scheduling and dead-letter state instead of sending inline from the request path.
-- `MOCK`, `CASH`, `CARD`, and `UPI` payments use the local payment adapter; `RAZORPAY` and `STRIPE` are adapter placeholders that reject live calls until credentials, webhook verification, and idempotency are added.
-- `MOCK` channel syncs use the local channel adapter; `SITEMINDER`, `BOOKING_COM`, and `AIRBNB` are adapter placeholders that reject live syncs until credentials, retries, and webhook reconciliation are added.
+- Reservation confirmations, hotel-owner reservation notifications, and check-in reminders enqueue persisted notification jobs with retry scheduling and dead-letter state instead of sending inline from the request path.
+- `MOCK`, `CASH`, `CARD`, and `UPI` payments use the local payment adapter; `RAZORPAY` and `STRIPE` are still placeholders that reject live calls until credentials, webhook verification, and idempotency are added.
+- `MOCK` channel syncs use the local adapter; `ZODOMUS` is the first real provider adapter with availability sync, rate sync, reservation polling, reservation detail fetch, and reservation import. `SITEMINDER`, `BOOKING_COM`, and `AIRBNB` remain placeholders.
 - Images are uploaded as multipart files and stored locally for MVP only. Production should move to S3/R2/Cloudinary-style object storage.
 - `SUPER_ADMIN` can see and manage all hotels.
 - `ADMIN` and `STAFF` are scoped to `user.property_id` and cannot access other hotel records.
 - `ADMIN` can configure room inventory, rate setup, channel mappings, and create same-property users.
 - `STAFF` can perform day-to-day operations such as guests, bookings, housekeeping, and payments within their hotel.
 - Refresh-token rotation, targeted logout, global logout, and password-reset session invalidation are now verified through PostgreSQL-backed integration coverage.
-- Booking creation, check-in, checkout, and automatic invoice creation are now verified through PostgreSQL-backed integration coverage.
+- Reservation-room import, check-in, checkout, and invoice creation are now verified through PostgreSQL-backed integration coverage.
 - Booking-created notification jobs are now verified through PostgreSQL-backed integration coverage.
 
 ## API Summary
@@ -214,12 +224,11 @@ Paginated/searchable list endpoints support `page`, `limit`, and `search` query 
 
 ### Bookings
 
-- `POST /bookings`
-- `GET /bookings`
-- `GET /bookings?page=1&limit=25&search=Priya`
-- `PUT /bookings/:id/checkin`
-- `PUT /bookings/:id/checkout`
-- `POST /bookings/:id/checkin-reminder`
+- `GET /bookings/groups`
+- `GET /bookings/groups?page=1&limit=25&search=Priya`
+- `PUT /bookings/groups/rooms/:id/checkin`
+- `PUT /bookings/groups/rooms/:id/checkout`
+- `POST /bookings/groups/rooms/:id/checkin-reminder`
 
 ### Billings
 
@@ -258,6 +267,64 @@ Paginated/searchable list endpoints support `page`, `limit`, and `search` query 
 
 - `GET /dashboard/summary`
 
+## Recent Notes
+
+### Local run commands
+
+From the repo root:
+
+- `npm run db:up`
+- `npm run backend:start:dev`
+- `npm run frontend:dev`
+
+Postgres runs through Docker Compose as container `hms-postgres`.
+
+### Zodomus status
+
+Primary Zodomus docs live at:
+
+- `docs/zodomus-api-implementation-plan.md`
+
+Current implementation direction:
+
+- `ZODOMUS` is already a first-class `ChannelProvider`
+- inventory push, rate push, and reservation polling/import are implemented
+- reservation import uses `ReservationGroup` and `ReservationRoom`
+- provider-side `rooms-activation` still needs to be wired into the backend onboarding path
+
+### Current code assessment
+
+Current overall rating:
+
+- backend: `7.5/10`
+- frontend: `5.5/10`
+
+Backend strengths:
+
+- strong module boundaries
+- good operational patterns around idempotency, audit logs, retries, and background jobs
+
+Backend risks identified:
+
+- Zodomus onboarding is still missing backend wiring for provider-side `rooms-activation`
+- webhook events are marked processed without provider/domain business handling
+- webhook signature verification is global per domain, not provider/connection-specific
+- some external channel connections can still be created as active without a real live adapter path
+- channel sync logs can show `FAILED` while retryable background jobs are still pending
+
+Frontend strengths:
+
+- workable operator dashboard structure
+- clear page separation for core hotel operations
+
+Frontend risks identified:
+
+- no refresh-token or `401` recovery flow
+- malformed `localStorage` user JSON can crash app startup
+- channel UI cannot configure provider credentials for real integrations
+- several pages cap datasets at `100` and then compute operational state client-side
+- `useAsync` clears prior data on refresh failure instead of preserving last good state
+
 ### Availability
 
 - `GET /availability?property_id=:propertyId&from=YYYY-MM-DD&to=YYYY-MM-DD`
@@ -288,7 +355,7 @@ apps/backend/src/modules/notification/whatsapp-notification.service.ts
 
 Current triggers:
 
-- Booking created: sends mock booking confirmation.
+- Imported reservation created: sends mock reservation confirmation.
 - Booking created: sends hotel-owner notification to the property phone with quick-reply options.
 - Check-in reminder route: sends mock reminder.
 
@@ -317,15 +384,14 @@ Current frontend capabilities:
 - Filter rooms, guests, bookings, payments, channels, and audit logs with compact shared controls.
 - Create guests.
 - View guests.
-- Create bookings against category inventory and rate plans.
 - Check in bookings.
 - Check out bookings.
-- Review bookings in ledger and short-window timeline views, with inline detail expansion.
+- Review imported reservation groups in ledger and short-window timeline views, with inline detail expansion.
 - Create and update housekeeping tasks.
 - View invoices and payment transactions.
-- Collect invoice payments through the mock payment provider boundary.
+- Collect invoice payments and reservation-group folio payments through the payment provider boundary.
 - View channel connections and mappings.
-- Trigger mock inventory/rate/booking syncs and inspect recent sync logs.
+- Trigger Zodomus inventory/rate/booking syncs and inspect recent sync logs.
 - Review channel operations through sync, background-job, webhook, and metrics-summary surfaces.
 - Review audit logs for sensitive operational actions in an event-stream layout with actor/action filters.
 - Upload and preview property and room-category photos.
@@ -434,7 +500,7 @@ When last started:
 ## Known Gaps / Future Work
 
 - Add automated e2e tests specifically proving cross-property access is forbidden.
-- Real OTA/channel manager live adapters are not implemented yet. The current channel module has adapter dispatch, mock syncs, mappings, sync logs, and explicit placeholders for external providers.
+- Zodomus is implemented as the first real external channel adapter, but provider-side `rooms-activation` is still not wired into backend onboarding. Other channel adapters remain placeholders.
 - Real payment live adapters and webhook verification are not implemented yet. The current payment module has adapter dispatch, mock/local collection flow, idempotency keys, and explicit placeholders for Razorpay/Stripe.
 - Refresh-token sessions, session revocation, and password reset token flows exist. Production still needs email/SMS delivery for reset tokens and stricter device/session management UX.
 - Audit logs exist for key operational actions, but a broader interceptor-based audit policy and full user-management audit coverage are still future work.

@@ -1,5 +1,6 @@
 @baseUrl = http://localhost:3000
 @roomId = replace-with-room-id
+@periodId = replace-with-period-id
 @guestId = replace-with-guest-id
 @bookingId = replace-with-booking-id
 @billingId = replace-with-billing-id
@@ -9,6 +10,7 @@
 @roomCategoryId = replace-with-room-category-id
 @ratePlanId = replace-with-rate-plan-id
 @token = replace-with-access-token
+@syncLogId = replace-with-sync-log-id
 
 ### Login
 POST {{baseUrl}}/auth/login
@@ -143,6 +145,26 @@ Authorization: Bearer {{token}}
   "status": "MAINTENANCE"
 }
 
+### List dated out-of-service periods for a room
+GET {{baseUrl}}/rooms/{{roomId}}/out-of-service-periods
+Authorization: Bearer {{token}}
+
+### Create dated out-of-service period for a room
+POST {{baseUrl}}/rooms/{{roomId}}/out-of-service-periods
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "from_date": "2026-06-10",
+  "to_date": "2026-06-12",
+  "reason": "Bathroom repair",
+  "notes": "Block until plumbing inspection is complete"
+}
+
+### Delete dated out-of-service period for a room
+DELETE {{baseUrl}}/rooms/{{roomId}}/out-of-service-periods/{{periodId}}
+Authorization: Bearer {{token}}
+
 ### Delete room
 DELETE {{baseUrl}}/rooms/{{roomId}}
 Authorization: Bearer {{token}}
@@ -165,34 +187,20 @@ Authorization: Bearer {{token}}
 GET {{baseUrl}}/guests
 Authorization: Bearer {{token}}
 
-### Create booking
-POST {{baseUrl}}/bookings
-Content-Type: application/json
+### List reservation groups
+GET {{baseUrl}}/bookings/groups
 Authorization: Bearer {{token}}
 
-{
-  "property_id": "{{propertyId}}",
-  "guest_id": "{{guestId}}",
-  "room_category_id": "{{roomCategoryId}}",
-  "rate_plan_id": "{{ratePlanId}}",
-  "check_in_date": "2026-05-01",
-  "check_out_date": "2026-05-03"
-}
-
-### List bookings
-GET {{baseUrl}}/bookings
+### Check in imported room stay
+PUT {{baseUrl}}/bookings/groups/rooms/{{reservationRoomId}}/checkin
 Authorization: Bearer {{token}}
 
-### Check in
-PUT {{baseUrl}}/bookings/{{bookingId}}/checkin
-Authorization: Bearer {{token}}
-
-### Check out
-PUT {{baseUrl}}/bookings/{{bookingId}}/checkout
+### Check out imported room stay
+PUT {{baseUrl}}/bookings/groups/rooms/{{reservationRoomId}}/checkout
 Authorization: Bearer {{token}}
 
 ### Send mock check-in reminder
-POST {{baseUrl}}/bookings/{{bookingId}}/checkin-reminder
+POST {{baseUrl}}/bookings/groups/rooms/{{reservationRoomId}}/checkin-reminder
 Authorization: Bearer {{token}}
 
 ### Generate invoice
@@ -201,7 +209,7 @@ Content-Type: application/json
 Authorization: Bearer {{token}}
 
 {
-  "booking_id": "{{bookingId}}",
+  "reservation_room_id": "{{reservationRoomId}}",
   "tax": "600.00"
 }
 
@@ -234,6 +242,18 @@ Authorization: Bearer {{token}}
 
 ### List payments
 GET {{baseUrl}}/payments
+Authorization: Bearer {{token}}
+
+### Inventory reconciliation
+GET {{baseUrl}}/channels/{{channelId}}/inventory-reconciliation
+Authorization: Bearer {{token}}
+
+### Persisted inventory row results
+GET {{baseUrl}}/channels/{{channelId}}/inventory-row-results
+Authorization: Bearer {{token}}
+
+### Retry only failed inventory rows
+POST {{baseUrl}}/channels/{{channelId}}/sync-logs/{{syncLogId}}/retry-failed-rows
 Authorization: Bearer {{token}}
 
 ### Collect payment

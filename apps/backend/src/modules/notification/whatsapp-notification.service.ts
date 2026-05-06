@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-export type BookingConfirmationPayload = {
+export type ReservationConfirmationPayload = {
   guestName: string;
   phone: string;
   roomNumber: string;
@@ -8,7 +8,7 @@ export type BookingConfirmationPayload = {
   checkOutDate: Date;
 };
 
-export type OwnerBookingNotificationPayload = {
+export type OwnerReservationNotificationPayload = {
   ownerPhone: string | null;
   propertyName: string;
   guestName: string;
@@ -19,7 +19,7 @@ export type OwnerBookingNotificationPayload = {
   totalAmount: number;
 };
 
-export type CheckInReminderPayload = BookingConfirmationPayload;
+export type CheckInReminderPayload = ReservationConfirmationPayload;
 
 type WhatsAppMessage = {
   to: string;
@@ -35,32 +35,32 @@ export class WhatsAppNotificationService {
   private readonly logger = new Logger(WhatsAppNotificationService.name);
   private readonly provider = (process.env.WHATSAPP_PROVIDER ?? 'mock') as WhatsAppProvider;
 
-  async sendBookingConfirmation(payload: BookingConfirmationPayload) {
+  async sendReservationConfirmation(payload: ReservationConfirmationPayload) {
     await this.safeSend({
       to: payload.phone,
-      template: 'booking_confirmation',
-      body: `Booking confirmed for ${payload.guestName}. Room ${payload.roomNumber}, ${this.formatDate(
+      template: 'reservation_confirmation',
+      body: `Reservation confirmed for ${payload.guestName}. Room ${payload.roomNumber}, ${this.formatDate(
         payload.checkInDate,
       )} to ${this.formatDate(payload.checkOutDate)}.`,
     });
   }
 
-  async sendOwnerBookingNotification(payload: OwnerBookingNotificationPayload) {
+  async sendOwnerReservationNotification(payload: OwnerReservationNotificationPayload) {
     if (!payload.ownerPhone) {
-      this.logger.warn(`Owner booking notification skipped for ${payload.propertyName}: property phone is missing`);
+      this.logger.warn(`Owner reservation notification skipped for ${payload.propertyName}: property phone is missing`);
       return;
     }
 
     await this.safeSend({
       to: payload.ownerPhone,
-      template: 'owner_booking_notification',
-      body: `New booking at ${payload.propertyName}: ${payload.guestName} (${payload.guestPhone}) booked ${
+      template: 'owner_reservation_notification',
+      body: `New reservation at ${payload.propertyName}: ${payload.guestName} (${payload.guestPhone}) reserved ${
         payload.roomCategoryName
       } from ${this.formatDate(payload.checkInDate)} to ${this.formatDate(payload.checkOutDate)}. Total: INR ${
         payload.totalAmount
       }.`,
       buttons: [
-        { id: 'view_booking', title: 'View booking' },
+        { id: 'view_reservation', title: 'View reservation' },
         { id: 'call_guest', title: 'Call guest' },
       ],
     });

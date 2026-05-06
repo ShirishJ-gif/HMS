@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { BookingStatus, RoomStatus } from '@prisma/client';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty } from '../auth/property-scope';
+import { InventoryService } from '../inventory/inventory.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GetAvailabilityDto } from './dto/get-availability.dto';
@@ -10,6 +10,7 @@ import { GetAvailabilityDto } from './dto/get-availability.dto';
 export class AvailabilityService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly inventoryService: InventoryService,
     private readonly pricingService: PricingService,
   ) {}
 
@@ -49,16 +50,17 @@ export class AvailabilityService {
       orderBy: { name: 'asc' },
     });
 
-    const bookings = await this.prisma.booking.findMany({
-      where: {
-        propertyId: query.property_id,
-        status: {
-          in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN],
-        },
-        checkInDate: { lt: to },
-        checkOutDate: { gt: from },
-      },
-    });
+    const inventoryRows = (await this.inventoryService.rebuildCalendarRange({
+      propertyId: query.property_id,
+      from,
+      to: new Date(to.getTime() - 24 * 60 * 60 * 1000),
+    })) as Array<{
+      roomCategoryId: string;
+      totalRooms: number;
+      blockedRooms: number;
+      reservedRooms: number;
+      availableRooms: number;
+    }>;
 
     return {
       property_id: property.id,
@@ -66,10 +68,11 @@ export class AvailabilityService {
       from: query.from,
       to: query.to,
       categories: await Promise.all(categories.map(async (category) => {
-        const total_inventory = category.rooms.filter((room) => room.status !== RoomStatus.MAINTENANCE).length;
-        const out_of_service = category.rooms.filter((room) => room.status === RoomStatus.MAINTENANCE).length;
-        const booked = bookings.filter((booking) => booking.roomCategoryId === category.id).length;
-        const available = Math.max(total_inventory - booked, 0);
+        const categoryRows = inventoryRows.filter((row) => row.roomCategoryId === category.id);
+        const total_inventory = categoryRows.reduce((max, row) => Math.max(max, row.totalRooms), 0);
+        const out_of_service = categoryRows.reduce((max, row) => Math.max(max, row.blockedRooms), 0);
+        const reservedRoomStays = categoryRows.reduce((max, row) => Math.max(max, row.reservedRooms), 0);
+        const available = categoryRows.reduce((min, row) => Math.min(min, row.availableRooms), total_inventory);
         const lowestRate = await this.pricingService.calculateLowestNightlyRate({
           db: this.prisma,
           propertyId: query.property_id,
@@ -84,7 +87,7 @@ export class AvailabilityService {
           code: category.code,
           total_inventory,
           out_of_service,
-          booked,
+          reserved_room_stays: reservedRoomStays,
           available,
           lowest_rate: lowestRate?.toNumber() ?? null,
           currency: category.ratePlans[0]?.currency ?? null,

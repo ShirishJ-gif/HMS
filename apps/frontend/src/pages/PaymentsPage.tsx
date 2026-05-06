@@ -1,13 +1,26 @@
 import { FormEvent, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { PaginatedResponse, unwrapList } from '../api/pagination';
-import { Billing, Booking, PaymentProvider, PaymentTransaction } from '../api/types';
+import {
+  Billing,
+  PaymentProvider,
+  PaymentTransaction,
+  ReservationGroup,
+  ReservationGroupFolio,
+  ReservationGroupPaymentCollection,
+} from '../api/types';
 import { FilterBar } from '../components/FilterBar';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
 
 const defaultForm = {
   billing_id: '',
+  amount: '',
+  provider: 'MOCK' as PaymentProvider,
+  provider_reference: '',
+};
+
+const defaultGroupPaymentForm = {
   amount: '',
   provider: 'MOCK' as PaymentProvider,
   provider_reference: '',
@@ -21,7 +34,15 @@ export function PaymentsPage() {
   const [form, setForm] = useState(defaultForm);
   const [actionError, setActionError] = useState<string | null>(null);
   const [collecting, setCollecting] = useState(false);
-  const [invoiceBookingId, setInvoiceBookingId] = useState<string | null>(null);
+  const [invoiceReservationRoomId, setInvoiceReservationRoomId] = useState<string | null>(null);
+  const [folioInvoiceGroupId, setFolioInvoiceGroupId] = useState<string | null>(null);
+  const [selectedFolioId, setSelectedFolioId] = useState<string | null>(null);
+  const [selectedFolio, setSelectedFolio] = useState<ReservationGroupFolio | null>(null);
+  const [folioLoading, setFolioLoading] = useState(false);
+  const [folioError, setFolioError] = useState<string | null>(null);
+  const [groupPaymentForm, setGroupPaymentForm] = useState(defaultGroupPaymentForm);
+  const [collectingGroupPayment, setCollectingGroupPayment] = useState(false);
+  const [lastGroupCollection, setLastGroupCollection] = useState<ReservationGroupPaymentCollection | null>(null);
   const billingsState = useAsync(
     async () => unwrapList((await api.get<PaginatedResponse<Billing>>('/billings', { params: { limit: 100 } })).data),
     [reloadKey],
@@ -30,7 +51,10 @@ export function PaymentsPage() {
     async () => (await api.get<PaginatedResponse<PaymentTransaction>>('/payments', { params: { search: search || undefined } })).data,
     [reloadKey, search],
   );
-  const bookingsState = useAsync(async () => (await api.get<PaginatedResponse<Booking>>('/bookings', { params: { limit: 100 } })).data, [reloadKey]);
+  const reservationGroupsState = useAsync(
+    async () => (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/groups', { params: { limit: 100 } })).data,
+    [reloadKey],
+  );
   const billings = billingsState.data ?? [];
   const payments = (paymentsState.data?.data ?? []).filter((payment) => {
     if (providerFilter !== 'ALL' && payment.provider !== providerFilter) {
@@ -43,10 +67,38 @@ export function PaymentsPage() {
 
     return true;
   });
-  const invoicedBookingIds = new Set(billings.map((billing) => billing.booking_id));
-  const uninvoicedCheckedOutBookings = (bookingsState.data?.data ?? []).filter(
-    (booking) => booking.booking_status === 'CHECKED_OUT' && !invoicedBookingIds.has(booking.id),
+  const invoicedReservationRoomIds = new Set(
+    billings.map((billing) => billing.reservation_room_id).filter(Boolean),
   );
+  const uninvoicedCheckedOutReservationRooms = (reservationGroupsState.data?.data ?? [])
+    .flatMap((group) =>
+      group.rooms.map((room) => ({
+        ...room,
+        reservation_group_id: group.id,
+        external_reservation_id: group.external_reservation_id,
+        property: group.property,
+        guest_name: room.guest_name ?? group.primary_guest?.name ?? 'Imported guest',
+      })),
+    )
+    .filter((room) => room.reservation_status === 'CHECKED_OUT' && !invoicedReservationRoomIds.has(room.id));
+  const reservationFolios = (reservationGroupsState.data?.data ?? []).map((group) => {
+    const lineInvoices = billings.filter(
+      (billing) => billing.reservation_room.reservation_group_id === group.id,
+    );
+    const checkedOutRooms = group.rooms.filter((room) => room.reservation_status === 'CHECKED_OUT').length;
+    return {
+      id: group.id,
+      external_reservation_id: group.external_reservation_id,
+      guest_name: group.primary_guest?.name ?? 'Imported guest',
+      property_name: group.property.name,
+      room_count: group.rooms.length,
+      invoiced_room_count: lineInvoices.length,
+      checked_out_room_count: checkedOutRooms,
+      billed_total: lineInvoices.reduce((sum, billing) => sum + billing.total, 0),
+      balance_due: lineInvoices.reduce((sum, billing) => sum + billing.balance_due, 0),
+    };
+  });
+  const outstandingInvoiceCount = uninvoicedCheckedOutReservationRooms.length;
   const collectedTotal = billings.reduce((sum, billing) => sum + (billing.paid_total - billing.refunded_total), 0);
   const balanceDueTotal = billings.reduce((sum, billing) => sum + billing.balance_due, 0);
 
@@ -71,20 +123,82 @@ export function PaymentsPage() {
     }
   }
 
-  async function generateInvoice(bookingId: string) {
+  async function generateReservationRoomInvoice(reservationRoomId: string) {
     setActionError(null);
-    setInvoiceBookingId(bookingId);
+    setInvoiceReservationRoomId(reservationRoomId);
 
     try {
       await api.post('/billings', {
-        booking_id: bookingId,
+        reservation_room_id: reservationRoomId,
         tax: '0.00',
       });
       setReloadKey((value) => value + 1);
     } catch (error) {
       setActionError(getApiErrorMessage(error));
     } finally {
-      setInvoiceBookingId(null);
+      setInvoiceReservationRoomId(null);
+    }
+  }
+
+  async function generateMissingFolioInvoices(reservationGroupId: string) {
+    setActionError(null);
+    setFolioInvoiceGroupId(reservationGroupId);
+
+    try {
+      await api.post(`/billings/reservation-groups/${reservationGroupId}/generate-missing-invoices`);
+      setReloadKey((value) => value + 1);
+    } catch (error) {
+      setActionError(getApiErrorMessage(error));
+    } finally {
+      setFolioInvoiceGroupId(null);
+    }
+  }
+
+  async function openFolio(reservationGroupId: string) {
+    setSelectedFolioId(reservationGroupId);
+    setFolioError(null);
+    setFolioLoading(true);
+
+    try {
+      const response = await api.get<ReservationGroupFolio>(`/billings/reservation-groups/${reservationGroupId}/folio`);
+      setSelectedFolio(response.data);
+      setGroupPaymentForm((current) => ({
+        ...current,
+        amount: response.data.balance_due > 0 ? response.data.balance_due.toFixed(2) : '',
+      }));
+    } catch (error) {
+      setSelectedFolio(null);
+      setFolioError(getApiErrorMessage(error));
+    } finally {
+      setFolioLoading(false);
+    }
+  }
+
+  async function submitGroupPayment(event: FormEvent) {
+    event.preventDefault();
+
+    if (!selectedFolioId) {
+      return;
+    }
+
+    setActionError(null);
+    setCollectingGroupPayment(true);
+
+    try {
+      const response = await api.post<ReservationGroupPaymentCollection>('/payments/collect-reservation-group', {
+        reservation_group_id: selectedFolioId,
+        amount: groupPaymentForm.amount,
+        provider: groupPaymentForm.provider,
+        provider_reference: groupPaymentForm.provider_reference || undefined,
+      });
+      setLastGroupCollection(response.data);
+      setGroupPaymentForm(defaultGroupPaymentForm);
+      await openFolio(selectedFolioId);
+      setReloadKey((value) => value + 1);
+    } catch (error) {
+      setActionError(getApiErrorMessage(error));
+    } finally {
+      setCollectingGroupPayment(false);
     }
   }
 
@@ -93,12 +207,18 @@ export function PaymentsPage() {
       <div className="page-header">
         <div>
           <p className="eyebrow">Payments</p>
-          <h2>Payment Flow</h2>
-          <p className="page-subtitle">Collect invoice payments through a mock provider boundary ready for Razorpay or Stripe.</p>
+          <h2>Payments</h2>
+          <p className="page-subtitle">Collect against room-line invoices and grouped OTA folios without leaving the reservation ledger.</p>
         </div>
       </div>
 
-      <div className="booking-layout">
+      <div className="channel-summary-grid payment-summary-grid">
+        <SignalStat label="Invoices" value={billings.length} />
+        <SignalStat label="Outstanding" value={outstandingInvoiceCount} />
+        <SignalStat label="Payments" value={paymentsState.data?.meta.total ?? payments.length} />
+      </div>
+
+      <div className="split-panels payment-top-grid">
         <form className="card booking-form-card" onSubmit={submitPayment}>
           <div className="section-heading">
             <div>
@@ -124,7 +244,7 @@ export function PaymentsPage() {
                 <option value="">Select invoice</option>
                 {billings.map((billing) => (
                   <option key={billing.id} value={billing.id}>
-                    {billing.booking.guest.name} - {formatCurrency(billing.balance_due)} due
+                    {billing.reservation_room.guest.name} - {formatCurrency(billing.balance_due)} due
                   </option>
                 ))}
               </select>
@@ -171,42 +291,35 @@ export function PaymentsPage() {
           </div>
         </form>
 
-        <aside className="booking-sidepanel">
-          <div className="insight-panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Cash posture</p>
-                <h3>Ledger snapshot</h3>
-              </div>
+        <article className="insight-panel">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Ledger posture</p>
+              <h3>Cash summary</h3>
             </div>
-            <div className="compact-signal-grid">
-              <SignalStat label="Invoices" value={billings.length} />
-              <SignalStat label="Outstanding" value={uninvoicedCheckedOutBookings.length} />
-              <SignalStat label="Payments" value={paymentsState.data?.meta.total ?? payments.length} />
-            </div>
-            <dl className="detail-list">
-              <div>
-                <dt>Collected</dt>
-                <dd>{formatCurrency(collectedTotal)}</dd>
-              </div>
-              <div>
-                <dt>Balance due</dt>
-                <dd>{formatCurrency(balanceDueTotal)}</dd>
-              </div>
-              <div>
-                <dt>Search scope</dt>
-                <dd>{search || 'All transactions'}</dd>
-              </div>
-            </dl>
           </div>
-        </aside>
+          <dl className="detail-list">
+            <div>
+              <dt>Collected</dt>
+              <dd>{formatCurrency(collectedTotal)}</dd>
+            </div>
+            <div>
+              <dt>Balance due</dt>
+              <dd>{formatCurrency(balanceDueTotal)}</dd>
+            </div>
+            <div>
+              <dt>Grouped folios</dt>
+              <dd>{reservationFolios.length}</dd>
+            </div>
+          </dl>
+        </article>
       </div>
 
       {actionError && <p className="error">{actionError}</p>}
 
-      {(billingsState.loading || paymentsState.loading || bookingsState.loading) && <p className="muted">Loading payment data...</p>}
-      {(billingsState.error || paymentsState.error || bookingsState.error) && (
-        <p className="error">{billingsState.error ?? paymentsState.error ?? bookingsState.error}</p>
+      {(billingsState.loading || paymentsState.loading || reservationGroupsState.loading) && <p className="muted">Loading payment data...</p>}
+      {(billingsState.error || paymentsState.error || reservationGroupsState.error) && (
+        <p className="error">{billingsState.error ?? paymentsState.error ?? reservationGroupsState.error}</p>
       )}
 
       <FilterBar title="Payment filters">
@@ -241,12 +354,12 @@ export function PaymentsPage() {
         </label>
       </FilterBar>
 
-      {uninvoicedCheckedOutBookings.length > 0 && (
-        <div className="table-card">
+      {uninvoicedCheckedOutReservationRooms.length > 0 && (
+        <div className="table-card spaced-card">
           <div className="table-heading">
             <div>
-              <p className="eyebrow">Needs invoice</p>
-              <h3>{uninvoicedCheckedOutBookings.length} checked-out bookings</h3>
+              <p className="eyebrow">Imported stays needing invoice</p>
+              <h3>{uninvoicedCheckedOutReservationRooms.length} checked-out room stays</h3>
             </div>
           </div>
           <table>
@@ -254,34 +367,303 @@ export function PaymentsPage() {
               <tr>
                 <th>Guest</th>
                 <th>Property</th>
+                <th>External reservation</th>
                 <th>Dates</th>
                 <th>Total</th>
                 <th>Action</th>
               </tr>
             </thead>
             <tbody>
-              {uninvoicedCheckedOutBookings.map((booking) => (
-                <tr key={booking.id}>
-                  <td>{booking.guest.name}</td>
-                  <td>{booking.property.name}</td>
+              {uninvoicedCheckedOutReservationRooms.map((room) => (
+                <tr key={room.id}>
+                  <td>{room.guest_name}</td>
+                  <td>{room.property.name}</td>
+                  <td>{room.external_reservation_id}</td>
                   <td>
-                    {booking.check_in_date} to {booking.check_out_date}
+                    {room.arrival_date} to {room.departure_date}
                   </td>
-                  <td>{formatCurrency(booking.total_amount)}</td>
+                  <td>{room.total_amount == null ? '-' : formatCurrency(room.total_amount)}</td>
                   <td>
                     <button
                       className="link-button"
-                      disabled={invoiceBookingId === booking.id}
-                      onClick={() => void generateInvoice(booking.id)}
+                      disabled={invoiceReservationRoomId === room.id}
+                      onClick={() => void generateReservationRoomInvoice(room.id)}
                       type="button"
                     >
-                      {invoiceBookingId === booking.id ? 'Generating...' : 'Generate invoice'}
+                      {invoiceReservationRoomId === room.id ? 'Generating...' : 'Generate invoice'}
                     </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {reservationFolios.length > 0 && (
+        <div className="table-card spaced-card">
+          <div className="table-heading">
+            <div>
+              <p className="eyebrow">Reservation folios</p>
+              <h3>{reservationFolios.length} grouped OTA folios</h3>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Reservation</th>
+                <th>Guest</th>
+                <th>Property</th>
+                <th>Rooms invoiced</th>
+                <th>Billed</th>
+                <th>Balance</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reservationFolios.map((folio) => (
+                <tr key={folio.id}>
+                  <td>{folio.external_reservation_id}</td>
+                  <td>{folio.guest_name}</td>
+                  <td>{folio.property_name}</td>
+                  <td>
+                    {folio.invoiced_room_count}/{folio.checked_out_room_count} checked-out rooms
+                  </td>
+                  <td>{formatCurrency(folio.billed_total)}</td>
+                  <td>{formatCurrency(folio.balance_due)}</td>
+                  <td>
+                    <div className="table-actions">
+                      <button
+                        className="secondary-button compact-button"
+                        onClick={() => void openFolio(folio.id)}
+                        type="button"
+                      >
+                        {selectedFolioId === folio.id ? 'Refresh folio' : 'Review folio'}
+                      </button>
+                      <button
+                        className="link-button"
+                        disabled={folioInvoiceGroupId === folio.id}
+                        onClick={() => void generateMissingFolioInvoices(folio.id)}
+                        type="button"
+                      >
+                        {folioInvoiceGroupId === folio.id ? 'Generating...' : 'Generate missing invoices'}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {selectedFolioId && (
+        <div className="table-card spaced-card">
+          <div className="table-heading">
+            <div>
+              <p className="eyebrow">Selected folio</p>
+              <h3>{selectedFolio?.external_reservation_id ?? 'Loading folio...'}</h3>
+            </div>
+            <button
+              className="secondary-button compact-button"
+              onClick={() => {
+                setSelectedFolioId(null);
+                setSelectedFolio(null);
+                setFolioError(null);
+                setLastGroupCollection(null);
+              }}
+              type="button"
+            >
+              Close folio
+            </button>
+          </div>
+
+          {folioLoading && <p className="muted">Loading grouped folio...</p>}
+          {folioError && <p className="error">{folioError}</p>}
+
+          {selectedFolio && (
+            <div className="folio-layout">
+              <div className="folio-main-rail">
+                <div className="channel-summary-grid">
+                  <article className="channel-summary-card">
+                    <p>Guest</p>
+                    <strong>{selectedFolio.guest?.name ?? 'Imported guest'}</strong>
+                    <span>{selectedFolio.property.name}</span>
+                  </article>
+                  <article className="channel-summary-card">
+                    <p>Rooms</p>
+                    <strong>{selectedFolio.room_count}</strong>
+                    <span>{selectedFolio.invoiced_room_count} invoiced room lines</span>
+                  </article>
+                  <article className="channel-summary-card">
+                    <p>Balance due</p>
+                    <strong>{formatCurrency(selectedFolio.balance_due)}</strong>
+                    <span>{formatCurrency(selectedFolio.billed_total)} billed</span>
+                  </article>
+                </div>
+
+                <div className="table-card embedded-table-card">
+                  <div className="table-heading">
+                    <div>
+                      <p className="eyebrow">Room lines</p>
+                      <h3>{selectedFolio.rooms.length} grouped stays</h3>
+                    </div>
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Room line</th>
+                        <th>Category</th>
+                        <th>Dates</th>
+                        <th>Assigned room</th>
+                        <th>Total</th>
+                        <th>Status</th>
+                        <th>Invoice</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedFolio.rooms.map((room) => (
+                        <tr key={room.id}>
+                          <td>{room.external_room_reservation_id}</td>
+                          <td>
+                            {room.room_category.name}
+                            <br />
+                            <span className="muted">{room.rate_plan.name}</span>
+                          </td>
+                          <td>
+                            {room.arrival_date} to {room.departure_date}
+                          </td>
+                          <td>{room.room.room_number ?? 'Not assigned'}</td>
+                          <td>{formatCurrency(room.total_amount)}</td>
+                          <td>
+                            <span className={`status-pill ${room.reservation_status.toLowerCase()}`}>{room.reservation_status}</span>
+                          </td>
+                          <td>{room.billing_id ? 'Ready' : 'Missing'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="table-card embedded-table-card">
+                  <div className="table-heading">
+                    <div>
+                      <p className="eyebrow">Invoices</p>
+                      <h3>{selectedFolio.invoices.length} folio invoices</h3>
+                    </div>
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Guest</th>
+                        <th>Total</th>
+                        <th>Paid</th>
+                        <th>Balance</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedFolio.invoices.map((invoice) => (
+                        <tr key={invoice.id}>
+                          <td>{invoice.reservation_room.guest.name}</td>
+                          <td>{formatCurrency(invoice.total)}</td>
+                          <td>{formatCurrency(invoice.paid_total - invoice.refunded_total)}</td>
+                          <td>{formatCurrency(invoice.balance_due)}</td>
+                          <td>
+                            <span className="status-pill">{invoice.payment_status}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <aside className="folio-side-rail">
+                <div className="insight-panel">
+                  <div className="section-heading">
+                    <div>
+                      <p className="eyebrow">Group collection</p>
+                      <h3>Collect against folio</h3>
+                    </div>
+                  </div>
+                  <form className="grid" onSubmit={submitGroupPayment}>
+                    <label>
+                      Amount
+                      <input
+                        min="0"
+                        onChange={(event) => setGroupPaymentForm({ ...groupPaymentForm, amount: event.target.value })}
+                        required
+                        step="0.01"
+                        type="number"
+                        value={groupPaymentForm.amount}
+                      />
+                    </label>
+                    <label>
+                      Provider
+                      <select
+                        onChange={(event) => setGroupPaymentForm({ ...groupPaymentForm, provider: event.target.value as PaymentProvider })}
+                        value={groupPaymentForm.provider}
+                      >
+                        <option value="MOCK">Mock</option>
+                        <option value="CASH">Cash</option>
+                        <option value="CARD">Card</option>
+                        <option value="UPI">UPI</option>
+                        <option value="RAZORPAY">Razorpay</option>
+                        <option value="STRIPE">Stripe</option>
+                      </select>
+                    </label>
+                    <label>
+                      Reference
+                      <input
+                        onChange={(event) => setGroupPaymentForm({ ...groupPaymentForm, provider_reference: event.target.value })}
+                        placeholder="folio-receipt-001"
+                        value={groupPaymentForm.provider_reference}
+                      />
+                    </label>
+                    <button className="primary-button" disabled={collectingGroupPayment || selectedFolio.balance_due <= 0} type="submit">
+                      {collectingGroupPayment ? 'Collecting...' : 'Collect group payment'}
+                    </button>
+                  </form>
+                  <dl className="detail-list">
+                    <div>
+                      <dt>Total amount</dt>
+                      <dd>{formatCurrency(selectedFolio.total_amount)}</dd>
+                    </div>
+                    <div>
+                      <dt>Paid total</dt>
+                      <dd>{formatCurrency(selectedFolio.paid_total - selectedFolio.refunded_total)}</dd>
+                    </div>
+                    <div>
+                      <dt>Balance due</dt>
+                      <dd>{formatCurrency(selectedFolio.balance_due)}</dd>
+                    </div>
+                  </dl>
+                </div>
+
+                {lastGroupCollection && lastGroupCollection.reservation_group_id === selectedFolio.reservation_group_id && (
+                  <div className="insight-panel">
+                    <div className="section-heading">
+                      <div>
+                        <p className="eyebrow">Last collection</p>
+                        <h3>{formatCurrency(lastGroupCollection.allocated_total)} allocated</h3>
+                      </div>
+                    </div>
+                    <dl className="detail-list">
+                      <div>
+                        <dt>Remaining balance</dt>
+                        <dd>{formatCurrency(lastGroupCollection.remaining_balance)}</dd>
+                      </div>
+                      <div>
+                        <dt>Payments created</dt>
+                        <dd>{lastGroupCollection.payments.length}</dd>
+                      </div>
+                    </dl>
+                  </div>
+                )}
+              </aside>
+            </div>
+          )}
         </div>
       )}
 
@@ -306,8 +688,8 @@ export function PaymentsPage() {
           <tbody>
             {billings.map((billing) => (
               <tr key={billing.id}>
-                <td>{billing.booking.guest.name}</td>
-                <td>{billing.booking.property.name}</td>
+                <td>{billing.reservation_room.guest.name}</td>
+                <td>{billing.reservation_room.property.name}</td>
                 <td>{formatCurrency(billing.total)}</td>
                 <td>{formatCurrency(billing.paid_total - billing.refunded_total)}</td>
                 <td>{formatCurrency(billing.balance_due)}</td>
@@ -340,7 +722,7 @@ export function PaymentsPage() {
           <tbody>
             {payments.map((payment) => (
               <tr key={payment.id}>
-                <td>{payment.booking.guest_name}</td>
+                <td>{payment.reservation_room.guest_name}</td>
                 <td>{payment.provider}</td>
                 <td>{payment.provider_reference ?? '-'}</td>
                 <td>{formatCurrency(payment.amount)}</td>

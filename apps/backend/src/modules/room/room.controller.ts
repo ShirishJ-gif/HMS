@@ -5,6 +5,7 @@ import { AuthenticatedUser } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateRoomDto } from './dto/create-room.dto';
+import { CreateRoomOutOfServicePeriodDto } from './dto/create-room-out-of-service-period.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
 import { RoomService } from './room.service';
 
@@ -37,5 +38,30 @@ export class RoomController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.roomService.remove(id, user);
+  }
+
+  @Get(':id/out-of-service-periods')
+  findOutOfServicePeriods(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.roomService.findOutOfServicePeriods(id, user);
+  }
+
+  @Post(':id/out-of-service-periods')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  createOutOfServicePeriod(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateRoomOutOfServicePeriodDto,
+  ) {
+    return this.roomService.createOutOfServicePeriod(id, dto, user);
+  }
+
+  @Delete(':id/out-of-service-periods/:periodId')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  removeOutOfServicePeriod(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('periodId', ParseUUIDPipe) periodId: string,
+  ) {
+    return this.roomService.removeOutOfServicePeriod(id, periodId, user);
   }
 }

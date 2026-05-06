@@ -2,35 +2,38 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, Query } from '@
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { CreateDirectReservationDto } from './dto/create-direct-reservation.dto';
 import { BookingService } from './booking.service';
-import { CreateBookingDto } from './dto/create-booking.dto';
 
-@Controller('bookings')
+@Controller()
 export class BookingController {
   constructor(private readonly bookingService: BookingService) {}
 
-  @Post()
-  create(@CurrentUser() user: AuthenticatedUser, @Body() createBookingDto: CreateBookingDto) {
-    return this.bookingService.create(createBookingDto, user);
+  @Post('reservations/direct')
+  createDirectReservation(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateDirectReservationDto) {
+    return this.bookingService.createDirectReservation(dto, user);
   }
 
-  @Get()
-  findAll(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationQueryDto) {
-    return this.bookingService.findAll(query, user);
+  @Get('bookings/groups')
+  findReservationGroups(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationQueryDto) {
+    return this.bookingService.findReservationGroups(query, user);
   }
 
-  @Put(':id/checkin')
-  checkIn(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
-    return this.bookingService.checkIn(id, user);
+  @Put('bookings/groups/rooms/:id/checkin')
+  checkInReservationRoom(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.bookingService.checkInReservationRoom(id, user);
   }
 
-  @Put(':id/checkout')
-  checkOut(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
-    return this.bookingService.checkOut(id, user);
+  @Put('bookings/groups/rooms/:id/checkout')
+  checkOutReservationRoom(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.bookingService.checkOutReservationRoom(id, user);
   }
 
-  @Post(':id/checkin-reminder')
-  sendCheckInReminder(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
-    return this.bookingService.sendCheckInReminder(id, user);
+  @Post('bookings/groups/rooms/:id/checkin-reminder')
+  sendReservationRoomCheckInReminder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.bookingService.sendReservationRoomCheckInReminder(id, user);
   }
 }

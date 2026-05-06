@@ -1,0 +1,929 @@
+{
+  "info": {
+    "_postman_id": "cb6177ef-3266-44a9-9f78-84b1e4f2e7fd",
+    "name": "Zodomus API Reference Flow",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Postman collection aligned to the Zodomus API reference flow for HMS integration work."
+  },
+  "auth": {
+    "type": "basic",
+    "basic": [
+      {
+        "key": "username",
+        "value": "{{api_user}}",
+        "type": "string"
+      },
+      {
+        "key": "password",
+        "value": "{{api_password}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://api.zodomus.com"
+    },
+    {
+      "key": "api_user",
+      "value": ""
+    },
+    {
+      "key": "api_password",
+      "value": ""
+    },
+    {
+      "key": "channel_id",
+      "value": "1"
+    },
+    {
+      "key": "property_id",
+      "value": "999999"
+    },
+    {
+      "key": "price_model_id",
+      "value": "1"
+    },
+    {
+      "key": "room_id",
+      "value": "90001"
+    },
+    {
+      "key": "rate_id",
+      "value": "99001"
+    },
+    {
+      "key": "room_status",
+      "value": "Activate"
+    },
+    {
+      "key": "product_status",
+      "value": "New"
+    },
+    {
+      "key": "content_status",
+      "value": "New"
+    },
+    {
+      "key": "reservation_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "01. Account",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/account",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "account"
+          ]
+        },
+        "description": "Detailed account info. Use this first to verify the API user and password."
+      }
+    },
+    {
+      "name": "02. Channels",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/channels",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "channels"
+          ]
+        },
+        "description": "Returns the list of current active channels. Use this to discover the real numeric channelId."
+      }
+    },
+    {
+      "name": "03. Currencies",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/currencies",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "currencies"
+          ]
+        },
+        "description": "Returns the list of supported currencies."
+      }
+    },
+    {
+      "name": "04. Price Models",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/price-model",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "price-model"
+          ]
+        },
+        "description": "Returns the list of supported price models."
+      }
+    },
+    {
+      "name": "05. Property Check",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/property-check",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "property-check"
+          ]
+        },
+        "description": "Checks whether the chosen propertyId is valid on the selected channelId."
+      }
+    },
+    {
+      "name": "06. Property Activation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"priceModelId\": {{price_model_id}}\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/property-activation",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "property-activation"
+          ]
+        },
+        "description": "Activates the property on the selected channel."
+      }
+    },
+    {
+      "name": "07. Property Cancellation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/property-cancellation",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "property-cancellation"
+          ]
+        },
+        "description": "Cancels the active property/channel connection."
+      }
+    },
+    {
+      "name": "08. Room Rates",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/room-rates?channelId={{channel_id}}&propertyId={{property_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "room-rates"
+          ],
+          "query": [
+            {
+              "key": "channelId",
+              "value": "{{channel_id}}"
+            },
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            }
+          ]
+        },
+        "description": "Fetches room and rate metadata after property activation."
+      }
+    },
+    {
+      "name": "09. Get Availability",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/availability?channelId={{channel_id}}&propertyId={{property_id}}&dateFrom=2026-05-05&dateTo=2026-05-10",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "availability"
+          ],
+          "query": [
+            {
+              "key": "channelId",
+              "value": "{{channel_id}}"
+            },
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            },
+            {
+              "key": "dateFrom",
+              "value": "2026-05-05"
+            },
+            {
+              "key": "dateTo",
+              "value": "2026-05-10"
+            }
+          ]
+        },
+        "description": "Returns room availability by date for the selected property/channel."
+      }
+    },
+    {
+      "name": "10. Set Availability",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"roomId\": \"90001\",\n  \"dateFrom\": \"2026-05-05\",\n  \"dateTo\": \"2026-05-10\",\n  \"availability\": 2\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/availability",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "availability"
+          ]
+        },
+        "description": "Sets availability for one provider room across a date range."
+      }
+    },
+    {
+      "name": "11. Set Rates",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"roomId\": \"90001\",\n  \"rateId\": \"99001\",\n  \"dateFrom\": \"2026-05-05\",\n  \"dateTo\": \"2026-05-10\",\n  \"currencyCode\": \"EUR\",\n  \"prices\": {\n    \"price\": \"120.00\",\n    \"priceSingle\": \"95.00\"\n  },\n  \"weekDays\": {\n    \"sun\": true,\n    \"mon\": true,\n    \"tue\": true,\n    \"wed\": true,\n    \"thu\": true,\n    \"fri\": true,\n    \"sat\": true\n  },\n  \"closed\": \"0\",\n  \"minimumStay\": \"1\",\n  \"maximumStay\": \"31\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/rates",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "rates"
+          ]
+        },
+        "description": "Sets rates for one provider room/rate plan pair according to the configured price model."
+      }
+    },
+    {
+      "name": "12. Set Rates Derived",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"roomId\": \"90001\",\n  \"rateId\": \"990001\",\n  \"dateFrom\": \"2026-05-05\",\n  \"dateTo\": \"2026-05-10\",\n  \"currencyCode\": \"EUR\",\n  \"baseOccupancy\": 1,\n  \"occupancy\": {}\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/rates-derived",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "rates-derived"
+          ]
+        },
+        "description": "Sets derived rates. Used for Booking channel only when the price model is derived prices."
+      }
+    },
+    {
+      "name": "13. Rooms Activation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"rooms\": [\n    {\n      \"roomId\": \"90001\",\n      \"roomName\": \"Suite\",\n      \"quantity\": 1,\n      \"status\": 1,\n      \"rates\": [\"99001\"]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/rooms-activation",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "rooms-activation"
+          ]
+        },
+        "description": "Activates property rooms and rates and maps them with Zodomus."
+      }
+    },
+    {
+      "name": "14. Rooms Cancellation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"rooms\": [\n    {\n      \"roomId\": \"90001\",\n      \"roomName\": \"Suite\",\n      \"quantity\": 1,\n      \"status\": 1,\n      \"rates\": [\"99001\"]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/rooms-cancellation",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "rooms-cancellation"
+          ]
+        },
+        "description": "Cancels room associations for the property on Zodomus."
+      }
+    },
+    {
+      "name": "15. Reservations Queue",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/reservations-queue?channelId={{channel_id}}&propertyId={{property_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "reservations-queue"
+          ],
+          "query": [
+            {
+              "key": "channelId",
+              "value": "{{channel_id}}"
+            },
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            }
+          ]
+        },
+        "description": "Lists queued reservations available for pull/import."
+      }
+    },
+    {
+      "name": "16. Reservation Detail",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/reservations?channelId={{channel_id}}&propertyId={{property_id}}&reservationId={{reservation_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "reservations"
+          ],
+          "query": [
+            {
+              "key": "channelId",
+              "value": "{{channel_id}}"
+            },
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            },
+            {
+              "key": "reservationId",
+              "value": "{{reservation_id}}"
+            }
+          ]
+        },
+        "description": "Fetches a single reservation detail after you capture a reservation ID from the queue."
+      }
+    },
+    {
+      "name": "17. Reservation Credit Card",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/reservations-cc?channelId={{channel_id}}&propertyId={{property_id}}&reservationId={{reservation_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "reservations-cc"
+          ],
+          "query": [
+            {
+              "key": "channelId",
+              "value": "{{channel_id}}"
+            },
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            },
+            {
+              "key": "reservationId",
+              "value": "{{reservation_id}}"
+            }
+          ]
+        },
+        "description": "Fetches reservation credit card information. This may require an extra key/password enabled by Zodomus."
+      }
+    },
+    {
+      "name": "18. Reservations Summary",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/reservations-summary?channelId={{channel_id}}&propertyId={{property_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "reservations-summary"
+          ],
+          "query": [
+            {
+              "key": "channelId",
+              "value": "{{channel_id}}"
+            },
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            }
+          ]
+        },
+        "description": "Lists future reservations that predate your channel-manager connection."
+      }
+    },
+    {
+      "name": "19. Create Test Reservation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"status\": \"new\",\n  \"reservationId\": \"{{reservation_id}}\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/reservations-createtest",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "reservations-createtest"
+          ]
+        },
+        "description": "Creates a sandbox test reservation for the selected property/channel."
+      }
+    },
+    {
+      "name": "20. Get Property Details",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/property?channelId={{channel_id}}&propertyId={{property_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "property"
+          ],
+          "query": [
+            {
+              "key": "channelId",
+              "value": "{{channel_id}}"
+            },
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            }
+          ]
+        },
+        "description": "Gets property details. Zodomus docs mark this as Expedia-only."
+      }
+    },
+    {
+      "name": "21. Create Or Modify Property",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"hotelContent\": {\n    \"status\": \"{{content_status}}\",\n    \"name\": \"Test Hotel\",\n    \"languageCode\": \"en\",\n    \"propertyLicenseNumber\": \"121212\"\n  },\n  \"contactInfo\": {\n    \"type\": \"PhysicalLocation\",\n    \"addresses\": {}\n  },\n  \"hotelInfo\": {\n    \"guestRoomQuantity\": \"1\",\n    \"propertyType\": \"1\",\n    \"services\": [],\n    \"acceptedPayments\": [],\n    \"transportations\": []\n  },\n  \"facilityInfo\": {\n    \"guestRooms\": \"1\",\n    \"restaurants\": \"1\",\n    \"tpaExtensions\": \"1\"\n  },\n  \"tpaExtensions\": {\n    \"sellMealsThroughBooking\": \"1\"\n  },\n  \"policies\": {\n    \"policyInfo\": \"1\",\n    \"petsPolicies\": \"1\",\n    \"cancelPolicies\": \"1\",\n    \"guaranteePaymentPolicies\": \"1\",\n    \"taxPolicies\": \"1\",\n    \"feePolicies\": \"1\"\n  },\n  \"areaInfo\": {\n    \"attractions\": \"1\"\n  },\n  \"affiliationInfo\": {\n    \"awards\": \"1\"\n  },\n  \"multimediaDescriptions\": []\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/property",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "property"
+          ]
+        },
+        "description": "Creates or modifies a property. Zodomus docs mark this as Booking-only content API."
+      }
+    },
+    {
+      "name": "22. Property Status",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"type\": null,\n  \"properties\": null\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/property-status",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "property-status"
+          ]
+        },
+        "description": "Sets property status or checks property status. Zodomus docs mark this as Booking-only."
+      }
+    },
+    {
+      "name": "23. Get Room Details",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/room?channelId={{channel_id}}&propertyId={{property_id}}&roomId={{room_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "room"
+          ],
+          "query": [
+            {
+              "key": "channelId",
+              "value": "{{channel_id}}"
+            },
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            },
+            {
+              "key": "roomId",
+              "value": "{{room_id}}"
+            }
+          ]
+        },
+        "description": "Gets room details. Zodomus docs mark this as Expedia-only."
+      }
+    },
+    {
+      "name": "24. Create Or Modify Room",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"status\": \"{{content_status}}\",\n  \"name\": \"Test Room\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/room",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "room"
+          ]
+        },
+        "description": "Creates or modifies a room in Zodomus content APIs."
+      }
+    },
+    {
+      "name": "25. Room Status",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"roomId\": \"{{room_id}}\",\n  \"status\": \"{{room_status}}\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/room-status",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "room-status"
+          ]
+        },
+        "description": "Sets room status. Zodomus docs mark this as Booking-only."
+      }
+    },
+    {
+      "name": "26. Get Rate Details",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/rate?channelId={{channel_id}}&propertyId={{property_id}}&roomId={{room_id}}&rateId={{rate_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "rate"
+          ],
+          "query": [
+            {
+              "key": "channelId",
+              "value": "{{channel_id}}"
+            },
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            },
+            {
+              "key": "roomId",
+              "value": "{{room_id}}"
+            },
+            {
+              "key": "rateId",
+              "value": "{{rate_id}}"
+            }
+          ]
+        },
+        "description": "Gets rate details. Zodomus docs mark this as Expedia-only."
+      }
+    },
+    {
+      "name": "27. Create Modify Or Delete Rate",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"status\": \"{{content_status}}\",\n  \"name\": \"Test Rate\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/rate",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "rate"
+          ]
+        },
+        "description": "Creates, modifies, or deletes a rate in Zodomus content APIs."
+      }
+    },
+    {
+      "name": "28. Create Modify Or Delete Product",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"roomId\": \"{{room_id}}\",\n  \"rateId\": \"{{rate_id}}\",\n  \"status\": \"{{product_status}}\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/product",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "product"
+          ]
+        },
+        "description": "Creates, modifies, or deletes a product. Zodomus docs mark this as Booking-only."
+      }
+    }
+  ]
+}

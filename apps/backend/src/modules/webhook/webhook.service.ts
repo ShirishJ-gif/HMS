@@ -42,8 +42,12 @@ export class WebhookService {
       typeof rawBody === 'string'
         ? rawBody
         : rawBody?.toString('utf8') ?? JSON.stringify(payload ?? {});
-    const signature = this.extractHeader(headers, 'x-webhook-signature');
-    this.verifySignature(domain, signature, rawPayload);
+    const signature =
+      this.extractHeader(headers, 'x-webhook-signature') ??
+      this.extractHeader(headers, 'x-webhook-key') ??
+      this.extractHeader(headers, 'x-api-key') ??
+      this.extractHeader(headers, 'authorization');
+    this.verifySignature(domain, provider, signature, rawPayload);
 
     const eventType =
       this.readString(payload.event_type) ?? this.extractHeader(headers, 'x-event-type') ?? 'unknown';
@@ -164,11 +168,13 @@ export class WebhookService {
     throw new BadRequestException('Unsupported webhook domain');
   }
 
-  private verifySignature(domain: WebhookDomain, signature: string | undefined, rawPayload: string) {
-    const secret =
-      domain === WebhookDomain.PAYMENT
-        ? process.env.PAYMENT_WEBHOOK_SECRET
-        : process.env.CHANNEL_WEBHOOK_SECRET;
+  private verifySignature(
+    domain: WebhookDomain,
+    provider: string,
+    signature: string | undefined,
+    rawPayload: string,
+  ) {
+    const secret = this.webhookSecretFor(domain, provider);
 
     if (!secret) {
       this.metricsService.recordWebhookRejected(domain, 'secret_missing');
@@ -180,15 +186,40 @@ export class WebhookService {
       throw new UnauthorizedException('Missing webhook signature');
     }
 
+    const normalizedSignature = signature.startsWith('Bearer ') ? signature.slice(7).trim() : signature;
+    const exactValue = normalizedSignature.startsWith('sha256=')
+      ? normalizedSignature.slice(7)
+      : normalizedSignature;
     const expected = createHmac('sha256', secret).update(rawPayload).digest('hex');
-    const actual = signature.startsWith('sha256=') ? signature.slice(7) : signature;
+    const actual = exactValue;
     const expectedBuffer = Buffer.from(expected, 'utf8');
     const actualBuffer = Buffer.from(actual, 'utf8');
 
-    if (expectedBuffer.length !== actualBuffer.length || !timingSafeEqual(expectedBuffer, actualBuffer)) {
+    const exactSecretBuffer = Buffer.from(secret, 'utf8');
+    const exactActualBuffer = Buffer.from(actual, 'utf8');
+    const exactMatch =
+      exactSecretBuffer.length === exactActualBuffer.length &&
+      timingSafeEqual(exactSecretBuffer, exactActualBuffer);
+    const hmacMatch =
+      expectedBuffer.length === actualBuffer.length &&
+      timingSafeEqual(expectedBuffer, actualBuffer);
+
+    if (!exactMatch && !hmacMatch) {
       this.metricsService.recordWebhookRejected(domain, 'invalid_signature');
       throw new UnauthorizedException('Invalid webhook signature');
     }
+  }
+
+  private webhookSecretFor(domain: WebhookDomain, provider: string) {
+    if (domain === WebhookDomain.PAYMENT) {
+      return process.env.PAYMENT_WEBHOOK_SECRET;
+    }
+
+    if (provider === 'zodomus') {
+      return process.env.ZODOMUS_WEBHOOK_KEY?.trim() || process.env.CHANNEL_WEBHOOK_SECRET;
+    }
+
+    return process.env.CHANNEL_WEBHOOK_SECRET;
   }
 
   private extractHeader(headers: Record<string, string | string[] | undefined>, key: string) {

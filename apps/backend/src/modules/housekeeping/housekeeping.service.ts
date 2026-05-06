@@ -104,6 +104,11 @@ export class HousekeepingService {
   private includeRelations() {
     return {
       property: true,
+      reservationRoom: {
+        include: {
+          reservationGroup: true,
+        },
+      },
       room: {
         include: {
           roomCategory: true,
@@ -116,11 +121,17 @@ export class HousekeepingService {
     id: string;
     propertyId: string;
     roomId: string;
+    reservationRoomId: string | null;
     status: string;
     priority: string;
     notes: string | null;
     dueDate: Date | null;
     property: { id: string; name: string; code: string };
+    reservationRoom: {
+      id: string;
+      externalRoomReservationId: string;
+      reservationGroup: { id: string; externalReservationId: string };
+    } | null;
     room: {
       id: string;
       roomNumber: string;
@@ -133,6 +144,7 @@ export class HousekeepingService {
       id: task.id,
       property_id: task.propertyId,
       room_id: task.roomId,
+      reservation_room_id: task.reservationRoomId,
       status: task.status,
       priority: task.priority,
       notes: task.notes,
@@ -151,6 +163,14 @@ export class HousekeepingService {
           code: task.room.roomCategory.code,
         },
       },
+      reservation_room: task.reservationRoom
+        ? {
+            id: task.reservationRoom.id,
+            external_room_reservation_id: task.reservationRoom.externalRoomReservationId,
+            reservation_group_id: task.reservationRoom.reservationGroup.id,
+            external_reservation_id: task.reservationRoom.reservationGroup.externalReservationId,
+          }
+        : null,
       created_at: task.createdAt,
       updated_at: task.updatedAt,
     };

@@ -215,7 +215,7 @@ Out of scope for first pass unless needed by the provider:
 - multi-provider abstraction cleanup
 - advanced pricing parity across channels
 - dispute handling
-- full OTA booking import for every provider
+- full OTA reservation import for every provider
 - deep reporting UI
 
 ## Correct Expectation

@@ -42,8 +42,9 @@ The normal flow is:
 3. create rate plans
 4. optionally add pricing rules
 5. add physical rooms
-6. create guest records
-7. create bookings
+6. optionally add inventory restrictions
+7. create guest records
+8. create bookings
 8. check in guest and assign room
 9. check out guest
 10. generate invoice and collect payment
@@ -51,8 +52,10 @@ The normal flow is:
 Around that core flow, the system also handles:
 
 - availability checking
+- centralized inventory calendar and restriction control
 - housekeeping tasks
 - channel sync activity
+- inventory reconciliation and failed-row retry
 - notifications
 - audit trail
 
@@ -73,6 +76,20 @@ The admin starts by setting up:
 
 This setup decides what the hotel can sell and at what base structure.
 
+After that, admins can also define selling rules such as:
+
+- stop-sell
+- minimum stay
+- maximum stay
+
+for specific room categories and date ranges.
+
+Important:
+
+- these restriction rules are enforced inside HMS now
+- they are not yet synced outward to Zodomus
+- staff should treat them as internal-only controls until provider-side restriction sync is implemented
+
 ## Room inventory flow
 
 After categories exist, the hotel adds physical rooms.
@@ -89,6 +106,32 @@ The system separates:
 
 This is important because bookings are made against category inventory first, and actual room numbers are assigned later.
 
+The system now also supports **dated room blocks**.
+
+That means operations can mark one physical room as unavailable from one date to another for reasons such as:
+
+- plumbing repair
+- deep cleaning
+- temporary owner use
+- furniture replacement
+
+This is different from the permanent room status `MAINTENANCE`.
+
+- `MAINTENANCE` means the room is broadly unavailable until staff changes the status back
+- a dated out-of-service period means the room is unavailable only for the defined dates
+
+The system also maintains a **central inventory calendar** at room-category/date level.
+
+That calendar tracks:
+
+- total rooms
+- blocked rooms
+- reserved rooms
+- available rooms
+- stop-sell
+- minimum stay
+- maximum stay
+
 ## Guest flow
 
 Guest records are created before or during reservation handling.
@@ -104,26 +147,32 @@ A guest record stores:
 
 This gives the front desk a guest registry for repeat stays and operational tracking.
 
-## Booking flow
+## Reservation flow
 
 This is one of the main workflows.
 
-### Step 1: create booking
+### Step 1: reservation is created or imported
 
-The staff/admin chooses:
+Reservations can enter in two ways:
+
+- direct reservation creation from HMS
+- OTA/channel reservation import from Zodomus
+
+For OTA/channel reservation intake:
 
 - property
-- guest
-- room category
-- rate plan
-- check-in date
-- check-out date
+- guest/contact details
+- one reservation header
+- one or more reservation-room lines
+- arrival and departure dates
+- mapped room category and rate plan
 
 The system then:
 
-- checks that the dates are valid
-- checks that the room category still has sellable inventory
-- calculates the total booking amount
+- validates the dates and mappings
+- stores a `ReservationGroup`
+- stores one `ReservationRoom` per imported stay line
+- reserves room-category inventory
 
 The total is not just a simple base-rate multiplication anymore.
 
@@ -133,16 +182,18 @@ It now uses:
 - plus any active pricing rules
 - across each night of the stay
 
-### Step 2: reservation is stored
+### Step 2: operations happen on reservation rooms
 
-The booking is created with status:
+The imported room line starts with status:
 
 - `BOOKED`
 
 At this stage:
 
-- the booking has reserved category inventory
+- the reservation room has reserved category inventory
 - the guest has not yet been assigned a specific room number
+
+For direct reservations, the system now also allocates room-type inventory transactionally through the same inventory engine used by OTA imports.
 
 ## Pricing flow
 
@@ -154,7 +205,7 @@ Then the system can adjust the nightly price based on active rules, for example:
 - festival or date-range surcharge
 - occupancy-based surcharge when demand is high
 
-The system calculates the final booking total from nightly prices, not just one flat base amount.
+The system calculates the final reservation total from nightly prices, not just one flat base amount.
 
 This makes pricing more realistic for hotel operations.
 
@@ -173,14 +224,28 @@ The system then shows:
 - total inventory by room category
 - already booked inventory
 - out-of-service rooms
+- restriction rules such as stop-sell, minimum stay, and maximum stay
+
+At the moment, the availability screen shows those restrictions clearly, but they remain HMS-only rules. OTA/channel selling behavior only reflects them after outbound restriction sync is implemented.
 - remaining sellable inventory
 - starting rate
+- active stop-sell / min-stay / max-stay rules in the inventory calendar
 
 This helps the hotel team decide:
 
 - whether they can accept more bookings
 - which categories are tight
 - what pricing pressure exists
+- which dates are commercially closed or constrained
+
+Out-of-service counts now come from two sources:
+
+- rooms whose current status is `MAINTENANCE`
+- rooms that have a dated out-of-service period overlapping the selected window
+
+For connected OTA/channel flows, HMS now also turns that availability truth into daily provider inventory rows. If a provider accepts some room/date rows and rejects others, operators can see the exact failed rows and retry only those failures instead of resending the whole sync window.
+
+The Availability page now also lets admins add selling restrictions directly for a room type and date range.
 
 ## Check-in flow
 
@@ -217,11 +282,11 @@ After or around checkout, the billing and payment flow is used.
 
 ### Billing
 
-The system creates one invoice per booking.
+The system creates one invoice per reservation room.
 
 The invoice can include:
 
-- booking amount
+- reservation-room amount
 - tax
 - extra charges
 
@@ -264,6 +329,18 @@ This helps hotel staff know:
 - which rooms should not be sold
 
 ## Channel manager flow
+
+For Zodomus-style channel management, HMS is the operational source of truth.
+
+The working loop is:
+
+1. HMS imports reservations from the provider
+2. HMS recalculates inventory from physical rooms, maintenance state, and active room stays
+3. HMS pushes daily availability outward
+4. HMS records room/date-level push outcomes
+5. Operators reconcile drift and retry only failed rows when needed
+
+This makes the channel flow operationally safer than a blind “push everything and hope” model.
 
 The channel section is the integration control area.
 
