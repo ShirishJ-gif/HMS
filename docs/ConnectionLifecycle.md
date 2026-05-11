@@ -1,6 +1,6 @@
 # Connection Lifecycle
 
-Last updated: 2026-05-06
+Last updated: 2026-05-10
 
 This is the current HMS -> Zodomus connection and sync lifecycle.
 
@@ -37,6 +37,8 @@ Important:
 - `property_id` is the HMS property UUID
 - `external_hotel_id` is the Zodomus property ID
 - activation can return `400` for an already-active property and still be operationally acceptable if `property-check` returns all OK
+- `GET /account`, `POST /property-check`, inventory sync, rate sync, and booking polling all use the backend env credentials `ZODOMUS_API_USER` + `ZODOMUS_API_PASSWORD`
+- if those env credentials are wrong, the connection mappings can still look correct locally while every live provider call fails with `401`
 
 ## 2. Load provider catalog
 
@@ -202,7 +204,13 @@ Important:
 - Zodomus receives one `/availability` push per room/date row
 - rate truth comes from HMS DB
 - rate sync must use `external_room_id + external_rate_id`
+- HMS now builds rate sync as one row per mapped provider room/rate per day
+- active HMS pricing rules are applied before each daily Zodomus `/rates` push
+- Zodomus receives one `/rates` push per room/rate/date row
+- effective Zodomus `sync_window_days` is clamped to a minimum of `365`
 - inventory sync status can now be `SUCCEEDED`, `PARTIAL_FAILED`, or `FAILED`
+- provider `returnCode != 200` now counts as a failed row/result, so provider business rejection is no longer shown as a successful sync
+- rate sync outcome now uses provider row/result summaries too, instead of defaulting every completed push to `SUCCEEDED`
 
 ## 8. Reservation import by polling
 
@@ -233,6 +241,18 @@ Then HMS importer:
 4. creates or updates `ReservationGroup`
 5. creates or updates `ReservationRoom`
 
+Important:
+
+- new provider reservations whose stay has already departed are skipped instead of failing local inventory allocation
+- repeated Zodomus reservation detail fetches can eventually return `Reservation already downloaded 5 times. The limit was reached.`, which is a provider-side limit rather than an HMS import bug
+
+Important:
+
+- HMS now backfills recent past provider stays and skips only reservations whose latest departure is older than the current 30-day import window.
+- The stale-stay cutoff is computed in the property's configured timezone, not raw UTC date.
+- Import can still fail intentionally when a mapped room category has no remaining local inventory for the requested stay dates.
+- Incomplete room/rate mappings still block import for the affected provider reservation lines.
+
 ## 9. Reservation import by webhook trigger
 
 Zodomus can trigger reservation intake through webhook delivery.
@@ -261,12 +281,15 @@ HMS behavior:
    - provider `channel_id`
    - final readiness state
 5. enqueue `BOOKINGS` sync for that connection
-6. reuse the normal reservation polling/import path
+6. if webhook payload includes `reservation_id`, try targeted `GET /reservations` for that reservation first
+7. if targeted fetch is unavailable, incomplete, or hits the provider download limit, fall back to normal queue/summary reconciliation
+8. import the resolved reservation payloads
 
 This keeps:
 
 - webhook = fast trigger
-- reservation queue/detail APIs = normalized import source
+- targeted reservation fetch = fast-path import when the webhook identifies a booking
+- reservation queue/detail APIs = fallback and normalized reconciliation source
 
 ## 10. Inventory fan-out after import
 
@@ -383,3 +406,9 @@ Current recommended order:
 - local HMS mapping is not enough without provider-side activation
 - provider `rateId` must be treated with room context
 - frontend never calls Zodomus directly
+
+## 16. Fast Troubleshooting
+
+- `GET /channels/:id/provider-account` failing with `401` means the backend env credentials are invalid or expired. Fix `ZODOMUS_API_USER` and `ZODOMUS_API_PASSWORD`, then restart the backend.
+- `POST /channels/:id/property-check` returning all OK means auth, property activation, room activation, and mapped product readiness are all good enough for live syncs.
+- room `10001` rejecting `available = 2` with `Your availability is higher than declared` indicates a provider-side declared inventory mismatch, not an HMS payload-shaping issue.

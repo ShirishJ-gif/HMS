@@ -1,5 +1,15 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { AuditAction, BookingStatus, HousekeepingPriority, HousekeepingStatus, Prisma, RoomStatus } from '@prisma/client';
+import {
+  AuditAction,
+  BookingStatus,
+  ChannelProvider,
+  ChannelSyncType,
+  HousekeepingPriority,
+  HousekeepingStatus,
+  PaymentStatus,
+  Prisma,
+  RoomStatus,
+} from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { BackgroundJobService } from '../background-job/background-job.service';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -11,6 +21,7 @@ import { InventoryService } from '../inventory/inventory.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateDirectReservationDto } from './dto/create-direct-reservation.dto';
+import { FindReservationFeedQueryDto } from './dto/find-reservation-feed-query.dto';
 
 type ReservationGroupWithRelations = Prisma.ReservationGroupGetPayload<{
   include: {
@@ -25,6 +36,70 @@ type ReservationGroupWithRelations = Prisma.ReservationGroupGetPayload<{
     };
   };
 }>;
+
+type ReservationGroupResponse = {
+  id: string;
+  property_id: string;
+  primary_guest_id: string | null;
+  channel_connection_id: string | null;
+  external_reservation_id: string;
+  external_reservation_version: string | null;
+  external_status: string | null;
+  source: string | null;
+  currency: string | null;
+  total_amount: number | null;
+  reservation_status: BookingStatus;
+  remarks: string | null;
+  booked_at: string | null;
+  modified_at: string | null;
+  arrival_date: string | null;
+  departure_date: string | null;
+  import_blocked: boolean;
+  import_error: string | null;
+  created_at: string;
+  updated_at: string;
+  property: {
+    id: string;
+    name: string;
+    code: string;
+  };
+  primary_guest: {
+    id: string | null;
+    name: string;
+    phone: string | null;
+    email: string | null;
+  } | null;
+  rooms: Array<{
+    id: string;
+    external_room_reservation_id: string;
+    external_room_id: string;
+    arrival_date: string;
+    departure_date: string;
+    total_amount: number | null;
+    currency: string | null;
+    reservation_status: BookingStatus;
+    guest_name: string | null;
+    adults: number | null;
+    children: number | null;
+    room_category: {
+      id: string;
+      name: string;
+      code: string;
+    };
+    rate_plan: {
+      id: string;
+      name: string;
+      code: string;
+      base_rate: number;
+      currency: string;
+    };
+    room: {
+      id: string | null;
+      room_number: string | null;
+      status: RoomStatus | null;
+    };
+  }>;
+};
 
 @Injectable()
 export class BookingService {
@@ -46,117 +121,129 @@ export class BookingService {
 
     const roomCount = dto.room_count ?? 1;
 
-    const reservationGroup = await this.prisma.$transaction(async (tx) => {
-      const [property, roomCategory, ratePlan] = await Promise.all([
-        tx.property.findUnique({ where: { id: dto.property_id } }),
-        tx.roomCategory.findUnique({ where: { id: dto.room_category_id } }),
-        tx.ratePlan.findUnique({
-          where: { id: dto.rate_plan_id },
-          include: {
-            pricingRules: {
-              where: { isActive: true },
-              orderBy: { createdAt: 'asc' },
-            },
-          },
-        }),
-      ]);
+    let reservationGroup: ReservationGroupWithRelations;
+    try {
+      reservationGroup = await this.prisma.$transaction(
+        async (tx) => {
+          const [property, roomCategory, ratePlan] = await Promise.all([
+            tx.property.findUnique({ where: { id: dto.property_id } }),
+            tx.roomCategory.findUnique({ where: { id: dto.room_category_id } }),
+            tx.ratePlan.findUnique({
+              where: { id: dto.rate_plan_id },
+              include: {
+                pricingRules: {
+                  where: { isActive: true },
+                  orderBy: { createdAt: 'asc' },
+                },
+              },
+            }),
+          ]);
 
-      if (!property) {
-        throw new NotFoundException('Property not found');
-      }
-      if (!roomCategory || roomCategory.propertyId !== dto.property_id) {
-        throw new NotFoundException('Room category not found for this property');
-      }
-      if (!ratePlan || ratePlan.propertyId !== dto.property_id) {
-        throw new NotFoundException('Rate plan not found for this property');
-      }
-      if (ratePlan.roomCategoryId !== roomCategory.id) {
-        throw new ConflictException('Rate plan does not belong to the selected room category');
-      }
+          if (!property) {
+            throw new NotFoundException('Property not found');
+          }
+          if (!roomCategory || roomCategory.propertyId !== dto.property_id) {
+            throw new NotFoundException('Room category not found for this property');
+          }
+          if (!ratePlan || ratePlan.propertyId !== dto.property_id) {
+            throw new NotFoundException('Rate plan not found for this property');
+          }
+          if (ratePlan.roomCategoryId !== roomCategory.id) {
+            throw new ConflictException('Rate plan does not belong to the selected room category');
+          }
 
-      const guest = await this.resolveDirectGuest(tx, dto);
-      const pricing = await this.pricingService.calculateStayPricing({
-        db: tx,
-        propertyId: dto.property_id,
-        roomCategoryId: roomCategory.id,
-        ratePlan,
-        checkInDate,
-        checkOutDate,
-      });
-
-      await this.inventoryService.allocateInventory(tx, {
-        propertyId: dto.property_id,
-        roomCategoryId: roomCategory.id,
-        checkInDate,
-        checkOutDate,
-        roomCount,
-      });
-
-      const reservationReference = `DIRECT-${randomUUID()}`;
-      const totalAmount = pricing.totalAmount.mul(new Prisma.Decimal(roomCount));
-      const group = await tx.reservationGroup.create({
-        data: {
-          propertyId: dto.property_id,
-          primaryGuestId: guest.id,
-          channelConnectionId: null,
-          externalReservationId: reservationReference,
-          externalReservationVersion: '1',
-          externalStatus: 'CONFIRMED',
-          source: dto.source?.trim() || 'DIRECT',
-          currency: pricing.currency,
-          totalAmount,
-          status: BookingStatus.BOOKED,
-          remarks: dto.remarks?.trim() || null,
-          bookedAt: new Date(),
-          modifiedAt: new Date(),
-          rawPayload: {
-            mode: 'direct_reservation',
-            room_count: roomCount,
-          } satisfies Prisma.InputJsonObject,
-        },
-      });
-
-      for (let index = 0; index < roomCount; index += 1) {
-        await tx.reservationRoom.create({
-          data: {
-            reservationGroupId: group.id,
+          const guest = await this.resolveDirectGuest(tx, dto);
+          const pricing = await this.pricingService.calculateStayPricing({
+            db: tx,
             propertyId: dto.property_id,
-            externalRoomReservationId: `${reservationReference}-${index + 1}`,
-            externalRoomId: `DIRECT:${roomCategory.code}`,
             roomCategoryId: roomCategory.id,
-            ratePlanId: ratePlan.id,
-            arrivalDate: checkInDate,
-            departureDate: checkOutDate,
-            totalAmount: pricing.totalAmount,
-            currency: pricing.currency,
-            status: BookingStatus.BOOKED,
-            guestName: guest.name,
-            adults: null,
-            children: null,
-            rawPayload: {
-              mode: 'direct_reservation_room',
-              line_number: index + 1,
-            } satisfies Prisma.InputJsonObject,
-          },
-        });
+            ratePlan,
+            checkInDate,
+            checkOutDate,
+          });
+
+          await this.inventoryService.allocateInventory(tx, {
+            propertyId: dto.property_id,
+            roomCategoryId: roomCategory.id,
+            checkInDate,
+            checkOutDate,
+            roomCount,
+          });
+
+          const reservationReference = `DIRECT-${randomUUID()}`;
+          const totalAmount = pricing.totalAmount.mul(new Prisma.Decimal(roomCount));
+          const group = await tx.reservationGroup.create({
+            data: {
+              propertyId: dto.property_id,
+              primaryGuestId: guest.id,
+              channelConnectionId: null,
+              externalReservationId: reservationReference,
+              externalReservationVersion: '1',
+              externalStatus: 'CONFIRMED',
+              source: dto.source?.trim() || 'DIRECT',
+              currency: pricing.currency,
+              totalAmount,
+              status: BookingStatus.BOOKED,
+              remarks: dto.remarks?.trim() || null,
+              bookedAt: new Date(),
+              modifiedAt: new Date(),
+              rawPayload: {
+                mode: 'direct_reservation',
+                room_count: roomCount,
+              } satisfies Prisma.InputJsonObject,
+            },
+          });
+
+          for (let index = 0; index < roomCount; index += 1) {
+            await tx.reservationRoom.create({
+              data: {
+                reservationGroupId: group.id,
+                propertyId: dto.property_id,
+                externalRoomReservationId: `${reservationReference}-${index + 1}`,
+                externalRoomId: `DIRECT:${roomCategory.code}`,
+                roomCategoryId: roomCategory.id,
+                ratePlanId: ratePlan.id,
+                arrivalDate: checkInDate,
+                departureDate: checkOutDate,
+                totalAmount: pricing.totalAmount,
+                currency: pricing.currency,
+                status: BookingStatus.BOOKED,
+                guestName: guest.name,
+                adults: null,
+                children: null,
+                rawPayload: {
+                  mode: 'direct_reservation_room',
+                  line_number: index + 1,
+                } satisfies Prisma.InputJsonObject,
+              },
+            });
+          }
+
+          return tx.reservationGroup.findUniqueOrThrow({
+            where: { id: group.id },
+            include: {
+              property: true,
+              primaryGuest: true,
+              rooms: {
+                include: {
+                  roomCategory: true,
+                  ratePlan: true,
+                  room: true,
+                },
+                orderBy: [{ arrivalDate: 'asc' }, { createdAt: 'asc' }],
+              },
+            },
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+        throw new ConflictException('Concurrent inventory update detected. Please retry the reservation.');
       }
 
-      return tx.reservationGroup.findUniqueOrThrow({
-        where: { id: group.id },
-        include: {
-          property: true,
-          primaryGuest: true,
-          rooms: {
-            include: {
-              roomCategory: true,
-              ratePlan: true,
-              room: true,
-            },
-            orderBy: [{ arrivalDate: 'asc' }, { createdAt: 'asc' }],
-          },
-        },
-      });
-    });
+      throw error;
+    }
 
     await this.auditLogService.record({
       action: AuditAction.CREATE,
@@ -222,6 +309,61 @@ export class BookingService {
     ]);
 
     return paginatedResponse(groups.map((group) => this.toReservationGroupResponse(group)), total, page, limit);
+  }
+
+  async findReservationFeed(query: FindReservationFeedQueryDto, user?: AuthenticatedUser) {
+    const { page, limit } = paginationParams(query);
+    const search = query.search?.trim().toLowerCase() ?? '';
+    const scopedPropertyId = propertyIdFilter(user);
+    const effectivePropertyId = scopedPropertyId ?? query.property_id ?? null;
+    const statusFilter = query.status;
+    const importedWhere = this.reservationFeedImportedWhere(effectivePropertyId, search, statusFilter);
+    const importedTake = page * limit;
+
+    const [groups, importedTotal] = await this.prisma.$transaction([
+      this.prisma.reservationGroup.findMany({
+        where: importedWhere,
+        include: {
+          property: true,
+          primaryGuest: true,
+          rooms: {
+            include: {
+              roomCategory: true,
+              ratePlan: true,
+              room: true,
+            },
+            orderBy: [{ arrivalDate: 'asc' }, { createdAt: 'asc' }],
+          },
+        },
+        orderBy: [{ modifiedAt: 'desc' }, { createdAt: 'desc' }],
+        take: importedTake,
+      }),
+      this.prisma.reservationGroup.count({
+        where: importedWhere,
+      }),
+    ]);
+
+    const importedResponses = groups.map((group) => this.toReservationGroupResponse(group));
+    const importedReservationIds = new Set(importedResponses.map((group) => group.external_reservation_id));
+    const providerOnlyResponses = await this.findProviderOnlyReservationFailures(
+      effectivePropertyId,
+      importedReservationIds,
+      search,
+      statusFilter,
+    );
+
+    const merged = [...importedResponses, ...providerOnlyResponses]
+      .sort((left, right) => {
+        const leftDate = left.modified_at ?? left.booked_at ?? left.created_at;
+        const rightDate = right.modified_at ?? right.booked_at ?? right.created_at;
+        return rightDate.localeCompare(leftDate);
+      });
+
+    const total = importedTotal + providerOnlyResponses.length;
+    const start = (page - 1) * limit;
+    const data = merged.slice(start, start + limit);
+
+    return paginatedResponse(data, total, page, limit);
   }
 
   async checkInReservationRoom(id: string, user?: AuthenticatedUser) {
@@ -365,6 +507,8 @@ export class BookingService {
           room: true,
         },
       });
+
+      await this.ensureCheckoutBilling(tx, updated);
 
       if (updated.roomId) {
         await this.createCheckoutHousekeepingTask(tx, {
@@ -553,6 +697,15 @@ export class BookingService {
   }
 
   private toReservationGroupResponse(group: ReservationGroupWithRelations) {
+    const roomArrivalDates = group.rooms.map((room) => room.arrivalDate.toISOString().slice(0, 10)).sort();
+    const roomDepartureDates = group.rooms.map((room) => room.departureDate.toISOString().slice(0, 10)).sort();
+    const storedGroupTotalAmount = group.totalAmount == null ? null : Number(group.totalAmount);
+    const summedRoomTotalAmount = group.rooms.reduce((sum, room) => sum + (room.totalAmount == null ? 0 : Number(room.totalAmount)), 0);
+    const effectiveGroupTotalAmount =
+      (storedGroupTotalAmount == null || storedGroupTotalAmount <= 0) && summedRoomTotalAmount > 0
+        ? summedRoomTotalAmount
+        : storedGroupTotalAmount;
+
     return {
       id: group.id,
       property_id: group.propertyId,
@@ -563,11 +716,15 @@ export class BookingService {
       external_status: group.externalStatus,
       source: group.source,
       currency: group.currency,
-      total_amount: group.totalAmount == null ? null : Number(group.totalAmount),
+      total_amount: effectiveGroupTotalAmount,
       reservation_status: group.status,
       remarks: group.remarks,
       booked_at: group.bookedAt?.toISOString() ?? null,
       modified_at: group.modifiedAt?.toISOString() ?? null,
+      arrival_date: roomArrivalDates[0] ?? null,
+      departure_date: roomDepartureDates[roomDepartureDates.length - 1] ?? null,
+      import_blocked: false,
+      import_error: null,
       created_at: group.createdAt.toISOString(),
       updated_at: group.updatedAt.toISOString(),
       property: {
@@ -614,6 +771,373 @@ export class BookingService {
         },
       })),
     };
+  }
+
+  private async findProviderOnlyReservationFailures(
+    scopedPropertyId: string | null,
+    importedReservationIds: Set<string>,
+    search: string,
+    statusFilter?: BookingStatus,
+  ) {
+    const syncLogs = await this.prisma.channelSyncLog.findMany({
+      where: {
+        syncType: ChannelSyncType.BOOKINGS,
+        channelConnection: {
+          provider: ChannelProvider.ZODOMUS,
+          ...(scopedPropertyId ? { propertyId: scopedPropertyId } : {}),
+        },
+      },
+      include: {
+        channelConnection: {
+          include: {
+            property: true,
+          },
+        },
+      },
+      orderBy: [{ createdAt: 'desc' }],
+      take: 50,
+    });
+
+    const latestLogByConnection = new Map<string, (typeof syncLogs)[number]>();
+    for (const log of syncLogs) {
+      if (!latestLogByConnection.has(log.channelConnectionId)) {
+        latestLogByConnection.set(log.channelConnectionId, log);
+      }
+    }
+
+    const providerOnlyReservations: ReservationGroupResponse[] = [];
+
+    for (const log of latestLogByConnection.values()) {
+      const payload = this.readObject(log.responsePayload);
+      const importSummary = this.readObject(payload.import_summary);
+      const errorEntries = this.readStringArray(importSummary.errors);
+      const errorMap = new Map(
+        errorEntries.map((entry) => {
+          const divider = entry.indexOf(':');
+          if (divider === -1) {
+            return [entry.trim(), 'Import blocked'] as const;
+          }
+
+          return [entry.slice(0, divider).trim(), entry.slice(divider + 1).trim()] as const;
+        }),
+      );
+
+      const detailedReservations = this.readArray(payload.reservations);
+      for (const value of detailedReservations) {
+        const detail = this.readObject(value);
+        const envelope = this.readObject(detail.reservations);
+        const reservationRecord = this.readObject(envelope.reservation);
+        const reservationId = this.firstString(reservationRecord, 'id', 'reservation_id', 'reservationId');
+
+        if (!reservationId || importedReservationIds.has(reservationId)) {
+          continue;
+        }
+
+        const importError = errorMap.get(reservationId);
+        if (!importError) {
+          continue;
+        }
+
+        const response = this.toProviderOnlyReservationGroupResponse({
+          connection: log.channelConnection,
+          detail,
+          importError,
+          createdAt: log.createdAt,
+          updatedAt: log.updatedAt,
+        });
+
+        if (!this.matchesReservationFeedSearch(response, search)) {
+          continue;
+        }
+
+        if (statusFilter && response.reservation_status !== statusFilter) {
+          continue;
+        }
+
+        providerOnlyReservations.push(response);
+      }
+    }
+
+    return providerOnlyReservations;
+  }
+
+  private reservationFeedImportedWhere(
+    propertyId: string | null,
+    search: string,
+    status?: BookingStatus,
+  ): Prisma.ReservationGroupWhereInput {
+    return {
+      ...(propertyId ? { propertyId } : {}),
+      ...(status ? { reservationStatus: status } : {}),
+      ...(search
+        ? {
+            OR: [
+              { externalReservationId: { contains: search, mode: 'insensitive' } },
+              { property: { name: { contains: search, mode: 'insensitive' } } },
+              { primaryGuest: { name: { contains: search, mode: 'insensitive' } } },
+              { rooms: { some: { guestName: { contains: search, mode: 'insensitive' } } } },
+              { rooms: { some: { externalRoomId: { contains: search, mode: 'insensitive' } } } },
+              { rooms: { some: { roomCategory: { name: { contains: search, mode: 'insensitive' } } } } },
+            ],
+          }
+        : {}),
+    };
+  }
+
+  private toProviderOnlyReservationGroupResponse(input: {
+    connection: {
+      id: string;
+      propertyId: string;
+      property: { id: string; name: string; code: string };
+    };
+    detail: Record<string, unknown>;
+    importError: string;
+    createdAt: Date;
+    updatedAt: Date;
+  }): ReservationGroupResponse {
+    const envelope = this.readObject(input.detail.reservations);
+    const reservationRecord = this.readObject(envelope.reservation);
+    const customerRecord = this.readObject(envelope.customer);
+    const roomRecords = this.readArray(envelope.rooms).map((value) => this.readObject(value));
+    const roomResponses = roomRecords.map((room, index) => {
+      const prices = this.readArray(room.prices).map((value) => this.readObject(value));
+      const rateId = this.firstString(prices[0] ?? {}, 'rateId', 'rate_id') ?? 'UNMAPPED-RATE';
+      const arrivalDate = this.firstString(room, 'arrivalDate', 'arrival_date') ?? null;
+      const departureDate = this.firstString(room, 'departureDate', 'departure_date') ?? null;
+      const externalRoomReservationId =
+        this.firstString(room, 'roomReservationId', 'room_reservation_id', 'reservationRoomId') ??
+        `provider-room-line-${index + 1}`;
+      const externalRoomId = this.firstString(room, 'id', 'roomId', 'room_id') ?? `provider-room-${index + 1}`;
+
+      return {
+        id: `provider-only:${input.connection.id}:${externalRoomReservationId}`,
+        external_room_reservation_id: externalRoomReservationId,
+        external_room_id: externalRoomId,
+        arrival_date: arrivalDate ?? '-',
+        departure_date: departureDate ?? '-',
+        total_amount: this.firstNumber(room, 'totalPrice', 'total_amount', 'total'),
+        currency:
+          this.firstString(reservationRecord, 'currencyCode', 'currency_code', 'currency') ??
+          null,
+        reservation_status: this.mapExternalBookingStatus(this.firstStringOrNumber(reservationRecord, 'status') ?? '1'),
+        guest_name:
+          this.firstString(room, 'guestName', 'guest_name') ??
+          this.composeGuestName(customerRecord) ??
+          'Provider guest',
+        adults: this.firstInteger(room, 'numberOfAdults', 'adults'),
+        children: this.firstInteger(room, 'numberOChildren', 'numberOfChildren', 'children'),
+        room_category: {
+          id: `provider-room:${externalRoomId}`,
+          name: `Provider room ${externalRoomId}`,
+          code: externalRoomId,
+        },
+        rate_plan: {
+          id: `provider-rate:${rateId}`,
+          name: `Provider rate ${rateId}`,
+          code: rateId,
+          base_rate: this.firstNumber(prices[0] ?? {}, 'price') ?? 0,
+          currency:
+            this.firstString(reservationRecord, 'currencyCode', 'currency_code', 'currency') ??
+            '',
+        },
+        room: {
+          id: null,
+          room_number: null,
+          status: null,
+        },
+      };
+    });
+
+    const arrivalDates = roomResponses.map((room) => room.arrival_date).filter((value) => value && value !== '-').sort();
+    const departureDates = roomResponses.map((room) => room.departure_date).filter((value) => value && value !== '-').sort();
+    const totalAmount =
+      this.firstNumber(reservationRecord, 'totalPrice', 'total_amount', 'total') ??
+      roomResponses.reduce((sum, room) => sum + (room.total_amount ?? 0), 0);
+    const guestName = this.composeGuestName(customerRecord);
+
+    return {
+      id: `provider-only:${input.connection.id}:${this.firstString(reservationRecord, 'id', 'reservation_id', 'reservationId') ?? 'reservation'}`,
+      property_id: input.connection.propertyId,
+      primary_guest_id: null,
+      channel_connection_id: input.connection.id,
+      external_reservation_id:
+        this.firstString(reservationRecord, 'id', 'reservation_id', 'reservationId') ?? 'provider-only',
+      external_reservation_version:
+        this.firstString(reservationRecord, 'modifiedAt', 'modified_at', 'updated_at', 'version') ?? null,
+      external_status: this.firstStringOrNumber(reservationRecord, 'status')?.toString() ?? null,
+      source: 'ZODOMUS',
+      currency: this.firstString(reservationRecord, 'currencyCode', 'currency_code', 'currency') ?? null,
+      total_amount: totalAmount,
+      reservation_status: this.mapExternalBookingStatus(this.firstStringOrNumber(reservationRecord, 'status') ?? '1'),
+      remarks: input.importError,
+      booked_at: this.normalizeProviderTimestamp(this.firstString(reservationRecord, 'bookedAt', 'booked_at')),
+      modified_at: this.normalizeProviderTimestamp(this.firstString(reservationRecord, 'modifiedAt', 'modified_at')),
+      arrival_date: arrivalDates[0] ?? null,
+      departure_date: departureDates[departureDates.length - 1] ?? null,
+      import_blocked: true,
+      import_error: input.importError,
+      created_at: input.createdAt.toISOString(),
+      updated_at: input.updatedAt.toISOString(),
+      property: input.connection.property,
+      primary_guest: guestName
+        ? {
+            id: null,
+            name: guestName,
+            phone: this.firstString(customerRecord, 'phone') ?? null,
+            email: this.firstString(customerRecord, 'email') ?? null,
+          }
+        : null,
+      rooms: roomResponses,
+    };
+  }
+
+  private matchesReservationFeedSearch(group: ReservationGroupResponse, search: string) {
+    if (!search) {
+      return true;
+    }
+
+    const haystack = [
+      group.external_reservation_id,
+      group.property.name,
+      group.primary_guest?.name ?? '',
+      group.primary_guest?.phone ?? '',
+      group.remarks ?? '',
+      group.import_error ?? '',
+      ...group.rooms.map((room) => room.guest_name ?? ''),
+      ...group.rooms.map((room) => room.external_room_id),
+      ...group.rooms.map((room) => room.room_category.name),
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    return haystack.includes(search);
+  }
+
+  private readObject(value: unknown) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  }
+
+  private readArray(value: unknown) {
+    if (Array.isArray(value)) {
+      return value;
+    }
+
+    const record = this.readObject(value);
+    if (Array.isArray(record.items)) return record.items;
+    if (Array.isArray(record.reservations)) return record.reservations;
+    if (Array.isArray(record.data)) return record.data;
+    if (Array.isArray(record.rooms)) return record.rooms;
+    return [];
+  }
+
+  private readStringArray(value: unknown) {
+    return this.readArray(value).flatMap((entry) => (typeof entry === 'string' ? [entry] : []));
+  }
+
+  private firstString(record: Record<string, unknown>, ...keys: string[]) {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+
+    return null;
+  }
+
+  private firstStringOrNumber(record: Record<string, unknown>, ...keys: string[]) {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
+  private firstNumber(record: Record<string, unknown>, ...keys: string[]) {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+      if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private firstInteger(record: Record<string, unknown>, ...keys: string[]) {
+    const value = this.firstNumber(record, ...keys);
+    return value == null ? null : Math.trunc(value);
+  }
+
+  private composeGuestName(customerRecord: Record<string, unknown>) {
+    const parts = [
+      this.firstString(customerRecord, 'firstName', 'first_name'),
+      this.firstString(customerRecord, 'middleName', 'middle_name'),
+      this.firstString(customerRecord, 'lastName', 'last_name'),
+    ].filter((value): value is string => Boolean(value));
+
+    return parts.length > 0 ? parts.join(' ') : null;
+  }
+
+  private mapExternalBookingStatus(value: string | number) {
+    const normalized = String(value).trim();
+    if (normalized === '3') {
+      return BookingStatus.CANCELLED;
+    }
+
+    return BookingStatus.BOOKED;
+  }
+
+  private normalizeProviderTimestamp(value: string | null) {
+    if (!value || value.startsWith('0000-00-00')) {
+      return null;
+    }
+
+    const normalized = value.includes('T') ? value : value.replace(' ', 'T');
+    const date = new Date(normalized);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+
+  private async ensureCheckoutBilling(
+    tx: Prisma.TransactionClient,
+    reservationRoom: {
+      id: string;
+      totalAmount: Prisma.Decimal | null;
+    },
+  ) {
+    const existingBilling = await tx.billing.findUnique({
+      where: { reservationRoomId: reservationRoom.id },
+    });
+
+    if (existingBilling) {
+      return existingBilling;
+    }
+
+    const amount = reservationRoom.totalAmount ?? new Prisma.Decimal(0);
+
+    return tx.billing.create({
+      data: {
+        reservationRoomId: reservationRoom.id,
+        amount,
+        tax: new Prisma.Decimal(0),
+        total: amount,
+        paymentStatus: PaymentStatus.PENDING,
+      },
+    });
   }
 
   private toReservationRoomActionResponse(room: {

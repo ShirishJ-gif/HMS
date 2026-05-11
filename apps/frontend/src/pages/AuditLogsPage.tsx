@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api/client';
-import { PaginatedResponse, unwrapList } from '../api/pagination';
+import { fetchAllPages } from '../api/pagination';
 import { AuditLog } from '../api/types';
 import { FilterBar } from '../components/FilterBar';
 import { useAsync } from '../hooks/useAsync';
@@ -10,10 +10,10 @@ export function AuditLogsPage() {
   const [actionFilter, setActionFilter] = useState<string>('ALL');
   const [actorFilter, setActorFilter] = useState<'ALL' | 'USER' | 'SYSTEM'>('ALL');
   const logsState = useAsync(
-    async () => (await api.get<PaginatedResponse<AuditLog>>('/audit-logs', { params: { search: search || undefined } })).data,
+    async () => fetchAllPages<AuditLog>('/audit-logs', { params: { search: search || undefined } }),
     [search],
   );
-  const logs = (logsState.data?.data ?? []).filter((log) => {
+  const logs = (logsState.data ?? []).filter((log) => {
     if (actionFilter !== 'ALL' && log.action !== actionFilter) {
       return false;
     }
@@ -38,10 +38,19 @@ export function AuditLogsPage() {
     <section>
       <div className="page-header">
         <div>
-          <p className="eyebrow">Governance</p>
+          <p className="eyebrow">Admin</p>
           <h2>Audit Logs</h2>
-          <p className="page-subtitle">Review sensitive operational actions across rooms, reservations, payments, and channels.</p>
+          <p className="page-subtitle">
+            Review sensitive operational actions across rooms, reservations, payments, mappings, and channel sync workflows.
+          </p>
         </div>
+      </div>
+
+      <div className="info-strip">
+        <strong>Audit purpose</strong>
+        <span>
+          Use this stream to trace who changed operational state, when it happened, and whether the action came from a user or the system itself.
+        </span>
       </div>
 
       <FilterBar title="Audit filters">

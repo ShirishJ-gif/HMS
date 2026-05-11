@@ -3,6 +3,7 @@ import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { CreateDirectReservationDto } from './dto/create-direct-reservation.dto';
+import { FindReservationFeedQueryDto } from './dto/find-reservation-feed-query.dto';
 import { BookingService } from './booking.service';
 
 @Controller()
@@ -17,6 +18,11 @@ export class BookingController {
   @Get('bookings/groups')
   findReservationGroups(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationQueryDto) {
     return this.bookingService.findReservationGroups(query, user);
+  }
+
+  @Get('bookings/feed')
+  findReservationFeed(@CurrentUser() user: AuthenticatedUser, @Query() query: FindReservationFeedQueryDto) {
+    return this.bookingService.findReservationFeed(query, user);
   }
 
   @Put('bookings/groups/rooms/:id/checkin')

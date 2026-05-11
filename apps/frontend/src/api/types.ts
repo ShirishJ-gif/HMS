@@ -200,6 +200,10 @@ export type ReservationGroup = {
   remarks: string | null;
   booked_at: string | null;
   modified_at: string | null;
+  arrival_date?: string | null;
+  departure_date?: string | null;
+  import_blocked?: boolean;
+  import_error?: string | null;
   created_at: string;
   updated_at: string;
   property: Pick<Property, 'id' | 'name' | 'code'>;

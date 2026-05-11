@@ -12,6 +12,7 @@ export type ChannelPayload = {
   to?: string;
   inventory?: unknown;
   rates?: unknown;
+  reservation_import?: unknown;
 };
 
 export type ChannelConnectionValidationPayload = {

@@ -132,7 +132,7 @@ GET /metrics/summary
 
 - The active reservation domain is `ReservationGroup` plus `ReservationRoom`, with OTA/channel import as the only supported intake path.
 - Zodomus is the first real external channel adapter in the backend. Availability sync, rate sync, reservation queue polling, reservation detail fetch, and reservation import are implemented behind the channel module.
-- Zodomus onboarding is still incomplete in one important area: the provider-side `rooms-activation` flow described in the newer Zodomus docs is not yet wired into the backend setup path.
+- Zodomus onboarding supports provider catalog fetch, room/rate mapping, provider-side `rooms-activate`, property check, inventory sync, rate sync, reservation polling, reservation detail fetch, and reservation import.
 - WhatsApp automation is isolated behind `WhatsAppNotificationService`, so Twilio or Gupshup can replace the mock sender without changing booking logic.
 - Imported reservation intake notifies the guest and also notifies the hotel owner using the property phone number. Set `WHATSAPP_PROVIDER=cloud_api`, `WABA_ACCESS_TOKEN`, and `WABA_PHONE_NUMBER_ID` to send through WhatsApp Cloud API; otherwise mock logs are used.
 - Payments are isolated behind a provider service. The current provider is mock/local, but the boundary is ready for Razorpay, Stripe, or terminal/cash workflows with webhook reconciliation.

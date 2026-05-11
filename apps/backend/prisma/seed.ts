@@ -3,10 +3,6 @@ import { promisify } from 'node:util';
 import {
   PrismaClient,
   BookingStatus,
-  ChannelConnectionStatus,
-  ChannelProvider,
-  ChannelSyncStatus,
-  ChannelSyncType,
   HousekeepingPriority,
   HousekeepingStatus,
   PaymentStatus,
@@ -223,67 +219,11 @@ async function main() {
     }),
   ]);
 
-  const mockChannel = await prisma.channelConnection.create({
-    data: {
-      propertyId: property.id,
-      provider: ChannelProvider.MOCK,
-      name: 'Mock OTA Gateway',
-      status: ChannelConnectionStatus.ACTIVE,
-      externalHotelId: 'MOCK-HARBOUR-MUM',
-    },
-  });
-
-  await prisma.channelRoomMapping.createMany({
-    data: [
-      {
-        channelConnectionId: mockChannel.id,
-        roomCategoryId: single.id,
-        externalRoomId: 'MOCK-SINGLE',
-        externalRoomName: 'Mock Single Room',
-      },
-      {
-        channelConnectionId: mockChannel.id,
-        roomCategoryId: double.id,
-        externalRoomId: 'MOCK-DOUBLE',
-        externalRoomName: 'Mock Double Room',
-      },
-      {
-        channelConnectionId: mockChannel.id,
-        roomCategoryId: deluxe.id,
-        externalRoomId: 'MOCK-DELUXE',
-        externalRoomName: 'Mock Deluxe Room',
-      },
-    ],
-  });
-
-  await prisma.channelRateMapping.createMany({
-    data: [
-      {
-        channelConnectionId: mockChannel.id,
-        ratePlanId: singleRack.id,
-        externalRateId: 'MOCK-SINGLE-FLEX',
-        externalRateName: 'Mock Single Flexible',
-      },
-      {
-        channelConnectionId: mockChannel.id,
-        ratePlanId: doubleRack.id,
-        externalRateId: 'MOCK-DOUBLE-FLEX',
-        externalRateName: 'Mock Double Flexible',
-      },
-      {
-        channelConnectionId: mockChannel.id,
-        ratePlanId: deluxeRack.id,
-        externalRateId: 'MOCK-DELUXE-FLEX',
-        externalRateName: 'Mock Deluxe Flexible',
-      },
-    ],
-  });
-
   const checkedInReservationGroup = await prisma.reservationGroup.create({
     data: {
       propertyId: property.id,
       primaryGuestId: guests[0].id,
-      channelConnectionId: mockChannel.id,
+      channelConnectionId: null,
       externalReservationId: 'SEED-CHECKED-IN',
       externalStatus: 'checked_in',
       source: 'SEED',
@@ -300,7 +240,7 @@ async function main() {
       reservationGroupId: checkedInReservationGroup.id,
       propertyId: property.id,
       externalRoomReservationId: 'SEED-CHECKED-IN-LINE',
-      externalRoomId: 'MOCK-DOUBLE',
+      externalRoomId: 'SEED-DOUBLE',
       roomCategoryId: double.id,
       ratePlanId: doubleRack.id,
       roomId: rooms[1].id,
@@ -317,7 +257,7 @@ async function main() {
     data: {
       propertyId: property.id,
       primaryGuestId: guests[1].id,
-      channelConnectionId: mockChannel.id,
+      channelConnectionId: null,
       externalReservationId: 'SEED-UPCOMING',
       externalStatus: 'booked',
       source: 'SEED',
@@ -334,7 +274,7 @@ async function main() {
       reservationGroupId: upcomingReservationGroup.id,
       propertyId: property.id,
       externalRoomReservationId: 'SEED-UPCOMING-LINE',
-      externalRoomId: 'MOCK-DELUXE',
+      externalRoomId: 'SEED-DELUXE',
       roomCategoryId: deluxe.id,
       ratePlanId: deluxeRack.id,
       arrivalDate: new Date('2026-05-05T00:00:00.000Z'),
@@ -451,16 +391,6 @@ async function main() {
         dueDate: new Date('2026-04-29T00:00:00.000Z'),
       },
     ],
-  });
-
-  await prisma.channelSyncLog.create({
-    data: {
-      channelConnectionId: mockChannel.id,
-      syncType: ChannelSyncType.INVENTORY,
-      status: ChannelSyncStatus.SUCCEEDED,
-      requestPayload: { seed: true },
-      responsePayload: { accepted: true, external_reference: 'seed-sync' },
-    },
   });
 
   void singleRack;

@@ -1,6 +1,6 @@
 import { FormEvent, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
-import { PaginatedResponse, unwrapList } from '../api/pagination';
+import { fetchAllPages } from '../api/pagination';
 import {
   Billing,
   PaymentProvider,
@@ -43,20 +43,14 @@ export function PaymentsPage() {
   const [groupPaymentForm, setGroupPaymentForm] = useState(defaultGroupPaymentForm);
   const [collectingGroupPayment, setCollectingGroupPayment] = useState(false);
   const [lastGroupCollection, setLastGroupCollection] = useState<ReservationGroupPaymentCollection | null>(null);
-  const billingsState = useAsync(
-    async () => unwrapList((await api.get<PaginatedResponse<Billing>>('/billings', { params: { limit: 100 } })).data),
-    [reloadKey],
-  );
+  const billingsState = useAsync(async () => fetchAllPages<Billing>('/billings'), [reloadKey]);
   const paymentsState = useAsync(
-    async () => (await api.get<PaginatedResponse<PaymentTransaction>>('/payments', { params: { search: search || undefined } })).data,
+    async () => fetchAllPages<PaymentTransaction>('/payments', { params: { search: search || undefined } }),
     [reloadKey, search],
   );
-  const reservationGroupsState = useAsync(
-    async () => (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/groups', { params: { limit: 100 } })).data,
-    [reloadKey],
-  );
+  const reservationGroupsState = useAsync(async () => fetchAllPages<ReservationGroup>('/bookings/groups'), [reloadKey]);
   const billings = billingsState.data ?? [];
-  const payments = (paymentsState.data?.data ?? []).filter((payment) => {
+  const payments = (paymentsState.data ?? []).filter((payment) => {
     if (providerFilter !== 'ALL' && payment.provider !== providerFilter) {
       return false;
     }
@@ -70,7 +64,8 @@ export function PaymentsPage() {
   const invoicedReservationRoomIds = new Set(
     billings.map((billing) => billing.reservation_room_id).filter(Boolean),
   );
-  const uninvoicedCheckedOutReservationRooms = (reservationGroupsState.data?.data ?? [])
+  const reservationGroups = reservationGroupsState.data ?? [];
+  const uninvoicedCheckedOutReservationRooms = reservationGroups
     .flatMap((group) =>
       group.rooms.map((room) => ({
         ...room,
@@ -81,23 +76,28 @@ export function PaymentsPage() {
       })),
     )
     .filter((room) => room.reservation_status === 'CHECKED_OUT' && !invoicedReservationRoomIds.has(room.id));
-  const reservationFolios = (reservationGroupsState.data?.data ?? []).map((group) => {
-    const lineInvoices = billings.filter(
-      (billing) => billing.reservation_room.reservation_group_id === group.id,
-    );
-    const checkedOutRooms = group.rooms.filter((room) => room.reservation_status === 'CHECKED_OUT').length;
-    return {
-      id: group.id,
-      external_reservation_id: group.external_reservation_id,
-      guest_name: group.primary_guest?.name ?? 'Imported guest',
-      property_name: group.property.name,
-      room_count: group.rooms.length,
-      invoiced_room_count: lineInvoices.length,
-      checked_out_room_count: checkedOutRooms,
-      billed_total: lineInvoices.reduce((sum, billing) => sum + billing.total, 0),
-      balance_due: lineInvoices.reduce((sum, billing) => sum + billing.balance_due, 0),
-    };
-  });
+  const reservationFolios = reservationGroups
+    .map((group) => {
+      const lineInvoices = billings.filter(
+        (billing) => billing.reservation_room.reservation_group_id === group.id,
+      );
+      const checkedOutRooms = group.rooms.filter((room) => room.reservation_status === 'CHECKED_OUT').length;
+      const billedTotal = lineInvoices.reduce((sum, billing) => sum + billing.total, 0);
+      const balanceDue = lineInvoices.reduce((sum, billing) => sum + billing.balance_due, 0);
+
+      return {
+        id: group.id,
+        external_reservation_id: group.external_reservation_id,
+        guest_name: group.primary_guest?.name ?? 'Imported guest',
+        property_name: group.property.name,
+        room_count: group.rooms.length,
+        invoiced_room_count: lineInvoices.length,
+        checked_out_room_count: checkedOutRooms,
+        billed_total: billedTotal,
+        balance_due: balanceDue,
+      };
+    })
+    .filter((folio) => folio.checked_out_room_count > 0 || folio.invoiced_room_count > 0 || folio.billed_total > 0);
   const outstandingInvoiceCount = uninvoicedCheckedOutReservationRooms.length;
   const collectedTotal = billings.reduce((sum, billing) => sum + (billing.paid_total - billing.refunded_total), 0);
   const balanceDueTotal = billings.reduce((sum, billing) => sum + billing.balance_due, 0);
@@ -206,16 +206,25 @@ export function PaymentsPage() {
     <section>
       <div className="page-header">
         <div>
-          <p className="eyebrow">Payments</p>
-          <h2>Payments</h2>
-          <p className="page-subtitle">Collect against room-line invoices and grouped OTA folios without leaving the reservation ledger.</p>
+          <p className="eyebrow">Finance</p>
+          <h2>Payments &amp; Folios</h2>
+          <p className="page-subtitle">
+            Collect against room-line invoices and grouped OTA folios without leaving the imported reservation workflow.
+          </p>
         </div>
       </div>
 
       <div className="channel-summary-grid payment-summary-grid">
         <SignalStat label="Invoices" value={billings.length} />
         <SignalStat label="Outstanding" value={outstandingInvoiceCount} />
-        <SignalStat label="Payments" value={paymentsState.data?.meta.total ?? payments.length} />
+        <SignalStat label="Payments" value={payments.length} />
+      </div>
+
+      <div className="info-strip">
+        <strong>Finance model</strong>
+        <span>
+          Billing is still one invoice per reservation room, with folio-level collection layered on top for OTA reservation groups and imported stays.
+        </span>
       </div>
 
       <div className="split-panels payment-top-grid">
@@ -291,7 +300,7 @@ export function PaymentsPage() {
           </div>
         </form>
 
-        <article className="insight-panel">
+        <article className="insight-panel payment-ledger-panel">
           <div className="section-heading">
             <div>
               <p className="eyebrow">Ledger posture</p>
@@ -706,7 +715,7 @@ export function PaymentsPage() {
         <div className="table-heading">
           <div>
             <p className="eyebrow">Transactions</p>
-            <h3>{paymentsState.data?.meta.total ?? payments.length} payments</h3>
+            <h3>{payments.length} payments</h3>
           </div>
         </div>
         <table>

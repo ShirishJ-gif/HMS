@@ -11,6 +11,7 @@ import { ChannelProviderService } from './channel-provider.service';
 import { ChannelController } from './channel.controller';
 import { ChannelService } from './channel.service';
 import { InventorySyncPayloadService } from './inventory-sync-payload.service';
+import { RateSyncPayloadService } from './rate-sync-payload.service';
 import { ZodomusAliasController } from './zodomus-alias.controller';
 import { ZodomusReservationImportService } from './zodomus-reservation-import.service';
 
@@ -30,6 +31,7 @@ import { ZodomusReservationImportService } from './zodomus-reservation-import.se
     ChannelService,
     ChannelProviderService,
     InventorySyncPayloadService,
+    RateSyncPayloadService,
     ZodomusReservationImportService,
   ],
   exports: [ChannelService],

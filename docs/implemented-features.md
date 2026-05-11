@@ -20,6 +20,7 @@ This document lists the features currently implemented in the Hotel Management S
 
 - JWT login.
 - Refresh-token session creation and rotation.
+- Frontend access-token expiry now attempts a refresh-token exchange and retries the failed request before forcing logout.
 - Logout endpoint for one-session or all-session revocation.
 - First-admin bootstrap endpoint.
 - Password reset request and confirmation endpoints.
@@ -81,6 +82,7 @@ This document lists the features currently implemented in the Hotel Management S
 - List guests with pagination/search.
 - Guest records include property, name, phone, email, ID proof, and address.
 - Frontend Guests page supports guest creation, search, and table view.
+- Guests page search now filters the merged guest registry and reservation-feed guest dataset locally with deferred input handling instead of triggering per-keystroke server fetches.
 - Guest creation now disables duplicate submits while requests are in flight and surfaces backend request-aware error messages.
 
 ## Booking And Reservations
@@ -89,6 +91,7 @@ This document lists the features currently implemented in the Hotel Management S
   - OTA/channel import
   - direct reservation creation
 - Direct reservation endpoint: `POST /reservations/direct`.
+- Unified reservation feed endpoint: `GET /bookings/feed`.
 - Reservation date validation using `YYYY-MM-DD`.
 - `check_out_date` must be after `check_in_date`.
 - Reservation-room totals are calculated as the sum of per-night dynamic rates.
@@ -96,6 +99,7 @@ This document lists the features currently implemented in the Hotel Management S
 - Overlapping reservation-room stays are allowed until category inventory is sold out.
 - Active overlap statuses are `BOOKED` and `CHECKED_IN`.
 - Direct bookings allocate room-type inventory transactionally against the persisted inventory calendar.
+- Direct reservation creation now runs under serializable transaction handling and rejects concurrent inventory races instead of allowing double booking on the same room-category dates.
 - OTA/Zodomus reservation import now uses the same centralized allocation/release core as direct reservations.
 - Reservation allocation now enforces:
   - stop-sell
@@ -105,7 +109,12 @@ This document lists the features currently implemented in the Hotel Management S
 - Check-out marks the reservation room `CHECKED_OUT` and room `AVAILABLE`.
 - Check-out creates or preserves a pending invoice for the reservation room.
 - List reservation groups with pagination/search.
+- `GET /bookings/feed` can return both imported HMS reservation groups and provider-discovered reservations that are still blocked from import.
+- Provider-discovered blocked reservations expose import diagnostics such as inventory failure or missing mapping failure.
 - Frontend Bookings page supports imported-reservation operations, search, timeline/ledger views, inline detail expansion, check-in, and checkout.
+- Frontend Bookings page now loads the reservation feed page-by-page instead of fetching the entire feed before first render.
+- Frontend Bookings timeline is horizontally scrollable and prefers today through the next 30 days, but falls back to the reservation date span on the current page when no stays overlap the current date window.
+- The reservation ledger groups near-duplicate blocked provider rows and suppresses blocked provider duplicates when an equivalent HMS reservation has already imported.
 - Reservation actions now disable duplicate submits while requests are in flight and surface backend request-aware error messages.
 
 ## Availability
@@ -142,6 +151,7 @@ This document lists the features currently implemented in the Hotel Management S
 - Billing allows one invoice per reservation room.
 - Billing total is reservation-room amount plus tax plus extra charges.
 - Billing responses expose paid total, refunded total, and balance due.
+- Reservation-group folios can generate missing invoices only for checked-out room lines that do not already have invoices.
 
 ## Payments
 
@@ -157,6 +167,10 @@ This document lists the features currently implemented in the Hotel Management S
 - Refunds are recorded as separate immutable transactions.
 - Refunds recalculate invoice payment status.
 - Frontend Payments page supports invoice generation for checked-out imported room stays, reservation folios, payment collection, compact filters, invoice view, and transaction view.
+- Frontend reservation folio list is filtered to finance-relevant groups only:
+  - at least one checked-out room
+  - or at least one invoice
+  - or a non-zero billed total
 - Payment actions now disable duplicate submits while requests are in flight and surface backend request-aware error messages.
 
 ## Channel Manager Boundary
@@ -170,17 +184,36 @@ This document lists the features currently implemented in the Hotel Management S
   - `POST /zodomus/sync/availability`
   - `POST /zodomus/sync/rates`
 - Zodomus sync currently covers availability and rates only.
+- Zodomus rate sync now expands mapped rates into daily room/rate/date rows and pushes the actual HMS nightly price for each date.
+- Active HMS pricing rules can now change the outbound Zodomus rate for specific dates on mapped rate plans.
 - Stop-sell, minimum stay, and maximum stay are not pushed to Zodomus yet.
 - Create room-category mappings to external room IDs.
 - Create rate-plan mappings to external rate IDs.
 - Trigger syncs for `INVENTORY`, `RATES`, and `BOOKINGS`.
+- Zodomus booking import now reconciles reservations from both provider `reservations-queue` and `reservations-summary`, not queue-only discovery.
+- Zodomus booking import can fall back from legacy provider room IDs such as `90002` / `90003` to canonical mapped room IDs when the provider payload uses older aliases.
+- Zodomus booking import can fall back to a mapped rate plan for the resolved room category when the provider payload does not match a room-scoped rate mapping directly.
+- Zodomus booking import skips new provider reservations whose latest departure date is already before the current local date, instead of treating stale sandbox history as an inventory failure.
+- Zodomus booking import skips duplicate provider reservations when the same provider room-line IDs and stay dates have already been imported under another reservation ID.
+- Successful `POST /channels/:id/provider-reservations-create-test` calls now immediately fetch provider reservation detail and import it into HMS instead of waiting for a later `BOOKINGS` sync.
+- Admin-facing provider reservation test events now support `new`, `modified`, and `cancelled` flows from the Channel Manager workspace.
+- Roomless Zodomus reservation detail payloads can now update or cancel an already-imported HMS reservation group by `external_reservation_id`.
+- Roomless provider cancellation now cancels existing HMS reservation-room lines and releases their allocated inventory.
+- Numeric provider reservation status `3` is now treated as `CANCELLED` during Zodomus import.
+- Zodomus reservation detail entries that only report `Reservation already downloaded 5 times. The limit was reached.` are filtered out of HMS booking-sync payloads as provider queue noise.
+- Imported reservation-group totals now fall back to summed room-line totals when the provider reservation-level total is missing or zero.
+- Provider reservation import can still fail intentionally when HMS inventory is already sold out for the mapped room category/date range.
 - Inventory sync builds daily provider room/date rows from the centralized inventory calendar instead of one window-level aggregate payload.
 - Inventory sync excludes both permanent maintenance rooms and dated out-of-service periods on the affected dates.
+- Zodomus connection automation now enforces an effective minimum inventory sync horizon of `365` days so future sold-out dates are pushed to the provider even when a shorter window is configured.
 - Channel sync supports `Idempotency-Key`.
 - Idempotent channel sync requests are serialized per idempotency key so concurrent replays do not create duplicate sync-side effects or duplicate sync logs.
 - Store channel sync request/response payloads and errors in sync logs.
 - Inventory syncs can now end as `SUCCEEDED`, `PARTIAL_FAILED`, or `FAILED`.
 - Inventory sync provider responses now store room/date `row_results` plus success/failure summary counts.
+- Zodomus provider `returnCode != 200` is now treated as a failed row outcome instead of a successful sync row.
+- Rate syncs now persist row-level result summaries too, and provider-side business rejection no longer appears as unconditional `SUCCEEDED`.
+- Rate sync row results now also persist the synced `date` and nightly `base_rate`, so provider logs show exactly which day and price were pushed.
 - Failed inventory rows can be retried through `POST /channels/:id/sync-logs/:syncLogId/retry-failed-rows`.
 - HMS persists each inventory row result in `inventory_sync_rows`.
 - HMS exposes inventory reconciliation through `GET /channels/:id/inventory-reconciliation`.
@@ -191,6 +224,9 @@ This document lists the features currently implemented in the Hotel Management S
 - Channel syncs build payloads from internal inventory/rate mappings and do not write directly to booking or room tables.
 - HMS can update a Zodomus connection external hotel/property mapping without recreating the connection.
 - Frontend Channels page includes summary tiles, active connection workspace, mapping forms, sync controls, inventory reconciliation, persisted failed-row analytics, mapping tables, connection table, recent sync logs, background-job surfaces, webhook-event surfaces, dead-letter retry controls, and metrics-summary snapshots.
+- Channel Manager workspace state now persists across page switches in the frontend, so returning to the page restores the current connection context instead of cold-loading from empty state.
+- OTA Mapping, Channel Manager, and Webhooks & Sync Logs now share the same cached channel workspace state in the frontend.
+- Sync logs, webhook events, background jobs, and reconciliation data now load lazily for the diagnostics page instead of every channel-related page paying that cost.
 - Channel connection, mapping, and sync actions now disable duplicate submits while requests are in flight and surface backend request-aware error messages.
 
 ## Webhook Foundation
@@ -243,6 +279,7 @@ This document lists the features currently implemented in the Hotel Management S
 - Metrics include reservation groups today, occupancy rate, occupied rooms, total rooms, and revenue today.
 - Today-based metrics use Asia/Kolkata day boundaries.
 - Frontend Dashboard page displays operational metric cards and setup guidance.
+- Frontend Dashboard page now refreshes on a timer, on window focus, on tab visibility return, and through a manual refresh button instead of remaining static after initial load.
 
 ## Observability
 
@@ -262,6 +299,8 @@ This document lists the features currently implemented in the Hotel Management S
 
 - Login page.
 - Login now disables duplicate submit attempts while sign-in is in flight and surfaces backend request-aware auth errors.
+- Frontend auth state is now managed through a shared session helper with safe persisted-user parsing during app startup.
+- Frontend now recovers expired access tokens through refresh-token exchange instead of leaving the authenticated shell stuck in request-failure state.
 - Dashboard page.
 - Property Setup page.
 - Availability page.
@@ -276,6 +315,8 @@ This document lists the features currently implemented in the Hotel Management S
 - Audit Logs page.
 - Axios API client with bearer token handling.
 - Axios API client now sends `x-request-id` headers so frontend-visible failures can be traced in backend logs.
+- Reload failures now preserve the last successfully loaded frontend data instead of blanking the current screen immediately.
+- Frontend operational/admin pages that compute totals or action candidates now fetch complete paginated datasets instead of relying on silent 100-row caps.
 - Shared compact filter controls on rooms, guests, bookings, payments, channels, and audit logs.
 - Bookings page includes timeline and ledger views.
 - Shared visual system with cards, tables, status pills, forms, and responsive layout.

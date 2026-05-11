@@ -57,7 +57,7 @@ export class PricingService {
         date,
         occupancyCache,
       );
-      const nightlyRate = this.calculateNightlyRate({
+      const nightlyRate = this.computeNightlyRate({
         ratePlan: input.ratePlan,
         rules,
         date,
@@ -70,6 +70,32 @@ export class PricingService {
       totalAmount,
       currency: input.ratePlan.currency,
     };
+  }
+
+  async calculateNightlyRate(input: {
+    db?: DbClient;
+    propertyId: string;
+    roomCategoryId: string;
+    ratePlan: RatePlanForPricing;
+    date: Date;
+  }) {
+    const db = input.db ?? this.prisma;
+    const rules = await this.loadRules(db, input.ratePlan);
+    const occupancyCache = new Map<string, OccupancySnapshot>();
+    const occupancySnapshot = await this.loadOccupancySnapshot(
+      db,
+      input.propertyId,
+      input.roomCategoryId,
+      input.date,
+      occupancyCache,
+    );
+
+    return this.computeNightlyRate({
+      ratePlan: input.ratePlan,
+      rules,
+      date: input.date,
+      occupancySnapshot,
+    });
   }
 
   async calculateLowestNightlyRate(input: {
@@ -96,7 +122,7 @@ export class PricingService {
         input.date,
         occupancyCache,
       );
-      const nightlyRate = this.calculateNightlyRate({
+      const nightlyRate = this.computeNightlyRate({
         ratePlan,
         rules,
         date: input.date,
@@ -125,7 +151,7 @@ export class PricingService {
     });
   }
 
-  private calculateNightlyRate(input: {
+  private computeNightlyRate(input: {
     ratePlan: RatePlanForPricing;
     rules: ActivePricingRule[];
     date: Date;

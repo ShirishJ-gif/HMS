@@ -6,6 +6,7 @@ import * as request from 'supertest';
 import { AppModule } from '../app.module';
 import { BackgroundJobService } from '../modules/background-job/background-job.service';
 import { PasswordService } from '../modules/auth/password.service';
+import { ChannelProviderService } from '../modules/channel/channel-provider.service';
 import { ZodomusReservationImportService } from '../modules/channel/zodomus-reservation-import.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -43,6 +44,10 @@ describe('App integration', () => {
     process.env.PAYMENT_WEBHOOK_SECRET = paymentWebhookSecret;
     process.env.CHANNEL_WEBHOOK_SECRET = channelWebhookSecret;
     process.env.JOB_WORKER_DISABLED = 'true';
+    process.env.CHANNEL_SYNC_SCHEDULER_DISABLED = 'true';
+    process.env.ZODOMUS_API_USER = 'integration-user';
+    process.env.ZODOMUS_API_PASSWORD = 'integration-password';
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
 
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -268,6 +273,10 @@ describe('App integration', () => {
     adminBToken = await loginAndGetAccessToken(`${tag}-admin-b@test.local`, adminPassword);
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   afterAll(async () => {
     if (!prisma) {
       await app?.close();
@@ -287,21 +296,6 @@ describe('App integration', () => {
     await prisma.webhookEvent.deleteMany({
       where: {
         propertyId: { in: [propertyAId, propertyBId].filter(Boolean) as string[] },
-      },
-    });
-    await prisma.channelSyncLog.deleteMany({
-      where: {
-        channelConnectionId: channelConnectionAId,
-      },
-    });
-    await prisma.channelRateMapping.deleteMany({
-      where: {
-        channelConnectionId: channelConnectionAId,
-      },
-    });
-    await prisma.channelRoomMapping.deleteMany({
-      where: {
-        channelConnectionId: channelConnectionAId,
       },
     });
     await prisma.refreshSession.deleteMany({
@@ -397,7 +391,7 @@ describe('App integration', () => {
     });
     await prisma.channelConnection.deleteMany({
       where: {
-        id: channelConnectionAId,
+        propertyId: { in: [propertyAId, propertyBId].filter(Boolean) as string[] },
       },
     });
     await prisma.guest.deleteMany({
@@ -694,6 +688,12 @@ describe('App integration', () => {
     });
     expect(reservationRoom.status).toBe('CHECKED_OUT');
 
+    const billing = await prisma.billing.findUniqueOrThrow({
+      where: { reservationRoomId },
+    });
+    expect(billing.total.toNumber()).toBeGreaterThan(0);
+    expect(billing.paymentStatus).toBe('PENDING');
+
     const housekeepingTask = await prisma.housekeepingTask.findFirstOrThrow({
       where: { reservationRoomId },
       orderBy: { createdAt: 'desc' },
@@ -708,21 +708,289 @@ describe('App integration', () => {
         reservation_room_id: reservationRoomId,
         tax: '0.00',
       })
+      .expect(409);
+  });
+
+  it('creates a provider reservation, imports it through bookings sync, and updates dashboard and billing state through checkout', async () => {
+    jest.spyOn(ChannelProviderService.prototype, 'validateConnection').mockResolvedValue({
+      provider: 'ZODOMUS',
+      accepted: true,
+    });
+
+    const fixture = await createZodomusWorkflowFixture('provider-flow');
+    const reservationId = `${tag}-provider-flow`;
+    const roomReservationId = `${reservationId}-line-1`;
+    const arrivalDate = serviceDateOffset(-1);
+    const departureDate = serviceDateOffset(0);
+    const totalAmount = '3450';
+
+    jest.spyOn(ChannelProviderService.prototype, 'createTestReservation').mockResolvedValue({
+      provider: 'ZODOMUS',
+      reservation_id: reservationId,
+      status: 'new',
+      accepted: true,
+    });
+    jest.spyOn(ChannelProviderService.prototype, 'push').mockImplementation(async (payload) => {
+      if (payload.provider === 'ZODOMUS' && payload.sync_type === 'BOOKINGS') {
+        return buildProviderReservationSyncPayload({
+          reservationId,
+          roomReservationId,
+          externalRoomId: fixture.externalRoomId,
+          externalRateId: fixture.externalRateId,
+          arrivalDate,
+          departureDate,
+          totalAmount,
+          guestName: 'Provider Flow Guest',
+        });
+      }
+
+      return {
+        provider: payload.provider,
+        accepted: true,
+      };
+    });
+
+    const providerCreate = await request(app.getHttpServer())
+      .post(`/channels/${fixture.connectionId}/provider-reservations-create-test`)
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        status: 'new',
+        reservation_id: reservationId,
+      })
       .expect(201);
 
-    const billing = await prisma.billing.findUniqueOrThrow({
-      where: { reservationRoomId },
+    expect(providerCreate.body.accepted).toBe(true);
+    expect(providerCreate.body.reservation_id).toBe(reservationId);
+
+    const dashboardBeforeImport = await getDashboardSummary();
+
+    const queuedSync = await request(app.getHttpServer())
+      .post(`/channels/${fixture.connectionId}/sync`)
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        sync_type: 'BOOKINGS',
+      })
+      .expect(201);
+
+    expect(await backgroundJobService.processDueJobs()).toBeGreaterThan(0);
+
+    const processedSync = await prisma.channelSyncLog.findUniqueOrThrow({
+      where: { id: queuedSync.body.id },
     });
-    expect(billing.total.toNumber()).toBeGreaterThan(0);
+    expect(processedSync.status).toBe('SUCCEEDED');
+    expect(
+      ((processedSync.responsePayload as { import_summary?: { created?: number } } | null)?.import_summary?.created ?? 0),
+    ).toBe(1);
+
+    const importedGroups = await request(app.getHttpServer())
+      .get('/bookings/groups')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .query({ search: reservationId })
+      .expect(200);
+
+    expect(importedGroups.body.data).toHaveLength(1);
+    expect(importedGroups.body.data[0].external_reservation_id).toBe(reservationId);
+    expect(importedGroups.body.data[0].rooms).toHaveLength(1);
+
+    const importedGroup = importedGroups.body.data[0] as {
+      id: string;
+      rooms: Array<{ id: string }>;
+    };
+    const importedRoomId = importedGroup.rooms[0].id;
+
+    const dashboardAfterImport = await getDashboardSummary();
+    expect(dashboardAfterImport.reservation_groups_today).toBe(dashboardBeforeImport.reservation_groups_today + 1);
+    expect(dashboardAfterImport.active_reservation_groups).toBe(
+      dashboardBeforeImport.active_reservation_groups + 1,
+    );
+
+    const checkIn = await request(app.getHttpServer())
+      .put(`/bookings/groups/rooms/${importedRoomId}/checkin`)
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .expect(200);
+
+    expect(checkIn.body.room.id).toBe(fixture.roomId);
+
+    const dashboardAfterCheckIn = await getDashboardSummary();
+    expect(dashboardAfterCheckIn.occupied_rooms).toBe(dashboardAfterImport.occupied_rooms + 1);
+    expect(dashboardAfterCheckIn.active_reservation_groups).toBe(
+      dashboardAfterImport.active_reservation_groups,
+    );
 
     await request(app.getHttpServer())
+      .put(`/bookings/groups/rooms/${importedRoomId}/checkout`)
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .expect(200);
+
+    const dashboardAfterCheckout = await getDashboardSummary();
+    expect(dashboardAfterCheckout.occupied_rooms).toBe(dashboardAfterImport.occupied_rooms);
+    expect(dashboardAfterCheckout.active_reservation_groups).toBe(
+      dashboardAfterImport.active_reservation_groups - 1,
+    );
+    expect(dashboardAfterCheckout.open_housekeeping_tasks).toBe(
+      dashboardAfterCheckIn.open_housekeeping_tasks + 1,
+    );
+
+    const billing = await request(app.getHttpServer())
       .post('/billings')
       .set('Authorization', `Bearer ${adminAToken}`)
       .send({
-        reservation_room_id: reservationRoomId,
+        reservation_room_id: importedRoomId,
         tax: '0.00',
       })
-      .expect(409);
+      .expect(201);
+
+    const dashboardAfterInvoice = await getDashboardSummary();
+    expect(dashboardAfterInvoice.pending_balance_total).toBe(
+      dashboardAfterCheckout.pending_balance_total + billing.body.total,
+    );
+
+    await request(app.getHttpServer())
+      .post('/payments/collect')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        billing_id: billing.body.id,
+        amount: billing.body.total.toFixed(2),
+        provider: 'MOCK',
+      })
+      .expect(201);
+
+    const paidBilling = await prisma.billing.findUniqueOrThrow({
+      where: { id: billing.body.id },
+    });
+    expect(paidBilling.paymentStatus).toBe('PAID');
+
+    const dashboardAfterPayment = await getDashboardSummary();
+    expect(dashboardAfterPayment.pending_balance_total).toBe(dashboardAfterCheckout.pending_balance_total);
+    expect(dashboardAfterPayment.revenue_today).toBe(dashboardAfterInvoice.revenue_today + billing.body.total);
+  });
+
+  it('surfaces blocked imports in the reservation feed and imports them after inventory is fixed', async () => {
+    jest.spyOn(ChannelProviderService.prototype, 'validateConnection').mockResolvedValue({
+      provider: 'ZODOMUS',
+      accepted: true,
+    });
+
+    const fixture = await createZodomusWorkflowFixture('blocked-import');
+    const reservationId = `${tag}-blocked-import`;
+    const roomReservationId = `${reservationId}-line-1`;
+    const arrivalDate = serviceDateOffset(4);
+    const departureDate = serviceDateOffset(5);
+
+    jest.spyOn(ChannelProviderService.prototype, 'push').mockImplementation(async (payload) => {
+      if (payload.provider === 'ZODOMUS' && payload.sync_type === 'BOOKINGS') {
+        return buildProviderReservationSyncPayload({
+          reservationId,
+          roomReservationId,
+          externalRoomId: fixture.externalRoomId,
+          externalRateId: fixture.externalRateId,
+          arrivalDate,
+          departureDate,
+          totalAmount: '2800',
+          guestName: 'Blocked Import Guest',
+        });
+      }
+
+      return {
+        provider: payload.provider,
+        accepted: true,
+      };
+    });
+
+    await request(app.getHttpServer())
+      .post('/inventory/restrictions')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        property_id: propertyAId,
+        room_category_id: fixture.roomCategoryId,
+        from_date: arrivalDate,
+        to_date: arrivalDate,
+        stop_sell: true,
+      })
+      .expect(201);
+
+    const firstSync = await request(app.getHttpServer())
+      .post(`/channels/${fixture.connectionId}/sync`)
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        sync_type: 'BOOKINGS',
+      })
+      .expect(201);
+
+    expect(await backgroundJobService.processDueJobs()).toBeGreaterThan(0);
+
+    const blockedSyncLog = await prisma.channelSyncLog.findUniqueOrThrow({
+      where: { id: firstSync.body.id },
+    });
+    expect(blockedSyncLog.status).toBe('SUCCEEDED');
+    expect(
+      ((blockedSyncLog.responsePayload as { import_summary?: { failed?: number } } | null)?.import_summary?.failed ?? 0),
+    ).toBe(1);
+
+    const blockedFeed = await request(app.getHttpServer())
+      .get('/bookings/feed')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .query({ search: reservationId })
+      .expect(200);
+
+    expect(blockedFeed.body.data).toHaveLength(1);
+    expect(blockedFeed.body.data[0].external_reservation_id).toBe(reservationId);
+    expect(blockedFeed.body.data[0].import_blocked).toBe(true);
+    expect(blockedFeed.body.data[0].import_error).toContain(`Stop-sell is active for ${arrivalDate}`);
+
+    await request(app.getHttpServer())
+      .post('/inventory/restrictions')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        property_id: propertyAId,
+        room_category_id: fixture.roomCategoryId,
+        from_date: arrivalDate,
+        to_date: arrivalDate,
+        stop_sell: false,
+      })
+      .expect(201);
+
+    const secondSync = await request(app.getHttpServer())
+      .post(`/channels/${fixture.connectionId}/sync`)
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        sync_type: 'BOOKINGS',
+      })
+      .expect(201);
+
+    expect(await backgroundJobService.processDueJobs()).toBeGreaterThan(0);
+
+    const recoveredSyncLog = await prisma.channelSyncLog.findUniqueOrThrow({
+      where: { id: secondSync.body.id },
+    });
+    expect(
+      ((recoveredSyncLog.responsePayload as { import_summary?: { created?: number; failed?: number } } | null)
+        ?.import_summary?.created ?? 0),
+    ).toBe(1);
+    expect(
+      ((recoveredSyncLog.responsePayload as { import_summary?: { created?: number; failed?: number } } | null)
+        ?.import_summary?.failed ?? 0),
+    ).toBe(0);
+
+    const recoveredGroups = await request(app.getHttpServer())
+      .get('/bookings/groups')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .query({ search: reservationId })
+      .expect(200);
+
+    expect(recoveredGroups.body.data).toHaveLength(1);
+    expect(recoveredGroups.body.data[0].external_reservation_id).toBe(reservationId);
+    expect(recoveredGroups.body.data[0].rooms).toHaveLength(1);
+
+    const recoveredFeed = await request(app.getHttpServer())
+      .get('/bookings/feed')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .query({ search: reservationId })
+      .expect(200);
+
+    expect(recoveredFeed.body.data).toHaveLength(1);
+    expect(recoveredFeed.body.data[0].import_blocked).toBe(false);
+    expect(recoveredFeed.body.data[0].import_error).toBeNull();
   });
 
   it('applies weekend, date-range, and occupancy pricing rules to reservation-room availability', async () => {
@@ -1029,6 +1297,52 @@ describe('App integration', () => {
 
     expect(success.body.source).toBe('DIRECT');
     expect(success.body.rooms).toHaveLength(1);
+  });
+
+  it('prevents double booking under concurrent direct reservation requests', async () => {
+    const payload = {
+      property_id: propertyAId,
+      room_category_id: roomCategoryAId,
+      rate_plan_id: ratePlanAId,
+      check_in_date: '2026-10-10',
+      check_out_date: '2026-10-11',
+      room_count: 1,
+    };
+
+    const [first, second] = await Promise.all([
+      request(app.getHttpServer())
+        .post('/reservations/direct')
+        .set('Authorization', `Bearer ${adminAToken}`)
+        .send({
+          ...payload,
+          guest_id: guestA1Id,
+          remarks: 'Concurrency test first',
+        }),
+      request(app.getHttpServer())
+        .post('/reservations/direct')
+        .set('Authorization', `Bearer ${adminAToken}`)
+        .send({
+          ...payload,
+          guest_id: guestA2Id,
+          remarks: 'Concurrency test second',
+        }),
+    ]);
+
+    const statuses = [first.status, second.status].sort((left, right) => left - right);
+    expect(statuses).toEqual([201, 409]);
+
+    const concurrencyGroups = await prisma.reservationGroup.findMany({
+      where: {
+        propertyId: propertyAId,
+        remarks: {
+          in: ['Concurrency test first', 'Concurrency test second'],
+        },
+      },
+      select: {
+        remarks: true,
+      },
+    });
+    expect(concurrencyGroups).toHaveLength(1);
   });
 
   it('enforces stop-sell and min-stay rules for OTA reservation import', async () => {
@@ -1853,5 +2167,169 @@ describe('App integration', () => {
     const ids = summary.imported_reservation_room_ids as string[] | undefined;
     expect(ids?.length).toBeGreaterThan(0);
     return ids![0];
+  }
+
+  async function getDashboardSummary() {
+    const response = await request(app.getHttpServer())
+      .get('/dashboard/summary')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .expect(200);
+
+    return response.body as {
+      reservation_groups_today: number;
+      active_reservation_groups: number;
+      occupied_rooms: number;
+      open_housekeeping_tasks: number;
+      pending_balance_total: number;
+      revenue_today: number;
+    };
+  }
+
+  async function createZodomusWorkflowFixture(label: string) {
+    const suffix = label.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
+    const roomCategory = await prisma.roomCategory.create({
+      data: {
+        propertyId: propertyAId,
+        name: `${tag}-${label}-Category`,
+        code: `${tag}-${suffix}-CAT`.slice(0, 40),
+        maxOccupancy: 2,
+      },
+    });
+    const ratePlan = await prisma.ratePlan.create({
+      data: {
+        propertyId: propertyAId,
+        roomCategoryId: roomCategory.id,
+        name: `${tag}-${label}-Rate`,
+        code: `${tag}-${suffix}-RATE`.slice(0, 40),
+        baseRate: '2800.00',
+        currency: 'INR',
+        isActive: true,
+      },
+    });
+    const room = await prisma.room.create({
+      data: {
+        propertyId: propertyAId,
+        roomCategoryId: roomCategory.id,
+        roomNumber: `${tag}${suffix}`.slice(0, 20),
+      },
+    });
+
+    const externalRoomId = `${tag}-${label}-ext-room`;
+    const externalRateId = `${tag}-${label}-ext-rate`;
+
+    const connection = await request(app.getHttpServer())
+      .post('/channels')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        property_id: propertyAId,
+        provider: 'ZODOMUS',
+        name: `${tag}-${label}-connection`,
+        status: 'ACTIVE',
+        external_hotel_id: `${tag}-${label}-hotel`,
+        credentials: {
+          ota_key: 'BOOKING_COM',
+        },
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/channels/${connection.body.id}/room-mappings`)
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        room_category_id: roomCategory.id,
+        external_room_id: externalRoomId,
+        external_room_name: `${label} External Room`,
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/channels/${connection.body.id}/rate-mappings`)
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        rate_plan_id: ratePlan.id,
+        external_rate_id: externalRateId,
+        external_rate_name: `${label} External Rate`,
+      })
+      .expect(201);
+
+    return {
+      connectionId: connection.body.id as string,
+      roomCategoryId: roomCategory.id,
+      ratePlanId: ratePlan.id,
+      roomId: room.id,
+      externalRoomId,
+      externalRateId,
+    };
+  }
+
+  function buildProviderReservationSyncPayload(input: {
+    reservationId: string;
+    roomReservationId: string;
+    externalRoomId: string;
+    externalRateId: string;
+    arrivalDate: string;
+    departureDate: string;
+    totalAmount: string;
+    guestName: string;
+  }) {
+    return {
+      reservation_queue: {
+        status: {
+          returnCode: '200',
+          returnMessage: 'OK',
+        },
+      },
+      reservations: [
+        {
+          reservations: {
+            reservation: {
+              id: input.reservationId,
+              status: 1,
+              currencyCode: 'INR',
+              totalPrice: input.totalAmount,
+              bookedAt: providerTimestamp(input.arrivalDate),
+              modifiedAt: providerTimestamp(input.departureDate),
+              source: 'ZODOMUS',
+            },
+            customer: {
+              firstName: input.guestName.split(' ')[0],
+              lastName: input.guestName.split(' ').slice(1).join(' ') || 'Guest',
+              phone: `+9177${Date.now().toString().slice(-8)}`,
+              email: `${input.reservationId}@test.local`,
+            },
+            rooms: [
+              {
+                id: input.externalRoomId,
+                roomReservationId: input.roomReservationId,
+                guestName: input.guestName,
+                arrivalDate: input.arrivalDate,
+                departureDate: input.departureDate,
+                totalPrice: input.totalAmount,
+                prices: [
+                  {
+                    rateId: input.externalRateId,
+                    price: input.totalAmount,
+                    date: input.arrivalDate,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    };
+  }
+
+  function serviceDateOffset(days: number) {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(Date.now() + days * 24 * 60 * 60 * 1000));
+  }
+
+  function providerTimestamp(dateOnly: string) {
+    return `${dateOnly} 00:00:00`;
   }
 });

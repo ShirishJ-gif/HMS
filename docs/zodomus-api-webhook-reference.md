@@ -177,9 +177,10 @@ Verification supports:
 3. HMS queues `WEBHOOK_PROCESS`
 4. HMS matches a ready Zodomus connection
 5. HMS queues a `BOOKINGS` channel sync
-6. HMS pulls reservation queue and detail from Zodomus
-7. HMS imports the reservation
-8. HMS fans out inventory updates if inventory changed
+6. If the webhook includes `reservationId`, HMS tries a targeted reservation-detail fetch first
+7. If targeted fetch is unusable, HMS falls back to reservation queue plus summary reconciliation
+8. HMS imports the resolved reservation payloads
+9. HMS fans out inventory updates if inventory changed
 
 For inventory pushes:
 

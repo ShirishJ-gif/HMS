@@ -51,29 +51,36 @@ Use this as your validation sheet.
   - Action:
     trigger HMS inventory sync for a date range
   - Expected HMS result:
-    sync log shows success
+    sync log shows success or `PARTIAL_FAILED` with row-level failure details when only some provider rows are rejected
   - Expected Zodomus result:
     POST /availability accepted, GET /availability shows matching value
   - Pass if:
     HMS availability number equals Zodomus stored availability
+
+  Operational note:
+    if room `10001` accepts `available = 0` and `available = 1` but rejects `available = 2` with `Your availability is higher than declared`, treat that as a provider-side declared-capacity mismatch. Current live evidence indicates Zodomus room `10001` is declared as capacity `1` while HMS currently sends `2` on open dates.
 
   ### 6. Rate sync
 
   - Action:
     trigger HMS rate sync for a date range
   - Expected HMS result:
-    sync log shows success
+    sync log shows success and stores daily row results with date-specific base rates
   - Expected Zodomus result:
-    POST /rates accepted
+    POST /rates accepted for each room/rate/date row
   - Pass if:
     correct roomId, rateId, dates, and price are accepted by Zodomus
+  - Live proof:
+    for room `10001` / rate `100991`, HMS pushed `2200` on `2026-05-15` and `3080` on `2026-05-16`, and Zodomus returned `200 OK` for both rows
 
   ### 7. New reservation import
 
   - Action:
-    create test reservation in Zodomus, then trigger HMS reservation import sync
+    create test reservation in Zodomus through `POST /channels/:id/provider-reservations-create-test`
+  - Preconditions:
+    all provider rooms and rate IDs used by the test reservation must already be mapped to HMS room categories and rate plans
   - Expected HMS result:
-    guest and reservation records created once
+    guest and reservation records created once without waiting for a later `BOOKINGS` sync
   - Expected Zodomus result:
     reservation appears in queue/detail APIs
   - Pass if:
@@ -93,9 +100,9 @@ Use this as your validation sheet.
   ### 9. Reservation modification
 
   - Action:
-    modify the same reservation in Zodomus, then import again
+    modify the same reservation in Zodomus through `POST /channels/:id/provider-reservations-create-test` with `status = modified`
   - Expected HMS result:
-    existing reservation record updated
+    existing reservation record updated immediately
   - Expected Zodomus result:
     modified reservation returned by queue/detail
   - Pass if:
@@ -104,13 +111,24 @@ Use this as your validation sheet.
   ### 10. Reservation cancellation
 
   - Action:
-    cancel the same reservation in Zodomus, then import again
+    cancel the same reservation in Zodomus through `POST /channels/:id/provider-reservations-create-test` with `status = cancelled`
   - Expected HMS result:
-    reservation marked cancelled or updated appropriately
+    existing HMS reservation group and room lines are marked cancelled immediately and inventory is released
   - Expected Zodomus result:
     cancelled reservation returned by queue/detail
   - Pass if:
-    HMS status matches cancellation correctly
+    HMS status matches cancellation correctly even when provider detail omits `rooms[]`
+
+  ### 10a. Stale and inventory edge cases
+
+  - Action:
+    trigger a `BOOKINGS` sync against a provider queue that contains old or overlapping sandbox reservations
+  - Expected HMS result:
+    reservations older than the 30-day backfill window are skipped, and overlapping stays can fail with inventory errors instead of overbooking HMS
+  - Expected Zodomus result:
+    provider queue/detail APIs can still return those stale or overlapping reservations
+  - Pass if:
+    HMS logs stale-skip or insufficient-inventory outcomes without creating duplicate or impossible reservation state
 
   ### 11. Pause/resume behavior
 
@@ -122,6 +140,19 @@ Use this as your validation sheet.
     no unexpected outbound changes while paused
   - Pass if:
     scheduler respects connection status
+
+  ### 11a. Provider auth verification
+
+  - Action:
+    call `GET /channels/:id/provider-account` and `POST /channels/:id/property-check`
+  - Expected HMS result:
+    both endpoints return `200` when backend env credentials are valid
+  - Expected Zodomus result:
+    account lookup returns `OK`; property-check returns active/OK statuses
+  - Pass if:
+    provider-backed endpoints do not return `401`
+  - Notes:
+    if they return `401`, fix backend env `ZODOMUS_API_USER` and `ZODOMUS_API_PASSWORD`, then restart backend before testing sync behavior
 
   ### 12. Remote disconnect
 

@@ -27,11 +27,11 @@ export function useAsync<T>(load: () => Promise<T>, dependencies: DependencyList
       })
       .catch((error: unknown) => {
         if (active) {
-          setState({
-            data: null,
+          setState((current) => ({
+            data: current.data,
             error: getApiErrorMessage(error),
             loading: false,
-          });
+          }));
         }
       });
 

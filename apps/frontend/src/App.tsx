@@ -1,19 +1,30 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, getApiErrorMessage } from './api/client';
+import {
+  clearStoredSession,
+  getStoredActivePage,
+  getStoredAuthUser,
+  setStoredActivePage,
+  storeAuthSession,
+  subscribeToSessionUpdates,
+} from './api/session';
 import { AuthResponse, AuthUser } from './api/types';
 import { AuditLogsPage } from './pages/AuditLogsPage';
 import { BookingsPage } from './pages/BookingsPage';
 import { AvailabilityPage } from './pages/AvailabilityPage';
-import { ChannelsPage } from './pages/ChannelsPage';
+import { ChannelManagerPage } from './pages/ChannelManagerPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { GuestsPage } from './pages/GuestsPage';
 import { HousekeepingPage } from './pages/HousekeepingPage';
+import { OtaMappingPage } from './pages/OtaMappingPage';
 import { OperationsBoardPage } from './pages/OperationsBoardPage';
 import { PaymentsPage } from './pages/PaymentsPage';
 import { PropertySetupPage } from './pages/PropertySetupPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { RoomsPage } from './pages/RoomsPage';
 import { SupportConsolePage } from './pages/SupportConsolePage';
+import { clearChannelWorkspaceCache, useChannelWorkspace } from './pages/channel/useChannelWorkspace';
+import { WebhookSyncLogsPage } from './pages/WebhookSyncLogsPage';
 
 type Page =
   | 'dashboard'
@@ -21,27 +32,31 @@ type Page =
   | 'reports'
   | 'setup'
   | 'availability'
+  | 'mapping'
   | 'rooms'
   | 'bookings'
   | 'guests'
   | 'housekeeping'
   | 'payments'
   | 'channels'
+  | 'webhooks'
   | 'support'
   | 'audit';
 
 const pages: Array<{ id: Page; label: string; section: string; icon: SidebarIconName }> = [
   { id: 'dashboard', label: 'Dashboard', section: 'Overview', icon: 'dashboard' },
-  { id: 'reports', label: 'Reports', section: 'Overview', icon: 'clipboard' },
+  { id: 'reports', label: 'Reports & Analytics', section: 'Overview', icon: 'clipboard' },
   { id: 'operations', label: 'Operations Board', section: 'Operations', icon: 'pulse' },
   { id: 'bookings', label: 'Reservations', section: 'Operations', icon: 'calendar' },
   { id: 'guests', label: 'Guests', section: 'Operations', icon: 'guest' },
-  { id: 'rooms', label: 'Rooms', section: 'Operations', icon: 'bed' },
+  { id: 'rooms', label: 'Rooms & Inventory', section: 'Operations', icon: 'bed' },
   { id: 'housekeeping', label: 'Housekeeping', section: 'Operations', icon: 'sparkles' },
-  { id: 'availability', label: 'Availability', section: 'Commercial', icon: 'chart' },
+  { id: 'availability', label: 'Availability & Rates', section: 'Commercial', icon: 'chart' },
+  { id: 'mapping', label: 'OTA Mapping', section: 'Commercial', icon: 'puzzle' },
   { id: 'setup', label: 'Property Setup', section: 'Commercial', icon: 'settings' },
-  { id: 'payments', label: 'Payments', section: 'Finance', icon: 'wallet' },
-  { id: 'channels', label: 'Channels', section: 'Integrations', icon: 'puzzle' },
+  { id: 'payments', label: 'Payments & Folios', section: 'Finance', icon: 'wallet' },
+  { id: 'channels', label: 'Channel Manager', section: 'Integrations', icon: 'puzzle' },
+  { id: 'webhooks', label: 'Webhooks & Sync Logs', section: 'Integrations', icon: 'activity' },
   { id: 'support', label: 'Support Console', section: 'Admin', icon: 'activity' },
   { id: 'audit', label: 'Audit Logs', section: 'Admin', icon: 'shield' },
 ];
@@ -61,26 +76,41 @@ type SidebarIconName =
   | 'puzzle'
   | 'activity'
   | 'shield'
+  | 'menu'
+  | 'close'
   | 'logout';
 
 export function App() {
   const [activePage, setActivePage] = useState<Page>(() => {
-    const storedPage = localStorage.getItem('hms_active_page');
+    const storedPage = getStoredActivePage();
     return isPage(storedPage) ? storedPage : 'dashboard';
   });
-  const [user, setUser] = useState<AuthUser | null>(() => {
-    const rawUser = localStorage.getItem('hms_user');
-    return rawUser ? (JSON.parse(rawUser) as AuthUser) : null;
+  const [user, setUser] = useState<AuthUser | null>(() => getStoredAuthUser());
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const activePageMeta = pages.find((page) => page.id === activePage) ?? pages[0];
+  const channelWorkspaceActive = isChannelWorkspacePage(activePage);
+  const channelWorkspace = useChannelWorkspace({
+    enabled: Boolean(user) && channelWorkspaceActive,
+    diagnosticsEnabled: activePage === 'webhooks',
+    sessionKey: user?.id ?? 'anonymous',
   });
+
+  useEffect(() => subscribeToSessionUpdates(setUser), []);
 
   if (!user) {
     return <LoginPage onLogin={setUser} />;
   }
 
+  function handlePageSelect(pageId: Page) {
+    setActivePage(pageId);
+    setStoredActivePage(pageId);
+    setMobileNavOpen(false);
+  }
+
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="sidebar-brand">
+      <aside className={mobileNavOpen ? 'sidebar mobile-open' : 'sidebar'}>
+        <div className="sidebar-brand sidebar-brand-row">
           <span className="sidebar-brand-badge">
             <SidebarIcon name="brand" />
           </span>
@@ -88,6 +118,14 @@ export function App() {
             <h1>HMS Admin</h1>
             <p className="sidebar-copy">Hotel operations</p>
           </div>
+          <button
+            aria-label="Close navigation"
+            className="mobile-nav-close"
+            onClick={() => setMobileNavOpen(false)}
+            type="button"
+          >
+            <SidebarIcon name="close" />
+          </button>
         </div>
 
         <nav aria-label="Admin pages">
@@ -101,10 +139,7 @@ export function App() {
                     <button
                       className={activePage === page.id ? 'nav-item active' : 'nav-item'}
                       key={page.id}
-                      onClick={() => {
-                        setActivePage(page.id);
-                        localStorage.setItem('hms_active_page', page.id);
-                      }}
+                      onClick={() => handlePageSelect(page.id)}
                       type="button"
                     >
                       <span className="nav-item-icon">
@@ -126,32 +161,55 @@ export function App() {
           </div>
           <button
             className="sidebar-user-action"
-          onClick={() => {
-            localStorage.removeItem('hms_access_token');
-            localStorage.removeItem('hms_refresh_token');
-            localStorage.removeItem('hms_user');
-            localStorage.removeItem('hms_active_page');
-            setUser(null);
-          }}
-          type="button"
+            onClick={() => {
+              clearChannelWorkspaceCache(user.id);
+              clearStoredSession();
+              setMobileNavOpen(false);
+              setUser(null);
+            }}
+            type="button"
           >
             <SidebarIcon name="logout" />
           </button>
         </div>
       </aside>
+      <button
+        aria-hidden={!mobileNavOpen}
+        className={mobileNavOpen ? 'mobile-nav-backdrop visible' : 'mobile-nav-backdrop'}
+        onClick={() => setMobileNavOpen(false)}
+        tabIndex={mobileNavOpen ? 0 : -1}
+        type="button"
+      />
 
       <main className="main-panel">
+        <div className="mobile-topbar">
+          <button
+            aria-expanded={mobileNavOpen}
+            aria-label="Open navigation"
+            className="mobile-topbar-action"
+            onClick={() => setMobileNavOpen(true)}
+            type="button"
+          >
+            <SidebarIcon name="menu" />
+          </button>
+          <div className="mobile-topbar-copy">
+            <p>{activePageMeta.section}</p>
+            <strong>{activePageMeta.label}</strong>
+          </div>
+        </div>
         {activePage === 'dashboard' && <DashboardPage />}
         {activePage === 'reports' && <ReportsPage />}
         {activePage === 'operations' && <OperationsBoardPage />}
         {activePage === 'setup' && <PropertySetupPage />}
         {activePage === 'availability' && <AvailabilityPage />}
+        {activePage === 'mapping' && <OtaMappingPage workspace={channelWorkspace} />}
         {activePage === 'rooms' && <RoomsPage />}
         {activePage === 'bookings' && <BookingsPage />}
         {activePage === 'guests' && <GuestsPage />}
         {activePage === 'housekeeping' && <HousekeepingPage />}
         {activePage === 'payments' && <PaymentsPage />}
-        {activePage === 'channels' && <ChannelsPage />}
+        {activePage === 'channels' && <ChannelManagerPage workspace={channelWorkspace} />}
+        {activePage === 'webhooks' && <WebhookSyncLogsPage workspace={channelWorkspace} />}
         {activePage === 'support' && <SupportConsolePage />}
         {activePage === 'audit' && <AuditLogsPage />}
       </main>
@@ -161,6 +219,10 @@ export function App() {
 
 function isPage(value: string | null): value is Page {
   return value != null && pages.some((page) => page.id === value);
+}
+
+function isChannelWorkspacePage(page: Page) {
+  return page === 'mapping' || page === 'channels' || page === 'webhooks';
 }
 
 function SidebarIcon({ name }: { name: SidebarIconName }) {
@@ -271,6 +333,18 @@ function SidebarIcon({ name }: { name: SidebarIconName }) {
           <path d="m12 3 7 3v5c0 4.3-2.7 8.2-7 10-4.3-1.8-7-5.7-7-10V6Z" />
         </svg>
       );
+    case 'menu':
+      return (
+        <svg {...sharedProps}>
+          <path d="M4 7h16M4 12h16M4 17h16" />
+        </svg>
+      );
+    case 'close':
+      return (
+        <svg {...sharedProps}>
+          <path d="M6 6 18 18M18 6 6 18" />
+        </svg>
+      );
     case 'logout':
       return (
         <svg {...sharedProps}>
@@ -296,9 +370,7 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
 
     try {
       const response = await api.post<AuthResponse>('/auth/login', { email, password });
-      localStorage.setItem('hms_access_token', response.data.access_token);
-      localStorage.setItem('hms_refresh_token', response.data.refresh_token);
-      localStorage.setItem('hms_user', JSON.stringify(response.data.user));
+      storeAuthSession(response.data);
       onLogin(response.data.user);
     } catch (loginError) {
       setError(getApiErrorMessage(loginError));

@@ -38,11 +38,14 @@ export class ZodomusChannelAdapter {
     if (payload.sync_type === ChannelSyncType.INVENTORY) {
       this.requireExternalHotelId(payload.external_hotel_id, payload.sync_type);
       const inventoryRows = this.readPayloadArray(payload.inventory, 'inventory sync');
-      const rowResults = await Promise.all(
-        inventoryRows.map(async (inventoryRow) => {
+      const rowResults = await this.mapWithConcurrency(
+        inventoryRows,
+        this.readSyncConcurrency(),
+        async (inventoryRow) => {
           const row = this.readPayloadRecord(inventoryRow, 'inventory sync item');
           const roomId = this.requiredString(row.external_room_id, 'inventory.external_room_id');
           const date = this.requiredString(row.date, 'inventory.date');
+          const nextDate = this.nextDate(date);
           const availability = this.requiredInteger(row.available, 'inventory.available');
           const response = await client
             .pushAvailability({
@@ -50,16 +53,29 @@ export class ZodomusChannelAdapter {
               propertyId: payload.external_hotel_id,
               roomId,
               dateFrom: date,
-              dateTo: date,
+              dateTo: nextDate,
               availability,
             })
-            .then((providerResponse) => ({
-              date,
-              external_room_id: roomId,
-              available: availability,
-              status: 'SUCCEEDED',
-              provider_response: providerResponse,
-            }))
+            .then((providerResponse) => {
+              const providerError = this.readProviderFailure(providerResponse);
+
+              return providerError
+                ? {
+                    date,
+                    external_room_id: roomId,
+                    available: availability,
+                    status: 'FAILED',
+                    error_message: providerError,
+                    provider_response: providerResponse,
+                  }
+                : {
+                    date,
+                    external_room_id: roomId,
+                    available: availability,
+                    status: 'SUCCEEDED',
+                    provider_response: providerResponse,
+                  };
+            })
             .catch((error: unknown) => ({
               date,
               external_room_id: roomId,
@@ -69,7 +85,7 @@ export class ZodomusChannelAdapter {
             }));
 
           return response;
-        }),
+        },
       );
       const succeededRows = rowResults.filter((result) => result.status === 'SUCCEEDED');
       const failedRows = rowResults.filter((result) => result.status === 'FAILED');
@@ -97,30 +113,66 @@ export class ZodomusChannelAdapter {
 
     if (payload.sync_type === ChannelSyncType.RATES) {
       this.requireExternalHotelId(payload.external_hotel_id, payload.sync_type);
-      const rateWindow = this.requiredDateWindow(payload.from, payload.to, 'rate sync');
       const rateRows = this.readPayloadArray(payload.rates, 'rate sync');
-      const responses = await Promise.all(
-        rateRows.map(async (rateRow) => {
+      const rowResults = await this.mapWithConcurrency(
+        rateRows,
+        this.readSyncConcurrency(),
+        async (rateRow) => {
           const row = this.readPayloadRecord(rateRow, 'rate sync item');
+          const date = this.requiredString(row.date, 'rates.date');
+          const nextDate = this.nextDate(date);
           const roomId = this.requiredString(row.external_room_id, 'rates.external_room_id');
           const rateId = this.requiredString(row.external_rate_id, 'rates.external_rate_id');
           const currencyCode = this.requiredString(row.currency, 'rates.currency');
           const baseRate = this.requiredNumber(row.base_rate, 'rates.base_rate');
 
-          return client.pushRates({
-            channelId: Number(connectionConfig.channel_code),
-            propertyId: payload.external_hotel_id,
-            roomId,
-            rateId,
-            dateFrom: rateWindow.from,
-            dateTo: rateWindow.to,
-            currencyCode,
-            prices: {
-              price: baseRate.toFixed(2),
-            },
-          });
-        }),
+          return client
+            .pushRates({
+              channelId: Number(connectionConfig.channel_code),
+              propertyId: payload.external_hotel_id,
+              roomId,
+              rateId,
+              dateFrom: date,
+              dateTo: nextDate,
+              currencyCode,
+              prices: {
+                price: baseRate.toFixed(2),
+              },
+            })
+            .then((providerResponse) => {
+              const providerError = this.readProviderFailure(providerResponse);
+
+              return providerError
+                ? {
+                    date,
+                    external_room_id: roomId,
+                    external_rate_id: rateId,
+                    base_rate: baseRate,
+                    status: 'FAILED',
+                    error_message: providerError,
+                    provider_response: providerResponse,
+                  }
+                : {
+                    date,
+                    external_room_id: roomId,
+                    external_rate_id: rateId,
+                    base_rate: baseRate,
+                    status: 'SUCCEEDED',
+                    provider_response: providerResponse,
+                  };
+            })
+            .catch((error: unknown) => ({
+              date,
+              external_room_id: roomId,
+              external_rate_id: rateId,
+              base_rate: baseRate,
+              status: 'FAILED',
+              error_message: this.readErrorMessage(error),
+            }));
+        },
       );
+      const succeededRows = rowResults.filter((result) => result.status === 'SUCCEEDED');
+      const failedRows = rowResults.filter((result) => result.status === 'FAILED');
 
       return {
         provider: payload.provider,
@@ -128,22 +180,63 @@ export class ZodomusChannelAdapter {
         environment: appCredentials.environment,
         external_hotel_id: payload.external_hotel_id,
         ota_name: connectionConfig.ota_name,
-        date_from: rateWindow.from,
-        date_to: rateWindow.to,
+        date_from: payload.from ?? null,
+        date_to: payload.to ?? null,
         rate_count: rateRows.length,
-        response: this.asJsonValue(responses),
+        row_results: this.asJsonValue(rowResults),
+        response: this.asJsonValue(
+          succeededRows.flatMap((result) => ('provider_response' in result ? [result.provider_response] : [])),
+        ),
+        summary: {
+          total_rows: rowResults.length,
+          succeeded_rows: succeededRows.length,
+          failed_rows: failedRows.length,
+        },
       };
     }
 
     if (payload.sync_type === ChannelSyncType.BOOKINGS) {
       const propertyId = this.requiredPropertyId(payload.external_hotel_id, 'reservation sync');
+      const targetedReservationImport = this.readWebhookTriggeredReservationImport(payload.reservation_import);
+      if (targetedReservationImport) {
+        const targetedReservation = await this.tryFetchReservationDetailById(
+          client,
+          connectionConfig.channel_code,
+          propertyId,
+          targetedReservationImport.reservationId,
+        );
+
+        if (targetedReservation.reservation) {
+          return {
+            provider: payload.provider,
+            sync_type: payload.sync_type,
+            environment: appCredentials.environment,
+            ota_name: connectionConfig.ota_name,
+            reservation_queue: null,
+            reservation_summary: null,
+            reservations: this.asJsonValue([targetedReservation.reservation]),
+            reservation_import: this.asJsonValue({
+              mode: targetedReservationImport.mode,
+              strategy: 'targeted_reservation_fetch',
+              reservation_id: targetedReservationImport.reservationId,
+            }),
+            message: 'Zodomus webhook-triggered reservation import fetched the targeted reservation directly.',
+          };
+        }
+      }
+
       const reservationQueue = await client.pullReservationQueue({
+        channelId: connectionConfig.channel_code,
+        propertyId,
+      });
+      const reservationSummary = await client.getReservationsSummary({
         channelId: connectionConfig.channel_code,
         propertyId,
       });
       const reservations = await this.fetchReservationDetails(
         client,
         reservationQueue,
+        reservationSummary,
         connectionConfig.channel_code,
         propertyId,
       );
@@ -154,8 +247,14 @@ export class ZodomusChannelAdapter {
         environment: appCredentials.environment,
         ota_name: connectionConfig.ota_name,
         reservation_queue: this.asJsonValue(reservationQueue),
+        reservation_summary: this.asJsonValue(reservationSummary),
         reservations: this.asJsonValue(reservations),
-        message: 'Reservation queue fetched from Zodomus and prepared for local booking import.',
+        reservation_import: this.asJsonValue({
+          mode: targetedReservationImport?.mode ?? 'queue_poll',
+          strategy: 'queue_reconciliation',
+          reservation_id: targetedReservationImport?.reservationId ?? null,
+        }),
+        message: 'Zodomus reservation queue and summary fetched and prepared for local booking import.',
       };
     }
 
@@ -216,6 +315,90 @@ export class ZodomusChannelAdapter {
       environment: appCredentials.environment,
       response: this.asJsonValue(await client.getCurrencies()),
     };
+  }
+
+  private readProviderFailure(response: unknown) {
+    const returnCode = this.readProviderReturnCode(response);
+    if (returnCode === '200') {
+      return null;
+    }
+
+    return this.readProviderReturnMessage(response) ?? `Provider returned code ${returnCode ?? 'unknown'}`;
+  }
+
+  private readSyncConcurrency() {
+    const raw = process.env.ZODOMUS_SYNC_CONCURRENCY?.trim();
+    if (!raw) {
+      return 8;
+    }
+
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return 8;
+    }
+
+    return Math.min(parsed, 32);
+  }
+
+  private async mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    iteratee: (item: T, index: number) => Promise<R>,
+  ) {
+    if (items.length === 0) {
+      return [] as R[];
+    }
+
+    const results = new Array<R>(items.length);
+    let cursor = 0;
+    const workerCount = Math.min(concurrency, items.length);
+
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (cursor < items.length) {
+          const index = cursor;
+          cursor += 1;
+          results[index] = await iteratee(items[index], index);
+        }
+      }),
+    );
+
+    return results;
+  }
+
+  private readProviderReturnCode(response: unknown) {
+    const status = this.readProviderStatusRecord(response);
+    const code = status.returnCode;
+
+    if (typeof code === 'number' && Number.isFinite(code)) {
+      return String(code);
+    }
+
+    return typeof code === 'string' && code.trim() ? code.trim() : null;
+  }
+
+  private readProviderReturnMessage(response: unknown) {
+    const status = this.readProviderStatusRecord(response);
+    const message = status.returnMessage;
+
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim();
+    }
+
+    if (message && typeof message === 'object') {
+      return JSON.stringify(message);
+    }
+
+    return null;
+  }
+
+  private readProviderStatusRecord(response: unknown) {
+    const wrapper = this.readPayloadRecord(response, 'provider response');
+    const responseRecord =
+      'response' in wrapper ? this.readPayloadRecord(wrapper.response, 'provider response body') : wrapper;
+    return 'status' in responseRecord
+      ? this.readPayloadRecord(responseRecord.status, 'provider response status')
+      : responseRecord;
   }
 
   async getPriceModels(payload: ChannelConnectionValidationPayload): Promise<Prisma.InputJsonObject> {
@@ -620,18 +803,25 @@ export class ZodomusChannelAdapter {
   private async fetchReservationDetails(
     client: ZodomusClient,
     queuePayload: unknown,
+    summaryPayload: unknown,
     channelId: string,
     propertyId: string,
   ) {
-    const references = this.extractReservationReferences(queuePayload);
+    const references = this.extractReservationReferences(queuePayload, summaryPayload);
     const reservations = await Promise.all(
       references.map(async (reference) => {
         try {
-          return await client.getReservation({
+          const detail = await client.getReservation({
             channelId,
             propertyId,
             reservationId: reference.reservationId,
           });
+
+          if (this.isDownloadedReservationLimitResponse(detail)) {
+            return null;
+          }
+
+          return detail;
         } catch (error) {
           return {
             reference,
@@ -644,27 +834,101 @@ export class ZodomusChannelAdapter {
     return reservations.filter((entry) => entry !== null);
   }
 
-  private extractReservationReferences(queuePayload: unknown) {
-    const items = this.readArray(queuePayload);
-    const references: Array<Record<string, string>> = [];
+  private async tryFetchReservationDetailById(
+    client: ZodomusClient,
+    channelId: string,
+    propertyId: string,
+    reservationId: string,
+  ) {
+    try {
+      const detail = await client.getReservation({
+        channelId,
+        propertyId,
+        reservationId,
+      });
 
-    for (const item of items) {
-      const record = this.readObject(item);
-      const reservationId = this.firstString(
-        record,
-        'reservation_id',
-        'reservationId',
-        'id',
-        'booking_id',
-        'bookingId',
-        'code',
-      );
-
-      if (!reservationId) {
-        continue;
+      if (this.isDownloadedReservationLimitResponse(detail)) {
+        return { reservation: null };
       }
 
-      references.push({ reservationId });
+      if (this.readProviderFailure(detail)) {
+        return { reservation: null };
+      }
+
+      return { reservation: detail };
+    } catch {
+      return { reservation: null };
+    }
+  }
+
+  private readWebhookTriggeredReservationImport(value: unknown) {
+    const record = this.readObject(value);
+    const mode = this.firstString(record, 'mode');
+    const reservationId = this.firstString(record, 'reservation_id', 'reservationId');
+    if (mode !== 'webhook_trigger' || !reservationId) {
+      return null;
+    }
+
+    return {
+      mode,
+      reservationId,
+    };
+  }
+
+  private isDownloadedReservationLimitResponse(response: unknown) {
+    const providerError = this.readProviderFailure(response);
+    if (!providerError) {
+      return false;
+    }
+
+    const normalized = providerError.trim().toLowerCase();
+    return normalized.includes('reservation already downloaded') && normalized.includes('limit was reached');
+  }
+
+  private extractReservationReferences(...payloads: unknown[]) {
+    const references: Array<Record<string, string>> = [];
+    const seenReservationIds = new Set<string>();
+
+    for (const payload of payloads) {
+      const items = this.readArray(payload);
+
+      for (const item of items) {
+        const record = this.readObject(item);
+        const reservationEnvelope = this.readObject(record.reservations);
+        const reservationCandidates = [
+          this.readObject(record.reservation),
+          this.readObject(reservationEnvelope.reservation),
+          reservationEnvelope,
+        ];
+        const reservationRecord =
+          reservationCandidates.find((candidate) => Object.keys(candidate).length > 0) ?? {};
+        const reservationId =
+          this.firstString(
+            reservationRecord,
+            'reservation_id',
+            'reservationId',
+            'id',
+            'booking_id',
+            'bookingId',
+            'code',
+          ) ??
+          this.firstString(
+            record,
+            'reservation_id',
+            'reservationId',
+            'id',
+            'booking_id',
+            'bookingId',
+            'code',
+          );
+
+        if (!reservationId || seenReservationIds.has(reservationId)) {
+          continue;
+        }
+
+        seenReservationIds.add(reservationId);
+        references.push({ reservationId });
+      }
     }
 
     return references;
@@ -732,5 +996,15 @@ export class ZodomusChannelAdapter {
     }
 
     return 'Inventory row push failed';
+  }
+
+  private nextDate(value: string) {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException(`Invalid inventory date: ${value}`);
+    }
+
+    date.setUTCDate(date.getUTCDate() + 1);
+    return date.toISOString().slice(0, 10);
   }
 }

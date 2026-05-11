@@ -1,0 +1,590 @@
+{
+  "info": {
+    "_postman_id": "8f354fe9-7b7f-47e4-a554-1824f8c91a8a",
+    "name": "HMS Zodomus Channel Flow",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "HMS-side Postman collection for the current Zodomus setup, mapping, readiness, sync, and diagnostics flow."
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "propertyId",
+      "value": ""
+    },
+    {
+      "key": "roomCategoryId",
+      "value": ""
+    },
+    {
+      "key": "ratePlanId",
+      "value": ""
+    },
+    {
+      "key": "channelId",
+      "value": ""
+    },
+    {
+      "key": "syncLogId",
+      "value": ""
+    },
+    {
+      "key": "otaKey",
+      "value": "BOOKING_COM"
+    },
+    {
+      "key": "externalHotelId",
+      "value": "100"
+    },
+    {
+      "key": "externalRoomId",
+      "value": "10001"
+    },
+    {
+      "key": "externalRoomName",
+      "value": "Provider Room Name"
+    },
+    {
+      "key": "externalRateId",
+      "value": "100991"
+    },
+    {
+      "key": "externalRateName",
+      "value": "Provider Rate Name"
+    },
+    {
+      "key": "priceModelId",
+      "value": "1"
+    },
+    {
+      "key": "syncFrom",
+      "value": "2026-05-06"
+    },
+    {
+      "key": "syncTo",
+      "value": "2026-06-05"
+    }
+  ],
+  "item": [
+    {
+      "name": "01. Auth & Master Data",
+      "item": [
+        {
+          "name": "01. Login",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@hms.local\",\n  \"password\": \"Admin@12345\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Logs into HMS and stores the JWT token for the rest of the collection."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.access_token) {",
+                  "  pm.collectionVariables.set('token', json.access_token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02. List Properties",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/properties",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "properties"
+              ]
+            },
+            "description": "Pick the HMS property you want to connect. Set propertyId manually from the response."
+          }
+        },
+        {
+          "name": "03. List Room Categories",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/room-categories",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "room-categories"
+              ]
+            },
+            "description": "Pick the local room_category_id values you will map. Set roomCategoryId manually from the response."
+          }
+        },
+        {
+          "name": "04. List Rate Plans",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/rate-plans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rate-plans"
+              ]
+            },
+            "description": "Pick the local rate_plan_id values you will map. Set ratePlanId manually from the response."
+          }
+        }
+      ]
+    },
+    {
+      "name": "02. Zodomus Setup",
+      "item": [
+        {
+          "name": "05. Setup Zodomus Connection",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"property_id\": \"{{propertyId}}\",\n  \"ota_key\": \"{{otaKey}}\",\n  \"external_hotel_id\": \"{{externalHotelId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/channels/zodomus/setup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "zodomus",
+                "setup"
+              ]
+            },
+            "description": "Creates the HMS channel connection and internally runs provider account lookup, provider channels lookup, property activation, initial property check, and room-rate catalog load."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.connection && json.connection.id) {",
+                  "  pm.collectionVariables.set('channelId', json.connection.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "06. List HMS Channel Connections",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/channels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels"
+              ]
+            },
+            "description": "Verifies the local HMS channel connection and its current readiness summary."
+          }
+        },
+        {
+          "name": "07. Get Provider Catalog",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/provider-catalog",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "provider-catalog"
+              ]
+            },
+            "description": "Optional after setup because setup already returns catalog. Use it to refresh and inspect provider room/rate IDs before mapping."
+          }
+        }
+      ]
+    },
+    {
+      "name": "03. Mapping",
+      "item": [
+        {
+          "name": "08. Create Room Mapping",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"room_category_id\": \"{{roomCategoryId}}\",\n  \"external_room_id\": \"{{externalRoomId}}\",\n  \"external_room_name\": \"{{externalRoomName}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/room-mappings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "room-mappings"
+              ]
+            },
+            "description": "Map HMS room categories first. Rate mappings depend on this room context."
+          }
+        },
+        {
+          "name": "09. Create Rate Mapping",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rate_plan_id\": \"{{ratePlanId}}\",\n  \"external_room_id\": \"{{externalRoomId}}\",\n  \"external_rate_id\": \"{{externalRateId}}\",\n  \"external_rate_name\": \"{{externalRateName}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/rate-mappings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "rate-mappings"
+              ]
+            },
+            "description": "Map HMS rate plans after room mappings. For Zodomus the effective external rate key is room-aware."
+          }
+        }
+      ]
+    },
+    {
+      "name": "04. Readiness & Automation",
+      "item": [
+        {
+          "name": "10. Activate Mapped Rooms",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/rooms-activate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "rooms-activate"
+              ]
+            },
+            "description": "Activates the mapped room and rate combinations in Zodomus."
+          }
+        },
+        {
+          "name": "11. Property Check",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/property-check",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "property-check"
+              ]
+            },
+            "description": "Final readiness gate after mapping and rooms activation."
+          }
+        },
+        {
+          "name": "12. Save Automation Settings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true,\n  \"inventory_interval_minutes\": 5,\n  \"rates_interval_minutes\": 15,\n  \"bookings_interval_minutes\": 2,\n  \"sync_window_days\": 30\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/automation",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "automation"
+              ]
+            },
+            "description": "Optional but recommended. Webhooks are not a full replacement for scheduled outbound and recovery sync."
+          }
+        }
+      ]
+    },
+    {
+      "name": "05. Sync & Diagnostics",
+      "item": [
+        {
+          "name": "13. Sync Inventory",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "idempotency-key",
+                "value": "inventory-sync-{{channelId}}-{{syncFrom}}-{{syncTo}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sync_type\": \"INVENTORY\",\n  \"from\": \"{{syncFrom}}\",\n  \"to\": \"{{syncTo}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "sync"
+              ]
+            },
+            "description": "Push sellable inventory from HMS to the mapped Zodomus rooms for the chosen future window."
+          }
+        },
+        {
+          "name": "14. Sync Rates",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "idempotency-key",
+                "value": "rates-sync-{{channelId}}-{{syncFrom}}-{{syncTo}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sync_type\": \"RATES\",\n  \"from\": \"{{syncFrom}}\",\n  \"to\": \"{{syncTo}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "sync"
+              ]
+            },
+            "description": "Push rates from HMS to the mapped room/rate pairs for the same future window."
+          }
+        },
+        {
+          "name": "15. Sync Bookings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "idempotency-key",
+                "value": "bookings-sync-{{channelId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sync_type\": \"BOOKINGS\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "sync"
+              ]
+            },
+            "description": "Queues inbound reservation import from Zodomus into HMS."
+          }
+        },
+        {
+          "name": "16. Get Sync Logs",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/sync-logs?limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "sync-logs"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": "Inspect recent sync attempts and optionally copy a syncLogId for failed-row retry."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const rows = Array.isArray(json.data) ? json.data : [];",
+                  "if (rows.length > 0 && rows[0].id) {",
+                  "  pm.collectionVariables.set('syncLogId', rows[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "17. Get Inventory Reconciliation",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/inventory-reconciliation",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "inventory-reconciliation"
+              ]
+            },
+            "description": "Compare the last pushed inventory baseline against current HMS inventory for the selected connection."
+          }
+        },
+        {
+          "name": "18. Get Inventory Row Results",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/inventory-row-results",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "inventory-row-results"
+              ]
+            },
+            "description": "Inspect persisted row-level success/failure details for inventory sync attempts."
+          }
+        },
+        {
+          "name": "19. Retry Failed Inventory Rows",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/channels/{{channelId}}/sync-logs/{{syncLogId}}/retry-failed-rows",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "channels",
+                "{{channelId}}",
+                "sync-logs",
+                "{{syncLogId}}",
+                "retry-failed-rows"
+              ]
+            },
+            "description": "Retry only the failed inventory rows from a partial-failure sync log."
+          }
+        }
+      ]
+    }
+  ]
+}

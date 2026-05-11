@@ -76,6 +76,8 @@ The admin starts by setting up:
 
 This setup decides what the hotel can sell and at what base structure.
 
+Active pricing rules now also feed outbound Zodomus rate syncs, so mapped OTA rates can vary by date when HMS pricing rules apply.
+
 After that, admins can also define selling rules such as:
 
 - stop-sell

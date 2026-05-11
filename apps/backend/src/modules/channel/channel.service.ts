@@ -25,11 +25,13 @@ import { SetupZodomusChannelDto } from './dto/setup-zodomus-channel.dto';
 import { SyncChannelDto } from './dto/sync-channel.dto';
 import { UpdateChannelAutomationDto } from './dto/update-channel-automation.dto';
 import { InventorySyncPayloadService } from './inventory-sync-payload.service';
+import { RateSyncPayloadService } from './rate-sync-payload.service';
 import {
   readZodomusAppCredentials,
   readZodomusConnectionConfig,
   ZodomusOtaKey,
 } from './providers/zodomus.types';
+import { ZodomusReservationImportService } from './zodomus-reservation-import.service';
 
 type InventorySnapshotRow = {
   date: string;
@@ -68,7 +70,9 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     private readonly idempotencyService: IdempotencyService,
     private readonly backgroundJobService: BackgroundJobService,
     private readonly inventorySyncPayloadService: InventorySyncPayloadService,
+    private readonly rateSyncPayloadService: RateSyncPayloadService,
     private readonly metricsService: MetricsService,
+    private readonly zodomusReservationImportService: ZodomusReservationImportService,
   ) {}
 
   onModuleInit() {
@@ -377,6 +381,11 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Automation settings are only implemented for Zodomus connections.');
     }
 
+    const normalizedSyncWindowDays =
+      dto.sync_window_days !== undefined
+        ? this.normalizeZodomusSyncWindowDays(dto.sync_window_days)
+        : undefined;
+
     await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
       automation: {
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
@@ -387,7 +396,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         ...(dto.bookings_interval_minutes !== undefined
           ? { bookings_interval_minutes: dto.bookings_interval_minutes }
           : {}),
-        ...(dto.sync_window_days !== undefined ? { sync_window_days: dto.sync_window_days } : {}),
+        ...(normalizedSyncWindowDays !== undefined ? { sync_window_days: normalizedSyncWindowDays } : {}),
       },
     });
 
@@ -409,7 +418,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
           ...(dto.bookings_interval_minutes !== undefined
             ? { bookings_interval_minutes: dto.bookings_interval_minutes }
             : {}),
-          ...(dto.sync_window_days !== undefined ? { sync_window_days: dto.sync_window_days } : {}),
+          ...(normalizedSyncWindowDays !== undefined ? { sync_window_days: normalizedSyncWindowDays } : {}),
         },
       },
       user,
@@ -674,13 +683,59 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     user?: AuthenticatedUser,
   ) {
     const connection = await this.findAccessibleConnection(connectionId, user);
-    return this.providerService.createTestReservation({
+    const providerResponse = await this.providerService.createTestReservation({
       provider: connection.provider,
       external_hotel_id: connection.externalHotelId,
       credentials: connection.credentials,
       status,
       reservation_id: reservationId,
     });
+
+    if (connection.provider !== ChannelProvider.ZODOMUS || !this.isSuccessfulZodomusReservationCreate(providerResponse)) {
+      return providerResponse;
+    }
+
+    const createdReservationId =
+      this.extractCreatedReservationId(providerResponse) ?? reservationId?.trim() ?? null;
+
+    if (!createdReservationId) {
+      return {
+        ...providerResponse,
+        import_summary: null,
+        import_skipped_reason: 'Zodomus accepted reservation creation but did not return a reservation id.',
+      };
+    }
+
+    const detailResponse = await this.providerService.getReservation({
+      provider: connection.provider,
+      external_hotel_id: connection.externalHotelId,
+      credentials: connection.credentials,
+      reservation_id: createdReservationId,
+    });
+    const providerReservationDetail = this.readObject(
+      this.readObject(detailResponse as unknown as Prisma.JsonValue).response,
+    );
+    const importSummary = await this.zodomusReservationImportService.importFromSync({
+      channelConnectionId: connection.id,
+      propertyId: connection.propertyId,
+      responsePayload: JSON.parse(
+        JSON.stringify({
+          reservations: [providerReservationDetail],
+        }),
+      ) as Prisma.JsonValue,
+    });
+
+    await this.backgroundJobService.finalizeImportedReservationImport({
+      sourceConnectionId: connection.id,
+      propertyId: connection.propertyId,
+      importSummary,
+    });
+
+    return {
+      ...providerResponse,
+      reservation_id: createdReservationId,
+      import_summary: importSummary,
+    };
   }
 
   async createRoomMapping(connectionId: string, dto: CreateChannelRoomMappingDto, user?: AuthenticatedUser) {
@@ -921,7 +976,9 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         errorMessage: syncOutcome.errorMessage,
       },
     });
-    await this.persistInventorySyncRows(updated.id, connection.id, responsePayload);
+    if (log.syncType === ChannelSyncType.INVENTORY) {
+      await this.persistInventorySyncRows(updated.id, connection.id, responsePayload);
+    }
 
     await this.auditLogService.record({
       action: AuditAction.CHANNEL_SYNC,
@@ -1390,21 +1447,34 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       const roomMappingByCategoryId = new Map(
         connection.roomMappings.map((mapping) => [mapping.roomCategoryId, mapping] as const),
       );
+      const rates = await this.rateSyncPayloadService.buildDailyRateRows(
+        connection.propertyId,
+        connection.rateMappings.map((mapping) => ({
+          externalRoomId:
+            mapping.externalRoomId ??
+            roomMappingByCategoryId.get(mapping.ratePlan.roomCategoryId)?.externalRoomId ??
+            this.missingRoomMappingForRate(mapping.ratePlan.code, mapping.ratePlan.roomCategory.code),
+          externalRateId: mapping.externalRateId,
+          ratePlanId: mapping.ratePlanId,
+          ratePlanCode: mapping.ratePlan.code,
+          roomCategoryId: mapping.ratePlan.roomCategoryId,
+          roomCategoryCode: mapping.ratePlan.roomCategory.code,
+          ratePlan: {
+            id: mapping.ratePlan.id,
+            baseRate: mapping.ratePlan.baseRate,
+            currency: mapping.ratePlan.currency,
+          },
+        })),
+        {
+          from: dto.from,
+          to: dto.to,
+        },
+      );
 
       return {
         from: dto.from,
         to: dto.to,
-        rates: connection.rateMappings.map((mapping) => ({
-          external_room_id:
-            mapping.externalRoomId ??
-            roomMappingByCategoryId.get(mapping.ratePlan.roomCategoryId)?.externalRoomId ??
-            this.missingRoomMappingForRate(mapping.ratePlan.code, mapping.ratePlan.roomCategory.code),
-          external_rate_id: mapping.externalRateId,
-          rate_plan_id: mapping.ratePlanId,
-          rate_plan_code: mapping.ratePlan.code,
-          base_rate: mapping.ratePlan.baseRate.toNumber(),
-          currency: mapping.ratePlan.currency,
-        })),
+        rates,
       };
     }
 
@@ -1440,10 +1510,45 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     } satisfies Prisma.ChannelConnectionInclude;
   }
 
-  private readObject(value: Prisma.JsonValue | null) {
+  private readObject(value: unknown) {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, Prisma.JsonValue>)
       : {};
+  }
+
+  private isSuccessfulZodomusReservationCreate(payload: Prisma.InputJsonObject) {
+    const response = this.readObject(payload.response);
+    const status = this.readObject(response.status);
+    const returnCode = status.returnCode;
+
+    if (typeof returnCode === 'number' && Number.isFinite(returnCode)) {
+      return returnCode === 200;
+    }
+
+    return typeof returnCode === 'string' && returnCode.trim() === '200';
+  }
+
+  private extractCreatedReservationId(payload: Prisma.InputJsonObject) {
+    const directReservationId =
+      this.readStringValue(payload.reservation_id) ??
+      this.readStringValue(payload.reservationId);
+    if (directReservationId) {
+      return directReservationId;
+    }
+
+    const response = this.readObject(payload.response);
+    const status = this.readObject(response.status);
+    const returnMessage = this.readStringValue(status.returnMessage);
+    if (!returnMessage) {
+      return null;
+    }
+
+    const match = returnMessage.match(/reservationid\s*=\s*([A-Za-z0-9_-]+)/i);
+    return match?.[1] ?? null;
+  }
+
+  private readStringValue(value: unknown) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
   }
 
   private handlePrismaError(error: unknown, conflictMessage: string): never {
@@ -1529,8 +1634,18 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       inventory_interval_minutes: this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_INVENTORY_MINUTES, 15),
       rates_interval_minutes: this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_RATES_MINUTES, 60),
       bookings_interval_minutes: this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_BOOKINGS_MINUTES, 5),
-      sync_window_days: this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS, 30),
+      sync_window_days: this.defaultZodomusSyncWindowDays(),
     };
+  }
+
+  private minimumZodomusSyncWindowDays() {
+    return 365;
+  }
+
+  private defaultZodomusSyncWindowDays() {
+    return this.normalizeZodomusSyncWindowDays(
+      this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS, this.minimumZodomusSyncWindowDays()),
+    );
   }
 
   private defaultZodomusSetupStatus() {
@@ -1649,6 +1764,9 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   private readZodomusAutomationConfig(record: Record<string, Prisma.JsonValue>) {
     const automation = this.readNestedRecord(record.automation);
     const defaults = this.defaultZodomusAutomationConfig();
+    const syncWindowDays = this.normalizeZodomusSyncWindowDays(
+      this.readNumber(automation.sync_window_days, defaults.sync_window_days),
+    );
 
     return {
       enabled: this.readBoolean(automation.enabled, defaults.enabled),
@@ -1661,8 +1779,12 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         automation.bookings_interval_minutes,
         defaults.bookings_interval_minutes,
       ),
-      sync_window_days: this.readNumber(automation.sync_window_days, defaults.sync_window_days),
+      sync_window_days: syncWindowDays,
     };
+  }
+
+  private normalizeZodomusSyncWindowDays(value: number) {
+    return Math.max(value, this.minimumZodomusSyncWindowDays());
   }
 
   private async updateZodomusConnectionConfig(
@@ -2152,23 +2274,14 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   }
 
   private resolveSyncOutcome(syncType: ChannelSyncType, responsePayload: Prisma.InputJsonObject) {
-    if (syncType !== ChannelSyncType.INVENTORY) {
-      return {
-        status: ChannelSyncStatus.SUCCEEDED,
-        errorMessage: null,
-      };
+    const payload = this.readObject(responsePayload as unknown as Prisma.JsonValue);
+    const rowOutcome = this.resolveRowBasedSyncOutcome(syncType, payload);
+    if (rowOutcome) {
+      return rowOutcome;
     }
 
-    const payload = this.readObject(responsePayload as unknown as Prisma.JsonValue);
-    const summary = this.readObject(payload.summary);
-    const failedRows = this.readOptionalNumber(summary.failed_rows) ?? 0;
-
-    if (failedRows > 0) {
-      const succeededRows = this.readOptionalNumber(summary.succeeded_rows) ?? 0;
-      return {
-        status: 'PARTIAL_FAILED' as ChannelSyncStatus,
-        errorMessage: `${failedRows} inventory row(s) failed while ${succeededRows} succeeded.`,
-      };
+    if (syncType === ChannelSyncType.BOOKINGS) {
+      return this.resolveBookingSyncOutcome(payload);
     }
 
     return {
@@ -2197,6 +2310,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const dedupedRowResults = this.dedupeInventorySyncRowResults(rowResults, syncLogId);
+
     const inventorySyncRows = (this.prisma as PrismaService & {
       inventorySyncRow: {
         deleteMany: (...args: unknown[]) => Promise<unknown>;
@@ -2209,7 +2324,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     });
 
     await inventorySyncRows.createMany({
-      data: rowResults.map((row) => ({
+      data: dedupedRowResults.map((row) => ({
         channelSyncLogId: syncLogId,
         channelConnectionId: connectionId,
         syncDate: new Date(`${row.date}T00:00:00.000Z`),
@@ -2220,6 +2335,42 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         providerResponse: row.provider_response ?? Prisma.JsonNull,
       })),
     });
+  }
+
+  private dedupeInventorySyncRowResults(
+    rowResults: InventorySyncRowResult[],
+    syncLogId: string,
+  ) {
+    const deduped = new Map<string, InventorySyncRowResult>();
+    let duplicateCount = 0;
+
+    for (const row of rowResults) {
+      const key = `${row.date}::${row.external_room_id}`;
+      const existing = deduped.get(key);
+      if (!existing) {
+        deduped.set(key, row);
+        continue;
+      }
+
+      duplicateCount += 1;
+      if (existing.status === 'FAILED' && row.status !== 'FAILED') {
+        continue;
+      }
+      if (existing.status !== 'FAILED' && row.status === 'FAILED') {
+        deduped.set(key, row);
+        continue;
+      }
+
+      deduped.set(key, row);
+    }
+
+    if (duplicateCount > 0) {
+      this.logger.warn(
+        `Deduplicated ${duplicateCount} duplicate inventory row result(s) before persisting sync log ${syncLogId}.`,
+      );
+    }
+
+    return [...deduped.values()];
   }
 
   private extractFailedInventoryRows(
@@ -2297,5 +2448,133 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       error_message: this.readOptionalString(row.error_message),
       provider_response: row.provider_response ?? null,
     } satisfies InventorySyncRowResult;
+  }
+
+  private resolveRowBasedSyncOutcome(
+    syncType: ChannelSyncType,
+    payload: Record<string, Prisma.JsonValue>,
+  ) {
+    const summary = this.readObject(payload.summary);
+    const rowResults = Array.isArray(payload.row_results) ? payload.row_results : [];
+
+    const failedRowsFromResults = rowResults.reduce<number>((count, value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return count;
+      }
+
+      const status = this.readOptionalString((value as Record<string, Prisma.JsonValue>).status);
+      return status === 'FAILED' ? count + 1 : count;
+    }, 0);
+    const succeededRowsFromResults = rowResults.reduce<number>((count, value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return count;
+      }
+
+      const status = this.readOptionalString((value as Record<string, Prisma.JsonValue>).status);
+      return status === 'SUCCEEDED' ? count + 1 : count;
+    }, 0);
+
+    const failedRows =
+      this.readCount(summary.failed_rows) ??
+      (rowResults.length > 0 ? failedRowsFromResults : null);
+    const succeededRows =
+      this.readCount(summary.succeeded_rows) ??
+      (rowResults.length > 0 ? succeededRowsFromResults : null);
+
+    if ((failedRows ?? 0) > 0) {
+      return {
+        status: (succeededRows ?? 0) > 0 ? ('PARTIAL_FAILED' as ChannelSyncStatus) : ChannelSyncStatus.FAILED,
+        errorMessage:
+          syncType === ChannelSyncType.RATES
+            ? `${failedRows} rate row(s) failed while ${succeededRows ?? 0} succeeded.`
+            : `${failedRows} inventory row(s) failed while ${succeededRows ?? 0} succeeded.`,
+      };
+    }
+
+    if ((succeededRows ?? 0) > 0) {
+      return {
+        status: ChannelSyncStatus.SUCCEEDED,
+        errorMessage: null,
+      };
+    }
+
+    return null;
+  }
+
+  private resolveBookingSyncOutcome(payload: Record<string, Prisma.JsonValue>) {
+    const reservationQueue = this.readNestedRecord(payload.reservation_queue);
+    const queueStatus = this.readNestedRecord(reservationQueue.status);
+    const queueReturnCode = this.readOptionalStringOrNumber(queueStatus.returnCode);
+    const queueReturnMessage = this.readOptionalString(queueStatus.returnMessage);
+
+    if (queueReturnCode && queueReturnCode !== '200') {
+      return {
+        status: ChannelSyncStatus.FAILED,
+        errorMessage: queueReturnMessage ?? `Booking sync provider returned code ${queueReturnCode}.`,
+      };
+    }
+
+    const detailFailures = this.countBookingDetailFailures(payload.reservations);
+    const importSummary = this.readNestedRecord(payload.import_summary);
+    const importFailures = Math.max(
+      this.readCount(importSummary.failed) ?? 0,
+      this.readStringArray(importSummary.errors).length,
+    );
+    const completedImports =
+      (this.readCount(importSummary.created) ?? 0) +
+      (this.readCount(importSummary.updated) ?? 0) +
+      (this.readCount(importSummary.cancelled) ?? 0) +
+      (this.readCount(importSummary.skipped) ?? 0);
+
+    if (detailFailures > 0 || importFailures > 0) {
+      const failureParts: string[] = [];
+      if (detailFailures > 0) {
+        failureParts.push(`${detailFailures} reservation detail fetch(es) failed`);
+      }
+      if (importFailures > 0) {
+        failureParts.push(`${importFailures} reservation import(s) failed`);
+      }
+
+      return {
+        status: completedImports > 0 ? ('PARTIAL_FAILED' as ChannelSyncStatus) : ChannelSyncStatus.FAILED,
+        errorMessage: `${failureParts.join('; ')}.`,
+      };
+    }
+
+    return {
+      status: ChannelSyncStatus.SUCCEEDED,
+      errorMessage: null,
+    };
+  }
+
+  private countBookingDetailFailures(value: Prisma.JsonValue | undefined): number {
+    if (!Array.isArray(value)) {
+      return 0;
+    }
+
+    return value.reduce<number>((count, entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return count;
+      }
+
+      return this.readOptionalString((entry as Record<string, Prisma.JsonValue>).error) ? count + 1 : count;
+    }, 0);
+  }
+
+  private readCount(value: Prisma.JsonValue | undefined): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value.trim());
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    return null;
+  }
+
+  private readStringArray(value: Prisma.JsonValue | undefined) {
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { AuditAction, BookingStatus, ChannelProvider, Prisma, PricingRuleType } from '@prisma/client';
 import { InventoryService } from '../inventory/inventory.service';
 import { MetricsService } from '../metrics/metrics.service';
@@ -37,6 +37,21 @@ type NormalizedReservationGroup = {
   rooms: NormalizedReservationRoom[];
 };
 
+type ReservationImportOutcome = {
+  action: 'created' | 'updated' | 'cancelled' | 'skipped';
+  reservationGroupId: string | null;
+  reservationRoomIds: string[];
+};
+
+type ExistingReservationGroup = Prisma.ReservationGroupGetPayload<{
+  include: {
+    rooms: true;
+  };
+}>;
+
+const defaultPropertyTimeZone = 'Asia/Kolkata';
+const staleReservationBackfillDays = 30;
+
 @Injectable()
 export class ZodomusReservationImportService {
   private readonly logger = new Logger(ZodomusReservationImportService.name);
@@ -56,6 +71,7 @@ export class ZodomusReservationImportService {
   }) {
     const payload = this.readObject(input.responsePayload);
     const reservations = this.extractReservations(payload);
+    const propertyTimeZone = await this.getPropertyTimeZone(input.propertyId);
     const summary = {
       discovered: reservations.length,
       created: 0,
@@ -77,27 +93,37 @@ export class ZodomusReservationImportService {
         const outcome = await this.importReservation({
           channelConnectionId: input.channelConnectionId,
           propertyId: input.propertyId,
+          propertyTimeZone,
           reservation,
         });
 
         if (outcome.action === 'created') {
           summary.created += 1;
-          summary.created_reservation_group_ids.push(outcome.reservationGroupId);
+          if (outcome.reservationGroupId) {
+            summary.created_reservation_group_ids.push(outcome.reservationGroupId);
+          }
         } else if (outcome.action === 'updated') {
           summary.updated += 1;
-          summary.updated_reservation_group_ids.push(outcome.reservationGroupId);
+          if (outcome.reservationGroupId) {
+            summary.updated_reservation_group_ids.push(outcome.reservationGroupId);
+          }
         } else if (outcome.action === 'cancelled') {
           summary.cancelled += 1;
-          summary.cancelled_reservation_group_ids.push(outcome.reservationGroupId);
+          if (outcome.reservationGroupId) {
+            summary.cancelled_reservation_group_ids.push(outcome.reservationGroupId);
+          }
         } else {
           summary.skipped += 1;
         }
 
-        summary.imported_reservation_group_ids.push(outcome.reservationGroupId);
+        if (outcome.reservationGroupId) {
+          summary.imported_reservation_group_ids.push(outcome.reservationGroupId);
+        }
 
         summary.imported_room_count += outcome.reservationRoomIds.length;
         summary.imported_reservation_room_ids.push(...outcome.reservationRoomIds);
       } catch (error) {
+        await this.persistProviderGuestRecord(input.propertyId, reservation);
         summary.failed += 1;
         const message =
           error instanceof Error
@@ -111,11 +137,34 @@ export class ZodomusReservationImportService {
     return summary satisfies Prisma.InputJsonObject;
   }
 
+  private async persistProviderGuestRecord(
+    propertyId: string,
+    reservation: NormalizedReservationGroup,
+  ) {
+    try {
+      await this.prisma.$transaction(async (tx) =>
+        this.upsertImportedGuest(tx, {
+          propertyId,
+          name: reservation.guest_name,
+          phone: reservation.guest_phone,
+          email: reservation.guest_email,
+        }),
+      );
+    } catch (error) {
+      this.logger.warn(
+        error instanceof Error
+          ? `Failed to persist provider guest snapshot for ${reservation.external_reservation_id}: ${error.message}`
+          : `Failed to persist provider guest snapshot for ${reservation.external_reservation_id}`,
+      );
+    }
+  }
+
   private async importReservation(input: {
     channelConnectionId: string;
     propertyId: string;
+    propertyTimeZone: string;
     reservation: NormalizedReservationGroup;
-  }) {
+  }): Promise<ReservationImportOutcome> {
     return this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`
         SELECT COUNT(*)::int
@@ -124,14 +173,6 @@ export class ZodomusReservationImportService {
         ) AS reservation_group_import_lock
       `;
 
-      const guest = await this.upsertImportedGuest(tx, {
-        propertyId: input.propertyId,
-        name: input.reservation.guest_name,
-        phone: input.reservation.guest_phone,
-        email: input.reservation.guest_email,
-      });
-
-      const reservationStatus = this.mapExternalStatus(input.reservation.external_status);
       const existing = await tx.reservationGroup.findUnique({
         where: {
           channelConnectionId_externalReservationId: {
@@ -143,11 +184,61 @@ export class ZodomusReservationImportService {
           rooms: true,
         },
       });
+
+      if (!existing && this.shouldSkipPastReservation(input.reservation, input.propertyTimeZone)) {
+        this.logger.warn(
+          `Skipping stale provider reservation ${input.reservation.external_reservation_id} because its stay departed before the ${staleReservationBackfillDays}-day import window.`,
+        );
+        return {
+          action: 'skipped',
+          reservationGroupId: null,
+          reservationRoomIds: [],
+        };
+      }
+
+      if (!existing) {
+        const duplicateImportedReservation = await this.findDuplicateImportedReservation(tx, {
+          channelConnectionId: input.channelConnectionId,
+          reservation: input.reservation,
+        });
+
+        if (duplicateImportedReservation) {
+          this.logger.warn(
+            `Skipping duplicate provider reservation ${input.reservation.external_reservation_id} because its room lines already belong to imported reservation ${duplicateImportedReservation.externalReservationId}.`,
+          );
+          return {
+            action: 'skipped',
+            reservationGroupId: null,
+            reservationRoomIds: [],
+          };
+        }
+      }
+
+      const guest = await this.upsertImportedGuest(tx, {
+        propertyId: input.propertyId,
+        name: input.reservation.guest_name,
+        phone: input.reservation.guest_phone,
+        email: input.reservation.guest_email,
+      });
+
+      const reservationStatus = this.mapExternalStatus(input.reservation.external_status);
       const existingRoomMap = new Map(
         (existing?.rooms ?? []).map((room) => [room.externalRoomReservationId, room]),
       );
 
       const groupTotalAmount = this.toDecimal(input.reservation.total_amount);
+      if (input.reservation.rooms.length === 0) {
+        return this.importRoomlessReservation(tx, {
+          channelConnectionId: input.channelConnectionId,
+          propertyId: input.propertyId,
+          reservation: input.reservation,
+          reservationStatus,
+          guest,
+          existing,
+          groupTotalAmount,
+        });
+      }
+
       const reservationGroup = existing
         ? await tx.reservationGroup.update({
             where: { id: existing.id },
@@ -186,15 +277,17 @@ export class ZodomusReservationImportService {
 
       const importedRoomIds: string[] = [];
       const seenExternalRoomReservationIds = new Set<string>();
+      let summedRoomTotalAmount = new Prisma.Decimal(0);
+      let hasSummedRoomTotalAmount = false;
 
       for (const room of input.reservation.rooms) {
         const roomMapping = await this.resolveRoomMapping(tx, input.channelConnectionId, room.external_room_id);
-        const rateMapping = await this.resolveRateMapping(
-          tx,
-          input.channelConnectionId,
-          room.external_room_id,
-          room.external_rate_id,
-        );
+        const rateMapping = await this.resolveRateMapping(tx, {
+          channelConnectionId: input.channelConnectionId,
+          roomCategoryId: roomMapping.roomCategoryId,
+          externalRoomId: room.external_room_id,
+          externalRateId: room.external_rate_id,
+        });
         const checkInDate = this.parseDateOnly(room.arrival_date);
         const checkOutDate = this.parseDateOnly(room.departure_date);
         this.calculateNights(checkInDate, checkOutDate);
@@ -218,6 +311,12 @@ export class ZodomusReservationImportService {
         }
 
         const existingRoom = existingRoomMap.get(room.external_room_reservation_id);
+        if (reservationStatus === BookingStatus.CANCELLED) {
+          this.assertProviderCancellationAllowed(
+            existingRoom?.status,
+            `reservation room ${room.external_room_reservation_id} on reservation ${input.reservation.external_reservation_id}`,
+          );
+        }
         const roomStatus = this.resolveImportedRoomStatus(existingRoom?.status, reservationStatus);
         const totalAmount = await this.resolveRoomTotalAmount(tx, {
           reservation: room,
@@ -227,6 +326,10 @@ export class ZodomusReservationImportService {
           checkInDate,
           checkOutDate,
         });
+        if (totalAmount !== null) {
+          summedRoomTotalAmount = summedRoomTotalAmount.add(totalAmount);
+          hasSummedRoomTotalAmount = true;
+        }
 
         await this.reconcileInventoryForRoom(tx, {
           propertyId: input.propertyId,
@@ -281,6 +384,11 @@ export class ZodomusReservationImportService {
         seenExternalRoomReservationIds.add(room.external_room_reservation_id);
       }
 
+      const effectiveGroupTotalAmount = this.resolveReservationGroupTotalAmount(
+        input.reservation.total_amount,
+        hasSummedRoomTotalAmount ? summedRoomTotalAmount : null,
+      );
+
       if (existing) {
         const staleRooms = existing.rooms.filter(
           (room) => !seenExternalRoomReservationIds.has(room.externalRoomReservationId),
@@ -288,6 +396,11 @@ export class ZodomusReservationImportService {
         const staleRoomIds = staleRooms.map((room) => room.id);
 
         for (const staleRoom of staleRooms) {
+          this.assertProviderCancellationAllowed(
+            staleRoom.status,
+            `removed reservation room ${staleRoom.externalRoomReservationId} on reservation ${input.reservation.external_reservation_id}`,
+          );
+
           if (this.isInventoryActiveStatus(staleRoom.status)) {
             await this.inventoryService.releaseInventory(tx, {
               propertyId: input.propertyId,
@@ -309,6 +422,15 @@ export class ZodomusReservationImportService {
             },
           });
         }
+      }
+
+      if (!this.decimalEquals(reservationGroup.totalAmount, effectiveGroupTotalAmount)) {
+        await tx.reservationGroup.update({
+          where: { id: reservationGroup.id },
+          data: {
+            totalAmount: effectiveGroupTotalAmount,
+          },
+        });
       }
 
       await this.recomputeReservationGroupStatus(tx, reservationGroup.id, reservationStatus);
@@ -337,6 +459,186 @@ export class ZodomusReservationImportService {
         reservationRoomIds: importedRoomIds,
       };
     });
+  }
+
+  private async importRoomlessReservation(
+    tx: Prisma.TransactionClient,
+    input: {
+      channelConnectionId: string;
+      propertyId: string;
+      reservation: NormalizedReservationGroup;
+      reservationStatus: BookingStatus;
+      guest: {
+        id: string;
+        name: string;
+      };
+      existing:
+        | Prisma.ReservationGroupGetPayload<{
+            include: {
+              rooms: true;
+            };
+          }>
+        | null;
+      groupTotalAmount: Prisma.Decimal | null;
+    },
+  ): Promise<ReservationImportOutcome> {
+    if (!input.existing) {
+      this.logger.warn(
+        `Skipping roomless reservation detail for ${input.reservation.external_reservation_id} because no HMS reservation exists yet.`,
+      );
+      return {
+        action: 'skipped',
+        reservationGroupId: null,
+        reservationRoomIds: [],
+      };
+    }
+
+    if (input.reservationStatus !== BookingStatus.CANCELLED) {
+      throw new ConflictException(
+        `Roomless provider reservation detail for ${input.reservation.external_reservation_id} requires full room payload before HMS can reconcile OTA modifications.`,
+      );
+    }
+
+    for (const room of input.existing.rooms) {
+      this.assertProviderCancellationAllowed(
+        room.status,
+        `reservation ${input.reservation.external_reservation_id}`,
+      );
+    }
+
+    const reservationGroup = await tx.reservationGroup.update({
+      where: { id: input.existing.id },
+      data: {
+        primaryGuestId: input.guest.id,
+        externalReservationVersion: input.reservation.external_reservation_version ?? null,
+        externalStatus: input.reservation.external_status,
+        source: input.reservation.source ?? ChannelProvider.ZODOMUS,
+        currency: input.reservation.currency ?? null,
+        totalAmount: input.groupTotalAmount,
+        status: input.existing.status,
+        remarks: input.reservation.remarks ?? null,
+        bookedAt: this.parseTimestamp(input.reservation.booked_at),
+        modifiedAt: this.parseTimestamp(input.reservation.modified_at),
+        rawPayload: input.reservation.raw_payload,
+      },
+    });
+
+    if (input.reservationStatus === BookingStatus.CANCELLED) {
+      for (const room of input.existing.rooms) {
+        if (this.isInventoryActiveStatus(room.status)) {
+          await this.inventoryService.releaseInventory(tx, {
+            propertyId: input.propertyId,
+            roomCategoryId: room.roomCategoryId,
+            checkInDate: room.arrivalDate,
+            checkOutDate: room.departureDate,
+            roomCount: 1,
+          });
+        }
+      }
+
+      if (input.existing.rooms.length > 0) {
+        await tx.reservationRoom.updateMany({
+          where: {
+            reservationGroupId: reservationGroup.id,
+          },
+          data: {
+            status: BookingStatus.CANCELLED,
+          },
+        });
+      }
+    }
+
+    await this.recomputeReservationGroupStatus(tx, reservationGroup.id, input.reservationStatus);
+
+    await this.auditLogService.record({
+      action: AuditAction.UPDATE,
+      entityType: 'reservation_group',
+      entityId: reservationGroup.id,
+      propertyId: input.propertyId,
+      summary: `Updated Zodomus reservation ${input.reservation.external_reservation_id} from roomless provider detail`,
+      metadata: {
+        provider: ChannelProvider.ZODOMUS,
+        external_reservation_id: input.reservation.external_reservation_id,
+        room_count: 0,
+        external_status: input.reservation.external_status,
+      },
+    });
+
+    return {
+      action: input.reservationStatus === BookingStatus.CANCELLED ? 'cancelled' : 'updated',
+      reservationGroupId: reservationGroup.id,
+      reservationRoomIds: [],
+    };
+  }
+
+  private shouldSkipPastReservation(
+    reservation: NormalizedReservationGroup,
+    propertyTimeZone: string,
+    existing?: ExistingReservationGroup | null,
+  ) {
+    if (existing || reservation.rooms.length === 0) {
+      return false;
+    }
+
+    const latestDeparture = reservation.rooms
+      .map((room) => room.departure_date)
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .sort()
+      .at(-1);
+
+    if (!latestDeparture) {
+      return false;
+    }
+
+    return latestDeparture < this.pastReservationCutoffDate(propertyTimeZone);
+  }
+
+  private async getPropertyTimeZone(propertyId: string) {
+    const property = await this.prisma.property.findUnique({
+      where: { id: propertyId },
+      select: { timezone: true },
+    });
+
+    return property?.timezone || defaultPropertyTimeZone;
+  }
+
+  private pastReservationCutoffDate(propertyTimeZone: string) {
+    return this.subtractDays(this.todayDateOnly(propertyTimeZone), staleReservationBackfillDays);
+  }
+
+  private todayDateOnly(propertyTimeZone: string) {
+    try {
+      return this.formatDateOnlyForTimeZone(propertyTimeZone);
+    } catch {
+      this.logger.warn(`Falling back to ${defaultPropertyTimeZone} date handling for invalid timezone ${propertyTimeZone}.`);
+    }
+
+    return this.formatDateOnlyForTimeZone(defaultPropertyTimeZone);
+  }
+
+  private formatDateOnlyForTimeZone(propertyTimeZone: string) {
+    const formatted = new Intl.DateTimeFormat('en-CA', {
+      timeZone: propertyTimeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const year = formatted.find((part) => part.type === 'year')?.value;
+    const month = formatted.find((part) => part.type === 'month')?.value;
+    const day = formatted.find((part) => part.type === 'day')?.value;
+
+    if (!year || !month || !day) {
+      throw new Error(`Unable to derive date-only value for timezone ${propertyTimeZone}.`);
+    }
+
+    return `${year}-${month}-${day}`;
+  }
+
+  private subtractDays(dateOnly: string, days: number) {
+    const [year, month, day] = dateOnly.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    date.setUTCDate(date.getUTCDate() - days);
+    return date.toISOString().slice(0, 10);
   }
 
   private async reconcileInventoryForRoom(
@@ -399,15 +701,138 @@ export class ZodomusReservationImportService {
     existingStatus: BookingStatus | undefined,
     externalStatus: BookingStatus,
   ) {
-    if (externalStatus === BookingStatus.CANCELLED) {
-      return BookingStatus.CANCELLED;
-    }
-
     if (existingStatus === BookingStatus.CHECKED_IN || existingStatus === BookingStatus.CHECKED_OUT) {
       return existingStatus;
     }
 
+    if (externalStatus === BookingStatus.CANCELLED) {
+      return BookingStatus.CANCELLED;
+    }
+
     return BookingStatus.BOOKED;
+  }
+
+  private assertProviderCancellationAllowed(status: BookingStatus | undefined, context: string) {
+    if (status === BookingStatus.CHECKED_IN || status === BookingStatus.CHECKED_OUT) {
+      throw new ConflictException(
+        `Provider cancellation for ${context} requires manual reconciliation because the stay is already ${status.toLowerCase()}.`,
+      );
+    }
+  }
+
+  private async findDuplicateImportedReservation(
+    tx: Prisma.TransactionClient,
+    input: {
+      channelConnectionId: string;
+      reservation: NormalizedReservationGroup;
+    },
+  ) {
+    const roomSignatures = new Map(
+      input.reservation.rooms.map((room) => [
+        room.external_room_reservation_id,
+        `${room.external_room_id}:${room.arrival_date}:${room.departure_date}`,
+      ]),
+    );
+    const externalRoomReservationIds = Array.from(roomSignatures.keys());
+
+    if (externalRoomReservationIds.length === 0) {
+      return null;
+    }
+
+    const existingRooms = await tx.reservationRoom.findMany({
+      where: {
+        externalRoomReservationId: {
+          in: externalRoomReservationIds,
+        },
+        reservationGroup: {
+          channelConnectionId: input.channelConnectionId,
+        },
+      },
+      select: {
+        externalRoomReservationId: true,
+        externalRoomId: true,
+        arrivalDate: true,
+        departureDate: true,
+        reservationGroup: {
+          select: {
+            id: true,
+            externalReservationId: true,
+          },
+        },
+      },
+    });
+
+    const groupedByReservation = new Map<
+      string,
+      {
+        id: string;
+        externalReservationId: string;
+        roomSignatures: Map<string, string>;
+      }
+    >();
+
+    for (const room of existingRooms) {
+      const existingSignature = `${room.externalRoomId}:${room.arrivalDate.toISOString().slice(0, 10)}:${room.departureDate.toISOString().slice(0, 10)}`;
+      const groupId = room.reservationGroup.id;
+      const existingGroup = groupedByReservation.get(groupId);
+
+      if (existingGroup) {
+        existingGroup.roomSignatures.set(room.externalRoomReservationId, existingSignature);
+        continue;
+      }
+
+      groupedByReservation.set(groupId, {
+        id: groupId,
+        externalReservationId: room.reservationGroup.externalReservationId,
+        roomSignatures: new Map([[room.externalRoomReservationId, existingSignature]]),
+      });
+    }
+
+    for (const group of groupedByReservation.values()) {
+      if (group.roomSignatures.size !== roomSignatures.size) {
+        continue;
+      }
+
+      const matches = Array.from(roomSignatures.entries()).every(
+        ([externalRoomReservationId, signature]) => group.roomSignatures.get(externalRoomReservationId) === signature,
+      );
+
+      if (matches) {
+        return {
+          id: group.id,
+          externalReservationId: group.externalReservationId,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  private resolveReservationGroupTotalAmount(
+    explicitTotalAmount?: number | null,
+    summedRoomTotalAmount?: Prisma.Decimal | null,
+  ) {
+    const normalizedExplicitAmount = this.normalizeNumber(explicitTotalAmount);
+    if (normalizedExplicitAmount !== null && normalizedExplicitAmount > 0) {
+      return new Prisma.Decimal(normalizedExplicitAmount);
+    }
+
+    if (summedRoomTotalAmount && summedRoomTotalAmount.greaterThan(0)) {
+      return summedRoomTotalAmount;
+    }
+
+    return normalizedExplicitAmount === null ? null : new Prisma.Decimal(normalizedExplicitAmount);
+  }
+
+  private decimalEquals(left: Prisma.Decimal | null | undefined, right: Prisma.Decimal | null | undefined) {
+    if (left == null && right == null) {
+      return true;
+    }
+    if (left == null || right == null) {
+      return false;
+    }
+
+    return left.equals(right);
   }
 
   private isInventoryActiveStatus(status?: BookingStatus) {
@@ -459,14 +884,16 @@ export class ZodomusReservationImportService {
       throw new NotFoundException('Reservation room is missing external room ID');
     }
 
-    const mapping = await tx.channelRoomMapping.findUnique({
-      where: {
-        channelConnectionId_externalRoomId: {
-          channelConnectionId,
-          externalRoomId,
+    const mapping =
+      (await tx.channelRoomMapping.findUnique({
+        where: {
+          channelConnectionId_externalRoomId: {
+            channelConnectionId,
+            externalRoomId,
+          },
         },
-      },
-    });
+      })) ??
+      (await this.resolveRoomMappingByAlias(tx, channelConnectionId, externalRoomId));
 
     if (!mapping) {
       throw new NotFoundException(`No room mapping found for external room ID ${externalRoomId}`);
@@ -477,45 +904,100 @@ export class ZodomusReservationImportService {
 
   private async resolveRateMapping(
     tx: Prisma.TransactionClient,
-    channelConnectionId: string,
-    externalRoomId?: string | null,
-    externalRateId?: string | null,
+    input: {
+      channelConnectionId: string;
+      roomCategoryId: string;
+      externalRoomId?: string | null;
+      externalRateId?: string | null;
+    },
   ) {
-    if (!externalRateId) {
+    if (!input.externalRateId) {
       throw new NotFoundException('Reservation room is missing external rate ID');
     }
 
     const mapping =
-      (externalRoomId
+      (input.externalRoomId
         ? await tx.channelRateMapping.findUnique({
             where: {
               channelConnectionId_externalRoomId_externalRateId: {
-                channelConnectionId,
-                externalRoomId,
-                externalRateId,
+                channelConnectionId: input.channelConnectionId,
+                externalRoomId: input.externalRoomId,
+                externalRateId: input.externalRateId,
               },
             },
           })
         : null) ??
       (await tx.channelRateMapping.findFirst({
         where: {
-          channelConnectionId,
-          externalRateId,
+          channelConnectionId: input.channelConnectionId,
+          externalRateId: input.externalRateId,
           externalRoomId: null,
         },
-      }));
+      })) ??
+      (await this.resolveRateMappingByRoomCategory(tx, input.channelConnectionId, input.roomCategoryId));
 
     if (!mapping) {
-      if (externalRoomId) {
+      if (input.externalRoomId) {
         throw new NotFoundException(
-          `No rate mapping found for external room ID ${externalRoomId} and external rate ID ${externalRateId}`,
+          `No rate mapping found for external room ID ${input.externalRoomId} and external rate ID ${input.externalRateId}`,
         );
       }
 
-      throw new NotFoundException(`No rate mapping found for external rate ID ${externalRateId}`);
+      throw new NotFoundException(`No rate mapping found for external rate ID ${input.externalRateId}`);
     }
 
     return mapping;
+  }
+
+  private async resolveRoomMappingByAlias(
+    tx: Prisma.TransactionClient,
+    channelConnectionId: string,
+    externalRoomId: string,
+  ) {
+    for (const alias of legacyRoomAliasCandidates(externalRoomId)) {
+      const mapping = await tx.channelRoomMapping.findUnique({
+        where: {
+          channelConnectionId_externalRoomId: {
+            channelConnectionId,
+            externalRoomId: alias,
+          },
+        },
+      });
+
+      if (mapping) {
+        return mapping;
+      }
+    }
+
+    return null;
+  }
+
+  private async resolveRateMappingByRoomCategory(
+    tx: Prisma.TransactionClient,
+    channelConnectionId: string,
+    roomCategoryId: string,
+  ) {
+    const mappings = await tx.channelRateMapping.findMany({
+      where: {
+        channelConnectionId,
+        ratePlan: {
+          roomCategoryId,
+        },
+      },
+      include: {
+        ratePlan: {
+          select: {
+            name: true,
+            code: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+    });
+
+    return selectPreferredRateMapping(mappings);
   }
 
   private async upsertImportedGuest(
@@ -627,7 +1109,7 @@ export class ZodomusReservationImportService {
   private mapExternalStatus(status: string) {
     const normalized = status.trim().toLowerCase();
 
-    if (['cancelled', 'canceled', 'void', 'closed'].includes(normalized)) {
+    if (['3', 'cancelled', 'canceled', 'void', 'closed'].includes(normalized)) {
       return BookingStatus.CANCELLED;
     }
 
@@ -653,20 +1135,32 @@ export class ZodomusReservationImportService {
   private normalizeReservationGroup(value: Prisma.JsonValue): NormalizedReservationGroup | null {
     const record = this.readObject(value);
     const envelope = this.readObject(record.reservations);
+    const reservationBlock = this.readObject(record.reservation);
+    const bookingBlock = this.readObject(record.booking);
+    const customerBlock = this.readObject(record.customer);
+    const guestBlock = this.readObject(record.guest);
+    const contactBlock = this.readObject(record.contact);
     const reservationRecord =
       this.readObject(envelope.reservation) ||
-      this.readObject(record.reservation) ||
-      this.readObject(record.booking) ||
+      reservationBlock ||
+      bookingBlock ||
       record;
     const customerRecord =
       this.readObject(envelope.customer) ||
-      this.readObject(record.customer) ||
-      this.readObject(record.guest) ||
-      this.readObject(record.contact);
+      customerBlock ||
+      guestBlock ||
+      contactBlock;
     const roomRecords =
       this.readArray(envelope.rooms).length > 0
         ? this.readArray(envelope.rooms)
         : this.readArray(record.rooms);
+    const hasDetailEnvelope =
+      Object.keys(envelope).length > 0 ||
+      Object.keys(reservationBlock).length > 0 ||
+      Object.keys(bookingBlock).length > 0 ||
+      Object.keys(customerBlock).length > 0 ||
+      Object.keys(guestBlock).length > 0 ||
+      Object.keys(contactBlock).length > 0;
 
     const externalReservationId = this.firstString(
       reservationRecord,
@@ -691,7 +1185,7 @@ export class ZodomusReservationImportService {
       .map((item, index) => this.normalizeReservationRoom(item, index, externalReservationId, guestName, reservationRecord))
       .filter((item): item is NormalizedReservationRoom => item !== null);
 
-    if (!externalReservationId || normalizedRooms.length === 0) {
+    if (!externalReservationId || (normalizedRooms.length === 0 && !hasDetailEnvelope)) {
       return null;
     }
 
@@ -936,4 +1430,32 @@ export class ZodomusReservationImportService {
 
     return total > 0 ? total : null;
   }
+}
+
+export function legacyRoomAliasCandidates(externalRoomId: string) {
+  if (!externalRoomId.startsWith('90') || externalRoomId.length < 5) {
+    return [];
+  }
+
+  return [`10${externalRoomId.slice(2)}`];
+}
+
+export function selectPreferredRateMapping<
+  T extends {
+    ratePlan: {
+      name: string;
+      code: string;
+    };
+  },
+>(mappings: T[]) {
+  if (mappings.length === 0) {
+    return null;
+  }
+
+  return mappings.find((mapping) => isFlexibleRatePlan(mapping.ratePlan.name, mapping.ratePlan.code)) ?? mappings[0];
+}
+
+function isFlexibleRatePlan(name: string, code: string) {
+  const fingerprint = `${name} ${code}`.toUpperCase();
+  return fingerprint.includes('FLEX');
 }

@@ -410,6 +410,8 @@ export class InventoryService {
       throw new BadRequestException('Reservation must contain at least one stay night');
     }
 
+    await this.acquireInventoryAllocationLock(tx, input.propertyId, input.roomCategoryId);
+
     await this.rebuildCalendarRange(
       {
         propertyId: input.propertyId,
@@ -492,6 +494,8 @@ export class InventoryService {
       return;
     }
 
+    await this.acquireInventoryAllocationLock(tx, input.propertyId, input.roomCategoryId);
+
     await this.rebuildCalendarRange(
       {
         propertyId: input.propertyId,
@@ -534,6 +538,19 @@ export class InventoryService {
         },
       });
     }
+  }
+
+  private async acquireInventoryAllocationLock(
+    tx: Prisma.TransactionClient,
+    propertyId: string,
+    roomCategoryId: string,
+  ) {
+    await tx.$queryRaw`
+      SELECT COUNT(*)::int
+      FROM (
+        SELECT pg_advisory_xact_lock(hashtext(${propertyId}), hashtext(${roomCategoryId}))
+      ) AS inventory_allocation_lock
+    `;
   }
 
   private toCalendarRowResponse(row: {

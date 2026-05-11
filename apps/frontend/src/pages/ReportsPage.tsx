@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api/client';
-import { PaginatedResponse, unwrapList } from '../api/pagination';
+import { fetchAllPages } from '../api/pagination';
 import { Billing, ChannelConnection, DashboardSummary, Property, ReservationGroup } from '../api/types';
 import { FilterBar } from '../components/FilterBar';
 import { useAsync } from '../hooks/useAsync';
@@ -9,27 +9,17 @@ import { formatCurrency } from '../utils/format';
 export function ReportsPage() {
   const [propertyFilter, setPropertyFilter] = useState('ALL');
   const dashboardState = useAsync(async () => (await api.get<DashboardSummary>('/dashboard/summary')).data, []);
-  const propertiesState = useAsync(
-    async () => unwrapList((await api.get<PaginatedResponse<Property>>('/properties', { params: { limit: 100 } })).data),
-    [],
-  );
-  const reservationGroupsState = useAsync(
-    async () => (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/groups', { params: { limit: 200 } })).data,
-    [],
-  );
-  const billingsState = useAsync(
-    async () => unwrapList((await api.get<PaginatedResponse<Billing>>('/billings', { params: { limit: 200 } })).data),
-    [],
-  );
-  const channelsState = useAsync(
-    async () => unwrapList((await api.get<PaginatedResponse<ChannelConnection>>('/channels', { params: { limit: 100 } })).data),
-    [],
-  );
+  const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), []);
+  const reservationGroupsState = useAsync(async () => fetchAllPages<ReservationGroup>('/bookings/feed'), []);
+  const billingsState = useAsync(async () => fetchAllPages<Billing>('/billings'), []);
+  const channelsState = useAsync(async () => fetchAllPages<ChannelConnection>('/channels'), []);
 
   const properties = propertiesState.data ?? [];
-  const reservationGroups = (reservationGroupsState.data?.data ?? []).filter(
+  const reservationGroups = (reservationGroupsState.data ?? []).filter(
     (group) => propertyFilter === 'ALL' || group.property.id === propertyFilter,
   );
+  const importedReservationGroups = reservationGroups.filter((group) => !group.import_blocked);
+  const blockedReservationGroups = reservationGroups.filter((group) => group.import_blocked);
   const billings = (billingsState.data ?? []).filter(
     (billing) => propertyFilter === 'ALL' || billing.reservation_room.property.id === propertyFilter,
   );
@@ -37,10 +27,11 @@ export function ReportsPage() {
     (connection) => propertyFilter === 'ALL' || connection.property_id === propertyFilter,
   );
 
-  const roomLines = reservationGroups.flatMap((group) => group.rooms.map((room) => ({ group, room })));
+  const roomLines = importedReservationGroups.flatMap((group) => group.rooms.map((room) => ({ group, room })));
   const roomNightsSold = roomLines.reduce((total, entry) => total + calculateNights(entry.room.arrival_date, entry.room.departure_date), 0);
-  const activeGroups = reservationGroups.filter((group) => ['BOOKED', 'CHECKED_IN'].includes(group.reservation_status)).length;
-  const cancelledGroups = reservationGroups.filter((group) => group.reservation_status === 'CANCELLED').length;
+  const activeGroups = importedReservationGroups.filter((group) => ['BOOKED', 'CHECKED_IN'].includes(group.reservation_status)).length;
+  const cancelledGroups = importedReservationGroups.filter((group) => group.reservation_status === 'CANCELLED').length;
+  const blockedProviderGroups = blockedReservationGroups.length;
   const checkedInRoomLines = roomLines.filter((entry) => entry.room.reservation_status === 'CHECKED_IN').length;
   const balanceDue = billings.reduce((total, billing) => total + billing.balance_due, 0);
   const billedTotal = billings.reduce((total, billing) => total + billing.total, 0);
@@ -54,13 +45,15 @@ export function ReportsPage() {
 
   const propertyPerformance = properties
     .map((property) => {
-      const propertyGroups = reservationGroups.filter((group) => group.property.id === property.id);
+      const propertyGroups = importedReservationGroups.filter((group) => group.property.id === property.id);
+      const propertyBlockedGroups = blockedReservationGroups.filter((group) => group.property.id === property.id);
       const propertyBillings = billings.filter((billing) => billing.reservation_room.property.id === property.id);
       const propertyRoomLines = propertyGroups.flatMap((group) => group.rooms);
       return {
         id: property.id,
         name: property.name,
         reservation_groups: propertyGroups.length,
+        blocked_imports: propertyBlockedGroups.length,
         room_nights: propertyRoomLines.reduce((total, room) => total + calculateNights(room.arrival_date, room.departure_date), 0),
         active_room_lines: propertyRoomLines.filter((room) => room.reservation_status === 'CHECKED_IN').length,
         billed_total: propertyBillings.reduce((total, billing) => total + billing.total, 0),
@@ -69,7 +62,15 @@ export function ReportsPage() {
     })
     .filter((row) => propertyFilter === 'ALL' || row.id === propertyFilter);
 
-  const channelReadiness = channels.map((connection) => ({
+  const channelReadiness = Array.from(
+    channels.reduce((groups, connection) => {
+      const existing = groups.get(connection.property_id);
+      if (!existing || rankChannelConnection(connection) > rankChannelConnection(existing)) {
+        groups.set(connection.property_id, connection);
+      }
+      return groups;
+    }, new Map<string, ChannelConnection>()).values(),
+  ).map((connection) => ({
     id: connection.id,
     property_name: connection.property.name,
     ota_name: connection.provider_config_summary?.ota_name ?? connection.provider,
@@ -96,10 +97,10 @@ export function ReportsPage() {
     <section className="reports-page">
       <div className="page-header">
         <div>
-          <p className="eyebrow">Management</p>
-          <h2>Reports</h2>
+          <p className="eyebrow">Overview</p>
+          <h2>Reports &amp; Analytics</h2>
           <p className="page-subtitle">
-            Review reservation-group performance, room-night demand, outstanding balance, and OTA readiness without leaving HMS operations.
+            Review reservation-group performance, blocked provider bookings, room-night demand, outstanding balance, and OTA readiness without leaving HMS operations.
           </p>
         </div>
       </div>
@@ -126,6 +127,13 @@ export function ReportsPage() {
         </label>
       </FilterBar>
 
+      <div className="info-strip">
+        <strong>Analytics scope</strong>
+        <span>
+          Core KPIs use imported HMS reservations only. Blocked provider bookings are tracked separately so they do not distort sold-night or active-stay metrics.
+        </span>
+      </div>
+
       {loading && <p className="muted">Loading reports...</p>}
       {error && <p className="error">{error}</p>}
 
@@ -136,8 +144,28 @@ export function ReportsPage() {
         <MetricCard label="Balance due" value={formatCurrency(balanceDue)} tone="rose" />
       </div>
 
-      <div className="reports-layout">
+      <div className="reports-layout reports-layout-single">
         <div className="reports-main-rail">
+          {/* <article className="insight-panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Source mix</p>
+                <h3>Imported room-line volume</h3>
+              </div>
+            </div>
+            <div className="reports-stack">
+              {Object.entries(sourceMix)
+                .sort((left, right) => right[1] - left[1])
+                .map(([source, count]) => (
+                  <div className="report-inline-stat" key={source}>
+                    <strong>{source}</strong>
+                    <span>{count} room lines</span>
+                  </div>
+                ))}
+              {Object.keys(sourceMix).length === 0 && <div className="empty-state-card">No imported HMS room lines in the selected scope.</div>}
+            </div>
+          </article> */}
+
           <article className="insight-panel">
             <div className="section-heading">
               <div>
@@ -148,10 +176,11 @@ export function ReportsPage() {
             <div className="signal-grid compact-signal-grid">
               <SignalCard label="Room lines checked in" value={checkedInRoomLines.toString()} detail="Currently in house" />
               <SignalCard label="Cancelled groups" value={cancelledGroups.toString()} detail="Grouped reservation cancellations" />
+              <SignalCard label="Blocked imports" value={blockedProviderGroups.toString()} detail="Provider bookings not yet imported into HMS" />
               <SignalCard
                 label="Today's arrivals"
                 value={(dashboardState.data?.reservation_room_arrivals_today ?? 0).toString()}
-                detail="Imported room-stay arrivals"
+                detail="Imported HMS room-stay arrivals"
               />
             </div>
             <dl className="detail-list">
@@ -182,6 +211,7 @@ export function ReportsPage() {
                 <tr>
                   <th>Property</th>
                   <th>Reservation groups</th>
+                  <th>Blocked imports</th>
                   <th>Room nights</th>
                   <th>In house</th>
                   <th>Billed</th>
@@ -193,6 +223,7 @@ export function ReportsPage() {
                   <tr key={row.id}>
                     <td>{row.name}</td>
                     <td>{row.reservation_groups}</td>
+                    <td>{row.blocked_imports}</td>
                     <td>{row.room_nights}</td>
                     <td>{row.active_room_lines}</td>
                     <td>{formatCurrency(row.billed_total)}</td>
@@ -207,7 +238,7 @@ export function ReportsPage() {
             <div className="table-heading">
               <div>
                 <p className="eyebrow">Channel posture</p>
-                <h3>{channelReadiness.length} configured connections</h3>
+                <h3>{channelReadiness.length} property channel rows</h3>
               </div>
             </div>
             <table>
@@ -236,31 +267,25 @@ export function ReportsPage() {
             </table>
           </div>
         </div>
-
-        <div className="reports-side-rail">
-          <article className="insight-panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Source mix</p>
-                <h3>Imported room-line volume</h3>
-              </div>
-            </div>
-            <div className="reports-stack">
-              {Object.entries(sourceMix)
-                .sort((left, right) => right[1] - left[1])
-                .map(([source, count]) => (
-                  <div className="report-inline-stat" key={source}>
-                    <strong>{source}</strong>
-                    <span>{count} room lines</span>
-                  </div>
-                ))}
-              {Object.keys(sourceMix).length === 0 && <div className="empty-state-card">No imported room lines in the selected scope.</div>}
-            </div>
-          </article>
-        </div>
       </div>
     </section>
   );
+}
+
+function rankChannelConnection(connection: ChannelConnection) {
+  const isMock = connection.provider === 'MOCK';
+  const ready = connection.provider_config_summary?.setup_status.ready ?? false;
+  const roomsActivated = connection.provider_config_summary?.setup_status.rooms_activated ?? false;
+  const lastInventorySucceeded = connection.sync_summary.inventory.last_status === 'SUCCEEDED';
+  const lastBookingsSucceeded = connection.sync_summary.bookings.last_status === 'SUCCEEDED';
+
+  return [
+    isMock ? 0 : 1,
+    ready ? 1 : 0,
+    roomsActivated ? 1 : 0,
+    lastInventorySucceeded ? 1 : 0,
+    lastBookingsSucceeded ? 1 : 0,
+  ].reduce((score, value) => score * 10 + value, 0);
 }
 
 function MetricCard({ label, value, tone }: { label: string; value: string; tone: string }) {

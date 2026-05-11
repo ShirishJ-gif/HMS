@@ -1,20 +1,75 @@
+import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { DashboardSummary } from '../api/types';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
 
 export function DashboardPage() {
+  const [reloadKey, setReloadKey] = useState(0);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const { data, error, loading } = useAsync(
     async () => (await api.get<DashboardSummary>('/dashboard/summary')).data,
-    [],
+    [reloadKey],
   );
+
+  useEffect(() => {
+    if (data) {
+      setLastUpdatedAt(new Date());
+    }
+  }, [data]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setReloadKey((value) => value + 1);
+    }, 15000);
+
+    const refreshOnFocus = () => {
+      setReloadKey((value) => value + 1);
+    };
+
+    const refreshOnVisible = () => {
+      if (document.visibilityState === 'visible') {
+        setReloadKey((value) => value + 1);
+      }
+    };
+
+    window.addEventListener('focus', refreshOnFocus);
+    document.addEventListener('visibilitychange', refreshOnVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', refreshOnFocus);
+      document.removeEventListener('visibilitychange', refreshOnVisible);
+    };
+  }, []);
 
   return (
     <section>
       <div className="page-header">
         <div>
-          <p className="eyebrow">Live snapshot</p>
+          <p className="eyebrow">Overview</p>
           <h2>Dashboard</h2>
+          <p className="page-subtitle">
+            Watch today&apos;s hotel operating posture, OTA-imported stay pressure, and financial/open-task signals from one overview.
+          </p>
+        </div>
+        <div className="dashboard-refresh-controls">
+          <span className="dashboard-refresh-label">Live summary</span>
+          <div className="dashboard-refresh-row">
+            <button
+              aria-label={loading ? 'Refreshing dashboard summary' : 'Refresh dashboard summary'}
+              className="dashboard-refresh-button"
+              disabled={loading}
+              onClick={() => setReloadKey((value) => value + 1)}
+              type="button"
+            >
+              <RefreshIcon spinning={loading} />
+              <span>{loading ? 'Refreshing...' : 'Refresh now'}</span>
+            </button>
+            <span aria-live="polite" className="dashboard-refresh-meta">
+              {lastUpdatedAt ? `Updated ${formatRefreshTimestamp(lastUpdatedAt)}` : 'Syncing every 15 seconds'}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -74,8 +129,8 @@ export function DashboardPage() {
               </div>
               <ul className="attention-list">
                 <li>
-                  <strong>Inventory</strong>
-                  <span>{data.active_reservation_groups} active reservation groups are currently in play across imported OTA stays.</span>
+                  <strong>OTA arrivals</strong>
+                  <span>{data.active_reservation_groups} active reservation groups are currently in play across OTA-imported stays.</span>
                 </li>
                 <li>
                   <strong>Payments</strong>
@@ -83,7 +138,7 @@ export function DashboardPage() {
                 </li>
                 <li>
                   <strong>Operations</strong>
-                  <span>{data.open_housekeeping_tasks} housekeeping tasks are still open and should be cleared before the next arrival wave.</span>
+                  <span>{data.open_housekeeping_tasks} housekeeping tasks are still open and should be cleared before the next OTA arrival wave.</span>
                 </li>
               </ul>
             </article>
@@ -92,6 +147,33 @@ export function DashboardPage() {
       )}
     </section>
   );
+}
+
+function RefreshIcon({ spinning }: { spinning: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={spinning ? 'dashboard-refresh-icon spinning' : 'dashboard-refresh-icon'}
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.9"
+      viewBox="0 0 24 24"
+    >
+      <path d="M20 11a8 8 0 0 0-14.8-4" />
+      <path d="M4 5v4h4" />
+      <path d="M4 13a8 8 0 0 0 14.8 4" />
+      <path d="M20 19v-4h-4" />
+    </svg>
+  );
+}
+
+function formatRefreshTimestamp(value: Date) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(value);
 }
 
 function MetricCard({ label, value, tone }: { label: string; value: string; tone: string }) {

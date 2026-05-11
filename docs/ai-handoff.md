@@ -26,6 +26,7 @@ This is a Hotel Management System monorepo:
 - Reservation-room invoices and reservation-group folio payment allocation are implemented for imported stays.
 - Payments are recorded as transactions with adapter dispatch and idempotency-key support. Mock/local providers work; Razorpay/Stripe are still placeholders until credentials and webhook verification are implemented.
 - Channel manager support now includes a real Zodomus adapter. Property check, property activation, provider catalog fetch, availability sync, rate sync, reservation queue polling, reservation detail fetch, and reservation import are implemented. SiteMinder/Booking.com direct/Airbnb direct remain placeholders.
+- The Zodomus sandbox flow has been exercised successfully against test hotel `100` for setup, provider catalog load, room/rate mapping, room activation, manual syncs, and test reservation import.
 - Generic signed webhook ingestion is available for `PAYMENT` and `CHANNEL` domains, with persisted webhook-event logs and replay deduplication.
 - Accepted webhooks, channel sync requests, and notification deliveries enqueue persisted background jobs with retry scheduling and dead-letter state.
 - Backend HTTP logs now include a request ID, and the frontend sends `x-request-id` so user-facing failures can be traced in server logs.
@@ -33,11 +34,17 @@ This is a Hotel Management System monorepo:
 - Concrete dashboard panels and first alert thresholds are defined in `docs/metrics-alerting.md`.
 - Audit logs record reservation-room check-in/checkout, room create/update/delete, payment collection/refunds, channel setup/mappings, and channel sync outcomes.
 - Operational list endpoints support paginated/searchable responses.
+- Frontend auth now has refresh-token-based session recovery, safe persisted-user parsing, and forced logout when refresh fails.
+- Frontend reload failures now keep last-good data visible instead of clearing loaded screens immediately.
+- Frontend operational/admin pages that compute totals or candidate lists now fetch complete paginated datasets instead of relying on 100-row caps.
 - Property and room-category photos can be uploaded locally and previewed in Property Setup.
 - WhatsApp notification service sends booking confirmations, hotel-owner booking notifications, and check-in reminders. Delivery now runs through queued background jobs. It defaults to mock logs and supports WhatsApp Cloud API mode through environment variables.
 - Frontend pages exist for dashboard, property setup, availability, rooms, bookings, guests, housekeeping, payments, channels, and audit logs.
 - The bookings UI is reservation-group based and focuses on imported OTA stays with nested room lines.
 - The frontend now has shared compact filter bars, a bookings timeline/ledger toggle, a queried-night availability strip, and richer integrations surfaces for syncs, webhook events, background jobs, and metrics-summary snapshots.
+- Channel Manager workspace state persists across page switches in the frontend, so operators can return to the page without a cold reset of the loaded connection context.
+- OTA Mapping, Channel Manager, and Webhooks & Sync Logs now share one cached channel workspace in the frontend.
+- Channel diagnostics data now loads lazily for the diagnostics page instead of every channel-related page paying that fetch cost.
 - Public health endpoint: `GET /health`.
 - Uploaded files are stored under `apps/backend/uploads/` and served as `/uploads/...`; this folder is gitignored.
 - Property isolation is implemented for core hotel data. `SUPER_ADMIN` sees all properties; `ADMIN`/`STAFF` are restricted to their assigned `property_id`.
@@ -50,9 +57,11 @@ This is a Hotel Management System monorepo:
 - SQL schema artifact: `apps/backend/prisma/sql/schema.sql`
 - Frontend shell: `apps/frontend/src/App.tsx`
 - Frontend API client: `apps/frontend/src/api/client.ts`
+- Frontend session helper: `apps/frontend/src/api/session.ts`
 - Frontend types: `apps/frontend/src/api/types.ts`
 - Audit logs page: `apps/frontend/src/pages/AuditLogsPage.tsx`
 - Pagination helper: `apps/frontend/src/api/pagination.ts`
+- Shared channel workspace hook: `apps/frontend/src/pages/channel/useChannelWorkspace.ts`
 - API examples: `docs/api-examples.http`
 - Implemented features: `docs/implemented-features.md`
 - Production notes: `docs/production-readiness.md`
@@ -118,9 +127,16 @@ npm run build
 - Imported reservation groups can be billed through room-line invoices plus folio-style payment allocation.
 - Payments are immutable transaction records; invoice status is derived from paid/refunded totals.
 - Channel sync builds payloads from internal mappings and logs request/response payloads.
+- Zodomus sync classification now treats provider `returnCode != 200` as failure instead of success, so `Property status not Active` and similar business rejections surface as `FAILED` or `PARTIAL_FAILED` in sync logs.
 - Zodomus `BOOKINGS` sync is inbound reservation polling/import rather than outbound booking push.
+- Webhook-triggered Zodomus `BOOKINGS` syncs now use targeted reservation fetch first when `reservation_id` is present, then fall back to queue/summary reconciliation.
+- Zodomus import skips only provider reservations whose stay departed before the current 30-day backfill window, using the property's timezone to evaluate that cutoff.
+- Zodomus import also skips duplicate provider reservations when the same provider room-line IDs and stay dates were already imported under a different reservation ID.
+- Zodomus import can fail intentionally with inventory conflicts when the provider queue contains more overlapping stays than the mapped HMS inventory can satisfy.
+- Direct reservation creation now uses serializable transaction handling and inventory-category locking so concurrent last-slot bookings return `409` instead of overselling inventory.
 - Signed payment/channel webhooks are verified with HMAC secrets and deduplicated through persisted replay keys.
 - Login plus property setup, room, guest, housekeeping, booking, payment, and channel admin actions now disable duplicate submits in the frontend while requests are in flight.
+- Channel workspace state is intentionally cached across OTA Mapping, Channel Manager, and Webhooks & Sync Logs for performance, so externally clearing sync/webhook/job history may require a hard refresh before the frontend drops already-loaded in-memory state.
 - Bookings can now be reviewed in both ledger and short-window timeline views, with inline row detail expansion.
 - Audit logs now render as a filterable event stream instead of a plain table-only view.
 - Sensitive operational actions create audit log records.
