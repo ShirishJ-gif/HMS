@@ -12,7 +12,7 @@ This is a Hotel Management System monorepo:
 - Auth: JWT with `SUPER_ADMIN`, `ADMIN`, and `STAFF`.
 - Auth lifecycle: refresh-token sessions, logout/session revocation, and password reset token endpoints.
 - Seed login: `admin@hms.local / Admin@12345`.
-- Scoped seed logins: `admin.harbour@hms.local / Admin@12345`, `staff.harbour@hms.local / Staff@12345`, `admin.lakeview@hms.local / Admin@12345`.
+- Scoped seed logins: `admin.harbour@hms.local / Admin@12345`, `staff.harbour@hms.local / Staff@12345`.
 
 ## Current Capabilities
 
@@ -129,7 +129,7 @@ npm run build
 - Channel sync builds payloads from internal mappings and logs request/response payloads.
 - Zodomus sync classification now treats provider `returnCode != 200` as failure instead of success, so `Property status not Active` and similar business rejections surface as `FAILED` or `PARTIAL_FAILED` in sync logs.
 - Zodomus `BOOKINGS` sync is inbound reservation polling/import rather than outbound booking push.
-- Webhook-triggered Zodomus `BOOKINGS` syncs now use targeted reservation fetch first when `reservation_id` is present, then fall back to queue/summary reconciliation.
+- Webhook-triggered Zodomus `BOOKINGS` syncs now use targeted reservation fetch first when `reservation_id` is present, then fall back to summary/detail reconciliation.
 - Zodomus import skips only provider reservations whose stay departed before the current 30-day backfill window, using the property's timezone to evaluate that cutoff.
 - Zodomus import also skips duplicate provider reservations when the same provider room-line IDs and stay dates were already imported under a different reservation ID.
 - Zodomus import can fail intentionally with inventory conflicts when the provider queue contains more overlapping stays than the mapped HMS inventory can satisfy.

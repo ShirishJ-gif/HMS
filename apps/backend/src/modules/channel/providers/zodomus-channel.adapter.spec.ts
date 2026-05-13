@@ -19,7 +19,7 @@ describe('ZodomusChannelAdapter', () => {
     jest.restoreAllMocks();
   });
 
-  it('pushes inventory one day at a time using each row date', async () => {
+  it('batches contiguous inventory rows with the same availability into one provider call', async () => {
     const adapter = new ZodomusChannelAdapter();
     const pushAvailability = jest
       .spyOn(ZodomusClient.prototype, 'pushAvailability')
@@ -44,6 +44,11 @@ describe('ZodomusChannelAdapter', () => {
         {
           date: '2026-06-02',
           external_room_id: '10001',
+          available: 2,
+        },
+        {
+          date: '2026-06-03',
+          external_room_id: '10001',
           available: 1,
         },
       ],
@@ -54,7 +59,7 @@ describe('ZodomusChannelAdapter', () => {
       1,
       expect.objectContaining({
         dateFrom: '2026-06-01',
-        dateTo: '2026-06-02',
+        dateTo: '2026-06-03',
         roomId: '10001',
         availability: 2,
       }),
@@ -62,8 +67,8 @@ describe('ZodomusChannelAdapter', () => {
     expect(pushAvailability).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        dateFrom: '2026-06-02',
-        dateTo: '2026-06-03',
+        dateFrom: '2026-06-03',
+        dateTo: '2026-06-04',
         roomId: '10001',
         availability: 1,
       }),
@@ -173,7 +178,7 @@ describe('ZodomusChannelAdapter', () => {
     ]);
   });
 
-  it('pushes rates one day at a time using each row date and nightly price', async () => {
+  it('batches contiguous rate rows with the same nightly price into one provider call', async () => {
     const adapter = new ZodomusChannelAdapter();
     const pushRates = jest
       .spyOn(ZodomusClient.prototype, 'pushRates')
@@ -202,6 +207,13 @@ describe('ZodomusChannelAdapter', () => {
           external_room_id: '10001',
           external_rate_id: '100991',
           currency: 'INR',
+          base_rate: 5000,
+        },
+        {
+          date: '2026-06-03',
+          external_room_id: '10001',
+          external_rate_id: '100991',
+          currency: 'INR',
           base_rate: 6200,
         },
       ],
@@ -212,7 +224,7 @@ describe('ZodomusChannelAdapter', () => {
       1,
       expect.objectContaining({
         dateFrom: '2026-06-01',
-        dateTo: '2026-06-02',
+        dateTo: '2026-06-03',
         roomId: '10001',
         rateId: '100991',
         prices: {
@@ -223,8 +235,8 @@ describe('ZodomusChannelAdapter', () => {
     expect(pushRates).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        dateFrom: '2026-06-02',
-        dateTo: '2026-06-03',
+        dateFrom: '2026-06-03',
+        dateTo: '2026-06-04',
         roomId: '10001',
         rateId: '100991',
         prices: {
@@ -232,6 +244,17 @@ describe('ZodomusChannelAdapter', () => {
         },
       }),
     );
+  });
+
+  it('defaults Zodomus sync concurrency to 1 in sandbox', () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
+    const adapter = new ZodomusChannelAdapter();
+
+    const concurrency = (adapter as unknown as {
+      readSyncConcurrency: () => number;
+    }).readSyncConcurrency();
+
+    expect(concurrency).toBe(1);
   });
 
   it('marks rate rows as failed when the provider returns a non-200 status', async () => {
@@ -278,9 +301,9 @@ describe('ZodomusChannelAdapter', () => {
     ]);
   });
 
-  it('imports booking details discovered in reservation summary when the queue is empty', async () => {
+  it('imports booking details discovered in reservation summary without using the queue', async () => {
     const adapter = new ZodomusChannelAdapter();
-    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue').mockResolvedValue([] as never);
+    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue');
     const getReservationsSummary = jest.spyOn(ZodomusClient.prototype, 'getReservationsSummary').mockResolvedValue(
       {
         reservations: [
@@ -311,7 +334,7 @@ describe('ZodomusChannelAdapter', () => {
       },
     });
 
-    expect(pullReservationQueue).toHaveBeenCalledTimes(1);
+    expect(pullReservationQueue).not.toHaveBeenCalled();
     expect(getReservationsSummary).toHaveBeenCalledTimes(1);
     expect(getReservation).toHaveBeenCalledTimes(2);
     expect(getReservation).toHaveBeenNthCalledWith(
@@ -337,11 +360,9 @@ describe('ZodomusChannelAdapter', () => {
     });
   });
 
-  it('deduplicates booking detail fetches across queue and summary references', async () => {
+  it('deduplicates booking detail fetches discovered in reservation summary', async () => {
     const adapter = new ZodomusChannelAdapter();
-    jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue').mockResolvedValue(
-      [{ reservation_id: '1006880' }, { reservation_id: '1007295' }] as never,
-    );
+    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue');
     jest.spyOn(ZodomusClient.prototype, 'getReservationsSummary').mockResolvedValue(
       {
         reservations: [
@@ -364,20 +385,23 @@ describe('ZodomusChannelAdapter', () => {
       },
     });
 
-    expect(getReservation).toHaveBeenCalledTimes(3);
+    expect(pullReservationQueue).not.toHaveBeenCalled();
+    expect(getReservation).toHaveBeenCalledTimes(2);
     expect(response.reservations).toEqual([
       { reservationId: '1006880' },
-      { reservationId: '1007295' },
       { reservationId: '1008000' },
     ]);
   });
 
-  it('filters booking detail responses that only report the provider download limit', async () => {
+  it('filters booking detail responses that only report the provider download limit from summary references', async () => {
     const adapter = new ZodomusChannelAdapter();
-    jest
-      .spyOn(ZodomusClient.prototype, 'pullReservationQueue')
-      .mockResolvedValue([{ reservation_id: '1006880' }, { reservation_id: '1007295' }] as never);
-    jest.spyOn(ZodomusClient.prototype, 'getReservationsSummary').mockResolvedValue({ reservations: [] } as never);
+    jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue');
+    jest.spyOn(ZodomusClient.prototype, 'getReservationsSummary').mockResolvedValue({
+      reservations: [
+        { reservation: { id: '1006880' } },
+        { reservation: { id: '1007295' } },
+      ],
+    } as never);
     const getReservation = jest.spyOn(ZodomusClient.prototype, 'getReservation').mockImplementation(
       async (query?: Record<string, string>) =>
         query?.reservationId === '1007295'
@@ -449,7 +473,7 @@ describe('ZodomusChannelAdapter', () => {
     ]);
   });
 
-  it('falls back to queue reconciliation when targeted webhook fetch is not usable', async () => {
+  it('falls back to summary reconciliation when targeted webhook fetch is not usable', async () => {
     const adapter = new ZodomusChannelAdapter();
     const getReservation = jest
       .spyOn(ZodomusClient.prototype, 'getReservation')
@@ -463,12 +487,10 @@ describe('ZodomusChannelAdapter', () => {
         status: { returnCode: 200, returnMessage: 'OK' },
         reservation: { reservation_id: 'res-101' },
       } as never);
-    const pullReservationQueue = jest
-      .spyOn(ZodomusClient.prototype, 'pullReservationQueue')
-      .mockResolvedValue([{ reservation_id: 'res-101' }] as never);
+    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue');
     const getReservationsSummary = jest
       .spyOn(ZodomusClient.prototype, 'getReservationsSummary')
-      .mockResolvedValue({ reservations: [] } as never);
+      .mockResolvedValue({ reservations: [{ reservation: { id: 'res-101' } }] } as never);
 
     const response = await adapter.push({
       provider: ChannelProvider.ZODOMUS,
@@ -485,11 +507,11 @@ describe('ZodomusChannelAdapter', () => {
     });
 
     expect(getReservation).toHaveBeenCalledTimes(2);
-    expect(pullReservationQueue).toHaveBeenCalledTimes(1);
+    expect(pullReservationQueue).not.toHaveBeenCalled();
     expect(getReservationsSummary).toHaveBeenCalledTimes(1);
     expect(response.reservation_import).toEqual({
       mode: 'webhook_trigger',
-      strategy: 'queue_reconciliation',
+      strategy: 'summary_reconciliation',
       reservation_id: 'res-101',
     });
     expect(response.reservations).toEqual([

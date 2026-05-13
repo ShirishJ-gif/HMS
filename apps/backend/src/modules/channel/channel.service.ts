@@ -21,6 +21,7 @@ import { ChannelProviderService } from './channel-provider.service';
 import { CreateChannelConnectionDto } from './dto/create-channel-connection.dto';
 import { CreateChannelRateMappingDto } from './dto/create-channel-rate-mapping.dto';
 import { CreateChannelRoomMappingDto } from './dto/create-channel-room-mapping.dto';
+import { SaveChannelMappingsBatchDto } from './dto/save-channel-mappings-batch.dto';
 import { SetupZodomusChannelDto } from './dto/setup-zodomus-channel.dto';
 import { SyncChannelDto } from './dto/sync-channel.dto';
 import { UpdateChannelAutomationDto } from './dto/update-channel-automation.dto';
@@ -56,6 +57,8 @@ type InventorySyncRowResult = {
   provider_response?: Prisma.JsonValue | null;
   error_message?: string | null;
 };
+
+type DbClient = PrismaService | Prisma.TransactionClient;
 
 @Injectable()
 export class ChannelService implements OnModuleInit, OnModuleDestroy {
@@ -739,53 +742,15 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   }
 
   async createRoomMapping(connectionId: string, dto: CreateChannelRoomMappingDto, user?: AuthenticatedUser) {
-    const connection = await this.findConnectionForValidation(connectionId);
-    assertCanAccessProperty(user, connection.propertyId);
+    const result = await this.saveMappingsBatch(
+      connectionId,
+      {
+        room_mappings: [dto],
+      },
+      user,
+    );
 
-    const category = await this.prisma.roomCategory.findUnique({
-      where: { id: dto.room_category_id },
-    });
-
-    if (!category) {
-      throw new NotFoundException('Room category not found');
-    }
-
-    if (category.propertyId !== connection.propertyId) {
-      throw new ConflictException('Room category does not belong to channel property');
-    }
-
-    try {
-      const mapping = await this.prisma.channelRoomMapping.create({
-        data: {
-          channelConnectionId: connectionId,
-          roomCategoryId: dto.room_category_id,
-          externalRoomId: dto.external_room_id,
-          externalRoomName: dto.external_room_name,
-        },
-        include: { roomCategory: true },
-      });
-
-      await this.auditLogService.record({
-        action: AuditAction.CREATE,
-        entityType: 'channel_room_mapping',
-        entityId: mapping.id,
-        propertyId: connection.propertyId,
-        summary: `Mapped room category ${mapping.roomCategory.code} to ${mapping.externalRoomId}`,
-        metadata: {
-          channel_connection_id: connectionId,
-          room_category_id: mapping.roomCategoryId,
-        },
-        user,
-      });
-
-      await this.backgroundJobService.queueInventorySyncsForProperty(connection.propertyId, {
-        trigger: 'room_mapping_created',
-      });
-
-      return this.toRoomMappingResponse(mapping);
-    } catch (error) {
-      this.handlePrismaError(error, 'Room mapping already exists for this channel');
-    }
+    return result.room_mappings[0];
   }
 
   async mapExternalProperty(connectionId: string, externalHotelId: string, user?: AuthenticatedUser) {
@@ -816,73 +781,216 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   }
 
   async createRateMapping(connectionId: string, dto: CreateChannelRateMappingDto, user?: AuthenticatedUser) {
+    const result = await this.saveMappingsBatch(
+      connectionId,
+      {
+        rate_mappings: [dto],
+      },
+      user,
+    );
+
+    return result.rate_mappings[0];
+  }
+
+  async saveMappingsBatch(connectionId: string, dto: SaveChannelMappingsBatchDto, user?: AuthenticatedUser) {
     const connection = await this.findConnectionForValidation(connectionId);
     assertCanAccessProperty(user, connection.propertyId);
+    const roomInputs = (dto.room_mappings ?? []).map((mapping) => ({
+      room_category_id: mapping.room_category_id,
+      external_room_id: mapping.external_room_id.trim(),
+      external_room_name: mapping.external_room_name?.trim() || undefined,
+    }));
+    const rateInputs = (dto.rate_mappings ?? []).map((mapping) => ({
+      rate_plan_id: mapping.rate_plan_id,
+      external_room_id: mapping.external_room_id?.trim() || undefined,
+      external_rate_id: mapping.external_rate_id.trim(),
+      external_rate_name: mapping.external_rate_name?.trim() || undefined,
+    }));
 
-    const ratePlan = await this.prisma.ratePlan.findUnique({
-      where: { id: dto.rate_plan_id },
+    if (roomInputs.length === 0 && rateInputs.length === 0) {
+      throw new BadRequestException('At least one room or rate mapping is required');
+    }
+
+    this.assertDistinctRoomMappingInputs(roomInputs);
+    this.assertDistinctRateMappingInputs(rateInputs);
+
+    const [categories, ratePlans] = await Promise.all([
+      roomInputs.length > 0
+        ? this.prisma.roomCategory.findMany({
+            where: {
+              id: { in: roomInputs.map((mapping) => mapping.room_category_id) },
+            },
+          })
+        : Promise.resolve([]),
+      rateInputs.length > 0
+        ? this.prisma.ratePlan.findMany({
+            where: {
+              id: { in: rateInputs.map((mapping) => mapping.rate_plan_id) },
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const existingRoomMappings =
+      ratePlans.length > 0
+        ? await this.prisma.channelRoomMapping.findMany({
+            where: {
+              channelConnectionId: connectionId,
+              roomCategoryId: {
+                in: Array.from(new Set(ratePlans.map((ratePlan) => ratePlan.roomCategoryId))),
+              },
+            },
+          })
+        : [];
+
+    const categoriesById = new Map(categories.map((category) => [category.id, category]));
+    const ratePlansById = new Map(ratePlans.map((ratePlan) => [ratePlan.id, ratePlan]));
+    const existingRoomMappingsByCategoryId = new Map(
+      existingRoomMappings.map((mapping) => [mapping.roomCategoryId, mapping]),
+    );
+    const stagedRoomIdsByCategoryId = new Map(
+      roomInputs.map((mapping) => [mapping.room_category_id, mapping.external_room_id]),
+    );
+
+    roomInputs.forEach((mapping) => {
+      const category = categoriesById.get(mapping.room_category_id);
+      if (!category) {
+        throw new NotFoundException('Room category not found');
+      }
+
+      if (category.propertyId !== connection.propertyId) {
+        throw new ConflictException('Room category does not belong to channel property');
+      }
     });
 
-    if (!ratePlan) {
-      throw new NotFoundException('Rate plan not found');
-    }
+    rateInputs.forEach((mapping) => {
+      const ratePlan = ratePlansById.get(mapping.rate_plan_id);
+      if (!ratePlan) {
+        throw new NotFoundException('Rate plan not found');
+      }
 
-    if (ratePlan.propertyId !== connection.propertyId) {
-      throw new ConflictException('Rate plan does not belong to channel property');
-    }
+      if (ratePlan.propertyId !== connection.propertyId) {
+        throw new ConflictException('Rate plan does not belong to channel property');
+      }
 
-    const mappedRoom = await this.prisma.channelRoomMapping.findUnique({
-      where: {
-        channelConnectionId_roomCategoryId: {
-          channelConnectionId: connectionId,
-          roomCategoryId: ratePlan.roomCategoryId,
-        },
-      },
+      const stagedExternalRoomId = stagedRoomIdsByCategoryId.get(ratePlan.roomCategoryId) ?? null;
+      const mappedRoom = existingRoomMappingsByCategoryId.get(ratePlan.roomCategoryId) ?? null;
+      const externalRoomId = mapping.external_room_id ?? stagedExternalRoomId ?? mappedRoom?.externalRoomId ?? null;
+
+      if (!externalRoomId) {
+        throw new BadRequestException(
+          `Map the HMS room category for rate plan ${ratePlan.code} before saving its provider rate mapping.`,
+        );
+      }
+
+      if (mappedRoom && externalRoomId !== mappedRoom.externalRoomId) {
+        throw new ConflictException(
+          `Rate plan ${ratePlan.code} belongs to room category ${ratePlan.roomCategoryId}, which is mapped to provider room ${mappedRoom.externalRoomId}.`,
+        );
+      }
     });
-
-    const externalRoomId = dto.external_room_id?.trim() || mappedRoom?.externalRoomId || null;
-
-    if (!externalRoomId) {
-      throw new BadRequestException(
-        `Map the HMS room category for rate plan ${ratePlan.code} before saving its provider rate mapping.`,
-      );
-    }
-
-    if (mappedRoom && externalRoomId !== mappedRoom.externalRoomId) {
-      throw new ConflictException(
-        `Rate plan ${ratePlan.code} belongs to room category ${ratePlan.roomCategoryId}, which is mapped to provider room ${mappedRoom.externalRoomId}.`,
-      );
-    }
 
     try {
-      const mapping = await this.prisma.channelRateMapping.create({
-        data: {
-          channelConnectionId: connectionId,
-          ratePlanId: dto.rate_plan_id,
-          externalRoomId,
-          externalRateId: dto.external_rate_id,
-          externalRateName: dto.external_rate_name,
-        },
-        include: { ratePlan: true },
+      const result = await this.prisma.$transaction(async (tx) => {
+        const createdRoomMappings: Prisma.ChannelRoomMappingGetPayload<{ include: { roomCategory: true } }>[] = [];
+        const createdRateMappings: Prisma.ChannelRateMappingGetPayload<{ include: { ratePlan: true } }>[] = [];
+
+        for (const mapping of roomInputs) {
+          createdRoomMappings.push(
+            await tx.channelRoomMapping.create({
+              data: {
+                channelConnectionId: connectionId,
+                roomCategoryId: mapping.room_category_id,
+                externalRoomId: mapping.external_room_id,
+                externalRoomName: mapping.external_room_name,
+              },
+              include: { roomCategory: true },
+            }),
+          );
+        }
+
+        const txRoomMappingsByCategoryId = new Map(
+          createdRoomMappings.map((mapping) => [mapping.roomCategoryId, mapping.externalRoomId]),
+        );
+
+        for (const mapping of rateInputs) {
+          const ratePlan = ratePlansById.get(mapping.rate_plan_id)!;
+          const persistedRoomMapping =
+            existingRoomMappingsByCategoryId.get(ratePlan.roomCategoryId) ??
+            (await tx.channelRoomMapping.findUnique({
+              where: {
+                channelConnectionId_roomCategoryId: {
+                  channelConnectionId: connectionId,
+                  roomCategoryId: ratePlan.roomCategoryId,
+                },
+              },
+            }));
+          const externalRoomId =
+            mapping.external_room_id ??
+            txRoomMappingsByCategoryId.get(ratePlan.roomCategoryId) ??
+            persistedRoomMapping?.externalRoomId ??
+            null;
+
+          createdRateMappings.push(
+            await tx.channelRateMapping.create({
+              data: {
+                channelConnectionId: connectionId,
+                ratePlanId: mapping.rate_plan_id,
+                externalRoomId,
+                externalRateId: mapping.external_rate_id,
+                externalRateName: mapping.external_rate_name,
+              },
+              include: { ratePlan: true },
+            }),
+          );
+        }
+
+        return {
+          room_mappings: createdRoomMappings.map((mapping) => this.toRoomMappingResponse(mapping)),
+          rate_mappings: createdRateMappings.map((mapping) => this.toRateMappingResponse(mapping)),
+        };
       });
 
-      await this.auditLogService.record({
-        action: AuditAction.CREATE,
-        entityType: 'channel_rate_mapping',
-        entityId: mapping.id,
-        propertyId: connection.propertyId,
-        summary: `Mapped rate plan ${mapping.ratePlan.code} to ${mapping.externalRateId}`,
-        metadata: {
-          channel_connection_id: connectionId,
-          rate_plan_id: mapping.ratePlanId,
-          external_room_id: mapping.externalRoomId,
-        },
-        user,
-      });
+      for (const mapping of result.room_mappings) {
+        await this.auditLogService.record({
+          action: AuditAction.CREATE,
+          entityType: 'channel_room_mapping',
+          entityId: mapping.id,
+          propertyId: connection.propertyId,
+          summary: `Mapped room category ${mapping.room_category.code} to ${mapping.external_room_id}`,
+          metadata: {
+            channel_connection_id: connectionId,
+            room_category_id: mapping.room_category_id,
+          },
+          user,
+        });
+      }
 
-      return this.toRateMappingResponse(mapping);
+      for (const mapping of result.rate_mappings) {
+        await this.auditLogService.record({
+          action: AuditAction.CREATE,
+          entityType: 'channel_rate_mapping',
+          entityId: mapping.id,
+          propertyId: connection.propertyId,
+          summary: `Mapped rate plan ${mapping.rate_plan.code} to ${mapping.external_rate_id}`,
+          metadata: {
+            channel_connection_id: connectionId,
+            rate_plan_id: mapping.rate_plan_id,
+            external_room_id: mapping.external_room_id,
+          },
+          user,
+        });
+      }
+
+      if (result.room_mappings.length > 0) {
+        await this.backgroundJobService.queueInventorySyncsForProperty(connection.propertyId, {
+          trigger: 'room_mapping_created',
+        });
+      }
+
+      return result;
     } catch (error) {
-      this.handlePrismaError(error, 'Rate mapping already exists for this channel');
+      this.handlePrismaError(error, 'One or more mappings already exist for this channel');
     }
   }
 
@@ -1297,6 +1405,10 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       return 0;
     }
 
+    if (this.isZodomusSyncInCooldown(connection.syncLogs, providerSummary.environment)) {
+      return 0;
+    }
+
     const syncWindow = this.currentSyncWindow(providerSummary.automation.sync_window_days);
     let scheduled = 0;
 
@@ -1432,7 +1544,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     if (dto.sync_type === ChannelSyncType.BOOKINGS) {
       return {
         reservation_import: {
-          mode: 'queue_poll',
+          mode: 'summary_poll',
           from: dto.from ?? null,
           to: dto.to ?? null,
         },
@@ -1629,22 +1741,46 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   }
 
   private defaultZodomusAutomationConfig() {
+    const environment = process.env.ZODOMUS_ENVIRONMENT?.trim() ?? null;
+
     return {
       enabled: (process.env.ZODOMUS_AUTO_SYNC_ENABLED?.trim() ?? 'true') !== 'false',
-      inventory_interval_minutes: this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_INVENTORY_MINUTES, 15),
-      rates_interval_minutes: this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_RATES_MINUTES, 60),
-      bookings_interval_minutes: this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_BOOKINGS_MINUTES, 5),
-      sync_window_days: this.defaultZodomusSyncWindowDays(),
+      inventory_interval_minutes: this.normalizeZodomusIntervalMinutes(
+        this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_INVENTORY_MINUTES, 15),
+        'inventory',
+        environment,
+      ),
+      rates_interval_minutes: this.normalizeZodomusIntervalMinutes(
+        this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_RATES_MINUTES, 60),
+        'rates',
+        environment,
+      ),
+      bookings_interval_minutes: this.normalizeZodomusIntervalMinutes(
+        this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_BOOKINGS_MINUTES, 5),
+        'bookings',
+        environment,
+      ),
+      sync_window_days: this.defaultZodomusSyncWindowDays(environment),
     };
   }
 
-  private minimumZodomusSyncWindowDays() {
-    return 365;
+  private productionMinimumZodomusSyncWindowDays() {
+    return this.readPositiveInteger(process.env.ZODOMUS_PRODUCTION_MIN_SYNC_WINDOW_DAYS, 365);
   }
 
-  private defaultZodomusSyncWindowDays() {
+  private sandboxMaximumZodomusSyncWindowDays() {
+    return this.readPositiveInteger(process.env.ZODOMUS_SANDBOX_MAX_SYNC_WINDOW_DAYS, 7);
+  }
+
+  private defaultZodomusSyncWindowDays(environment?: string | null) {
     return this.normalizeZodomusSyncWindowDays(
-      this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS, this.minimumZodomusSyncWindowDays()),
+      this.readPositiveInteger(
+        process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS,
+        environment === 'sandbox'
+          ? this.sandboxMaximumZodomusSyncWindowDays()
+          : this.productionMinimumZodomusSyncWindowDays(),
+      ),
+      environment,
     );
   }
 
@@ -1764,27 +1900,110 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   private readZodomusAutomationConfig(record: Record<string, Prisma.JsonValue>) {
     const automation = this.readNestedRecord(record.automation);
     const defaults = this.defaultZodomusAutomationConfig();
+    const environment =
+      this.readOptionalString(record.environment) ?? process.env.ZODOMUS_ENVIRONMENT?.trim() ?? null;
     const syncWindowDays = this.normalizeZodomusSyncWindowDays(
       this.readNumber(automation.sync_window_days, defaults.sync_window_days),
+      environment,
     );
 
     return {
       enabled: this.readBoolean(automation.enabled, defaults.enabled),
-      inventory_interval_minutes: this.readNumber(
-        automation.inventory_interval_minutes,
-        defaults.inventory_interval_minutes,
+      inventory_interval_minutes: this.normalizeZodomusIntervalMinutes(
+        this.readNumber(automation.inventory_interval_minutes, defaults.inventory_interval_minutes),
+        'inventory',
+        environment,
       ),
-      rates_interval_minutes: this.readNumber(automation.rates_interval_minutes, defaults.rates_interval_minutes),
-      bookings_interval_minutes: this.readNumber(
-        automation.bookings_interval_minutes,
-        defaults.bookings_interval_minutes,
+      rates_interval_minutes: this.normalizeZodomusIntervalMinutes(
+        this.readNumber(automation.rates_interval_minutes, defaults.rates_interval_minutes),
+        'rates',
+        environment,
+      ),
+      bookings_interval_minutes: this.normalizeZodomusIntervalMinutes(
+        this.readNumber(automation.bookings_interval_minutes, defaults.bookings_interval_minutes),
+        'bookings',
+        environment,
       ),
       sync_window_days: syncWindowDays,
     };
   }
 
-  private normalizeZodomusSyncWindowDays(value: number) {
-    return Math.max(value, this.minimumZodomusSyncWindowDays());
+  private normalizeZodomusIntervalMinutes(
+    value: number,
+    syncType: 'inventory' | 'rates' | 'bookings',
+    environment?: string | null,
+  ) {
+    const normalized = Math.max(value, 0);
+    if (environment !== 'sandbox') {
+      return normalized;
+    }
+
+    if (syncType === 'inventory') {
+      return Math.max(normalized, this.readPositiveInteger(process.env.ZODOMUS_SANDBOX_MIN_INVENTORY_SYNC_MINUTES, 60));
+    }
+
+    if (syncType === 'rates') {
+      return Math.max(normalized, this.readPositiveInteger(process.env.ZODOMUS_SANDBOX_MIN_RATES_SYNC_MINUTES, 180));
+    }
+
+    return Math.max(normalized, this.readPositiveInteger(process.env.ZODOMUS_SANDBOX_MIN_BOOKINGS_SYNC_MINUTES, 15));
+  }
+
+  private normalizeZodomusSyncWindowDays(value: number, environment?: string | null) {
+    const normalized = Math.max(value, 1);
+    if (environment === 'sandbox') {
+      return Math.min(normalized, this.sandboxMaximumZodomusSyncWindowDays());
+    }
+
+    return Math.max(normalized, this.productionMinimumZodomusSyncWindowDays());
+  }
+
+  private isZodomusSyncInCooldown(
+    syncLogs: Array<{
+      createdAt: Date;
+      errorMessage: string | null;
+    }>,
+    environment?: string | null,
+  ) {
+    const latestFailure = syncLogs.find((log) => log.errorMessage);
+    if (!latestFailure?.errorMessage) {
+      return false;
+    }
+
+    const cooldownMs = this.zodomusCooldownMs(latestFailure.errorMessage, environment);
+    if (cooldownMs <= 0) {
+      return false;
+    }
+
+    return Date.now() - latestFailure.createdAt.getTime() < cooldownMs;
+  }
+
+  private zodomusCooldownMs(message: string, environment?: string | null) {
+    const normalized = message.toLowerCase();
+
+    if (
+      normalized.includes('status 401') ||
+      normalized.includes('status 403') ||
+      normalized.includes('suspend')
+    ) {
+      const minutes = environment === 'sandbox'
+        ? this.readPositiveInteger(process.env.ZODOMUS_SANDBOX_AUTH_BACKOFF_MINUTES, 180)
+        : this.readPositiveInteger(process.env.ZODOMUS_AUTH_BACKOFF_MINUTES, 60);
+      return minutes * 60_000;
+    }
+
+    if (
+      normalized.includes('status 429') ||
+      normalized.includes('too many requests') ||
+      normalized.includes('rate limit')
+    ) {
+      const minutes = environment === 'sandbox'
+        ? this.readPositiveInteger(process.env.ZODOMUS_SANDBOX_RATE_LIMIT_BACKOFF_MINUTES, 60)
+        : this.readPositiveInteger(process.env.ZODOMUS_RATE_LIMIT_BACKOFF_MINUTES, 30);
+      return minutes * 60_000;
+    }
+
+    return 0;
   }
 
   private async updateZodomusConnectionConfig(
@@ -2001,6 +2220,54 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     throw new BadRequestException(
       `Rate sync cannot continue because rate plan ${ratePlanCode} belongs to room category ${roomCategoryCode}, and that room category is not mapped for this channel connection.`,
     );
+  }
+
+  private assertDistinctRoomMappingInputs(
+    roomMappings: Array<{
+      room_category_id: string;
+      external_room_id: string;
+    }>,
+  ) {
+    const categoryIds = new Set<string>();
+    const externalRoomIds = new Set<string>();
+
+    for (const mapping of roomMappings) {
+      if (categoryIds.has(mapping.room_category_id)) {
+        throw new BadRequestException('Duplicate HMS room category found in room mappings batch');
+      }
+
+      if (externalRoomIds.has(mapping.external_room_id)) {
+        throw new BadRequestException('Duplicate provider room ID found in room mappings batch');
+      }
+
+      categoryIds.add(mapping.room_category_id);
+      externalRoomIds.add(mapping.external_room_id);
+    }
+  }
+
+  private assertDistinctRateMappingInputs(
+    rateMappings: Array<{
+      rate_plan_id: string;
+      external_room_id?: string;
+      external_rate_id: string;
+    }>,
+  ) {
+    const ratePlanIds = new Set<string>();
+    const providerPairs = new Set<string>();
+
+    for (const mapping of rateMappings) {
+      if (ratePlanIds.has(mapping.rate_plan_id)) {
+        throw new BadRequestException('Duplicate HMS rate plan found in rate mappings batch');
+      }
+
+      const providerKey = `${mapping.external_room_id ?? ''}::${mapping.external_rate_id}`;
+      if (providerPairs.has(providerKey)) {
+        throw new BadRequestException('Duplicate provider room/rate pair found in rate mappings batch');
+      }
+
+      ratePlanIds.add(mapping.rate_plan_id);
+      providerPairs.add(providerKey);
+    }
   }
 
   private toRoomMappingResponse(mapping: Prisma.ChannelRoomMappingGetPayload<{ include: { roomCategory: true } }>) {
@@ -2506,11 +2773,22 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     const queueStatus = this.readNestedRecord(reservationQueue.status);
     const queueReturnCode = this.readOptionalStringOrNumber(queueStatus.returnCode);
     const queueReturnMessage = this.readOptionalString(queueStatus.returnMessage);
+    const reservationSummary = this.readNestedRecord(payload.reservation_summary);
+    const summaryStatus = this.readNestedRecord(reservationSummary.status);
+    const summaryReturnCode = this.readOptionalStringOrNumber(summaryStatus.returnCode);
+    const summaryReturnMessage = this.readOptionalString(summaryStatus.returnMessage);
 
     if (queueReturnCode && queueReturnCode !== '200') {
       return {
         status: ChannelSyncStatus.FAILED,
         errorMessage: queueReturnMessage ?? `Booking sync provider returned code ${queueReturnCode}.`,
+      };
+    }
+
+    if (summaryReturnCode && summaryReturnCode !== '200') {
+      return {
+        status: ChannelSyncStatus.FAILED,
+        errorMessage: summaryReturnMessage ?? `Booking sync provider returned code ${summaryReturnCode}.`,
       };
     }
 

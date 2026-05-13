@@ -410,8 +410,9 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
       this.metricsService.recordBackgroundJobCompleted(job.type, BackgroundJobStatus.SUCCEEDED);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Background job failed';
+      const retryable = this.isRetryableJobFailure(job.type, message);
       const nextStatus =
-        job.attempts >= job.maxAttempts
+        !retryable || job.attempts >= job.maxAttempts
           ? BackgroundJobStatus.DEAD_LETTER
           : BackgroundJobStatus.PENDING;
 
@@ -1034,8 +1035,10 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
       ? (credentials as Record<string, Prisma.JsonValue>)
       : {};
     const automation = this.readNestedRecord(record.automation);
+    const environment = this.zodomusEnvironment(record);
     return this.normalizeZodomusSyncWindowDays(
       this.readNumber(automation.sync_window_days, this.defaultZodomusSyncWindowDays()),
+      environment,
     );
   }
 
@@ -1050,18 +1053,61 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private minimumZodomusSyncWindowDays() {
-    return 365;
+  private productionMinimumZodomusSyncWindowDays() {
+    return this.readPositiveInteger(process.env.ZODOMUS_PRODUCTION_MIN_SYNC_WINDOW_DAYS, 365);
+  }
+
+  private sandboxMaximumZodomusSyncWindowDays() {
+    return this.readPositiveInteger(process.env.ZODOMUS_SANDBOX_MAX_SYNC_WINDOW_DAYS, 7);
   }
 
   private defaultZodomusSyncWindowDays() {
+    const environment = this.zodomusEnvironment(null);
     return this.normalizeZodomusSyncWindowDays(
-      this.readPositiveInteger(process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS, this.minimumZodomusSyncWindowDays()),
+      this.readPositiveInteger(
+        process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS,
+        environment === 'sandbox'
+          ? this.sandboxMaximumZodomusSyncWindowDays()
+          : this.productionMinimumZodomusSyncWindowDays(),
+      ),
+      environment,
     );
   }
 
-  private normalizeZodomusSyncWindowDays(value: number) {
-    return Math.max(value, this.minimumZodomusSyncWindowDays());
+  private normalizeZodomusSyncWindowDays(value: number, environment?: string | null) {
+    const normalized = Math.max(value, 1);
+    if (environment === 'sandbox') {
+      return Math.min(normalized, this.sandboxMaximumZodomusSyncWindowDays());
+    }
+
+    return Math.max(normalized, this.productionMinimumZodomusSyncWindowDays());
+  }
+
+  private zodomusEnvironment(record: Record<string, Prisma.JsonValue> | null) {
+    const value = record?.environment;
+    return typeof value === 'string' && value.trim()
+      ? value.trim()
+      : process.env.ZODOMUS_ENVIRONMENT?.trim() ?? null;
+  }
+
+  private isRetryableJobFailure(jobType: BackgroundJobType, message: string) {
+    if (jobType !== BackgroundJobType.CHANNEL_SYNC) {
+      return true;
+    }
+
+    const normalized = message.toLowerCase();
+    if (
+      normalized.includes('status 401') ||
+      normalized.includes('status 403') ||
+      normalized.includes('status 429') ||
+      normalized.includes('too many requests') ||
+      normalized.includes('rate limit') ||
+      normalized.includes('suspend')
+    ) {
+      return false;
+    }
+
+    return true;
   }
 
   private resolveRowBasedSyncOutcome(
@@ -1120,11 +1166,22 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     const queueStatus = this.readNestedRecord(reservationQueue.status);
     const queueReturnCode = this.readOptionalStringOrNumber(queueStatus.returnCode);
     const queueReturnMessage = this.readString(queueStatus.returnMessage);
+    const reservationSummary = this.readNestedRecord(payload.reservation_summary);
+    const summaryStatus = this.readNestedRecord(reservationSummary.status);
+    const summaryReturnCode = this.readOptionalStringOrNumber(summaryStatus.returnCode);
+    const summaryReturnMessage = this.readString(summaryStatus.returnMessage);
 
     if (queueReturnCode && queueReturnCode !== '200') {
       return {
         status: ChannelSyncStatus.FAILED,
         errorMessage: queueReturnMessage ?? `Booking sync provider returned code ${queueReturnCode}.`,
+      };
+    }
+
+    if (summaryReturnCode && summaryReturnCode !== '200') {
+      return {
+        status: ChannelSyncStatus.FAILED,
+        errorMessage: summaryReturnMessage ?? `Booking sync provider returned code ${summaryReturnCode}.`,
       };
     }
 

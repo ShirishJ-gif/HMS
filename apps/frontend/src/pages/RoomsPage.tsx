@@ -2,6 +2,7 @@ import { FormEvent, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { Property, Room, RoomCategory, RoomOutOfServicePeriod, RoomStatus } from '../api/types';
+import { CustomSelect } from '../components/CustomSelect';
 import { FilterBar } from '../components/FilterBar';
 import { useAsync } from '../hooks/useAsync';
 
@@ -219,35 +220,29 @@ export function RoomsPage() {
           <div className="booking-form-grid">
             <label>
               Property
-              <select
-                onChange={(event) => setForm({ ...form, property_id: event.target.value, room_category_id: '' })}
-                required
+              <CustomSelect
+                onChange={(value) => setForm({ ...form, property_id: value, room_category_id: '' })}
+                options={properties.map((property) => ({
+                  label: property.name,
+                  value: property.id,
+                }))}
+                placeholder="Select property"
                 value={form.property_id}
-              >
-                <option value="">Select property</option>
-                {properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <label>
               Room category
-              <select
-                onChange={(event) => setForm({ ...form, room_category_id: event.target.value })}
-                required
-                value={form.room_category_id}
-              >
-                <option value="">Select category</option>
-                {categories
+              <CustomSelect
+                onChange={(value) => setForm({ ...form, room_category_id: value })}
+                options={categories
                   .filter((category) => !form.property_id || category.property_id === form.property_id)
-                  .map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-              </select>
+                  .map((category) => ({
+                    label: category.name,
+                    value: category.id,
+                  }))}
+                placeholder="Select category"
+                value={form.room_category_id}
+              />
             </label>
             <label>
               Room number
@@ -260,14 +255,15 @@ export function RoomsPage() {
             </label>
             <label>
               Status
-              <select
-                onChange={(event) => setForm({ ...form, status: event.target.value as RoomStatus })}
+              <CustomSelect
+                onChange={(value) => setForm({ ...form, status: value as RoomStatus })}
+                options={[
+                  { label: 'Available', value: 'AVAILABLE' },
+                  { label: 'Occupied', value: 'OCCUPIED' },
+                  { label: 'Maintenance', value: 'MAINTENANCE' },
+                ]}
                 value={form.status}
-              >
-                <option value="AVAILABLE">Available</option>
-                <option value="OCCUPIED">Occupied</option>
-                <option value="MAINTENANCE">Maintenance</option>
-              </select>
+              />
             </label>
           </div>
           <div className="booking-form-footer">
@@ -330,23 +326,30 @@ export function RoomsPage() {
         </label>
         <label>
           Property
-          <select onChange={(event) => setPropertyFilter(event.target.value)} value={propertyFilter}>
-            <option value="ALL">All properties</option>
-            {properties.map((property) => (
-              <option key={property.id} value={property.id}>
-                {property.name}
-              </option>
-            ))}
-          </select>
+          <CustomSelect
+            onChange={setPropertyFilter}
+            options={[
+              { label: 'All properties', value: 'ALL' },
+              ...properties.map((property) => ({
+                label: property.name,
+                value: property.id,
+              })),
+            ]}
+            value={propertyFilter}
+          />
         </label>
         <label>
           Status
-          <select onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
-            <option value="ALL">All statuses</option>
-            <option value="AVAILABLE">Available</option>
-            <option value="OCCUPIED">Occupied</option>
-            <option value="MAINTENANCE">Maintenance</option>
-          </select>
+          <CustomSelect
+            onChange={setStatusFilter}
+            options={[
+              { label: 'All statuses', value: 'ALL' },
+              { label: 'Available', value: 'AVAILABLE' },
+              { label: 'Occupied', value: 'OCCUPIED' },
+              { label: 'Maintenance', value: 'MAINTENANCE' },
+            ]}
+            value={statusFilter}
+          />
         </label>
       </FilterBar>
 

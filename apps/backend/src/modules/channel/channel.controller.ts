@@ -10,6 +10,7 @@ import { CreateTestReservationDto } from './dto/create-test-reservation.dto';
 import { CreateChannelConnectionDto } from './dto/create-channel-connection.dto';
 import { CreateChannelRateMappingDto } from './dto/create-channel-rate-mapping.dto';
 import { CreateChannelRoomMappingDto } from './dto/create-channel-room-mapping.dto';
+import { SaveChannelMappingsBatchDto } from './dto/save-channel-mappings-batch.dto';
 import { SetupZodomusChannelDto } from './dto/setup-zodomus-channel.dto';
 import { SyncChannelDto } from './dto/sync-channel.dto';
 import { UpdateChannelAutomationDto } from './dto/update-channel-automation.dto';
@@ -171,6 +172,16 @@ export class ChannelController {
     @Body() dto: CreateChannelRateMappingDto,
   ) {
     return this.channelService.createRateMapping(id, dto, user);
+  }
+
+  @Post(':id/mappings/batch')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  saveMappingsBatch(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SaveChannelMappingsBatchDto,
+  ) {
+    return this.channelService.saveMappingsBatch(id, dto, user);
   }
 
   @Post(':id/sync')

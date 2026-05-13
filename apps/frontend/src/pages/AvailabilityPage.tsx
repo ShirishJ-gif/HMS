@@ -2,11 +2,13 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { AvailabilitySummary, InventoryCalendarSummary, Property, RoomCategory } from '../api/types';
+import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
 import { usePersistedPropertyId } from '../hooks/usePersistedPropertyId';
 import { formatCurrency } from '../utils/format';
 
 const AVAILABILITY_STORAGE_KEY = 'hms_availability_state';
+const INVENTORY_CALENDAR_PREVIEW_DAYS = 7;
 
 type PersistedAvailabilityQuery = {
   propertyId: string;
@@ -54,6 +56,8 @@ export function AvailabilityPage() {
   const categoriesState = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), []);
   const properties = propertiesState.data ?? [];
   const roomCategories = categoriesState.data ?? [];
+  const hasLoadedProperties = propertiesState.data != null;
+  const selectedPropertyExists = Boolean(propertyId && properties.some((property) => property.id === propertyId));
 
   useEffect(() => {
     if (!propertyId && restoredQuery?.propertyId) {
@@ -68,11 +72,19 @@ export function AvailabilityPage() {
 
     if (properties.length === 0) {
       if (propertyId) setPropertyId('');
+      setAvailability(null);
+      setInventoryCalendar(null);
+      setLastLoadedQuery(null);
+      clearPersistedAvailabilityState();
       return;
     }
 
     if (!propertyId || !properties.some((property) => property.id === propertyId)) {
       setPropertyId(properties[0].id);
+      setAvailability(null);
+      setInventoryCalendar(null);
+      setLastLoadedQuery(null);
+      clearPersistedAvailabilityState();
     }
   }, [properties, propertyId, setPropertyId]);
 
@@ -80,10 +92,13 @@ export function AvailabilityPage() {
     () => roomCategories.filter((category) => category.property_id === propertyId),
     [roomCategories, propertyId],
   );
-  const totalInventory = availability?.categories.reduce((sum, category) => sum + category.total_inventory, 0) ?? 0;
-  const totalReservedRoomStays = availability?.categories.reduce((sum, category) => sum + category.reserved_room_stays, 0) ?? 0;
-  const totalOutOfService = availability?.categories.reduce((sum, category) => sum + category.out_of_service, 0) ?? 0;
-  const totalAvailable = availability?.categories.reduce((sum, category) => sum + category.available, 0) ?? 0;
+  const displayedAvailability =
+    hasLoadedProperties && selectedPropertyExists && lastLoadedQuery?.propertyId === propertyId ? availability : null;
+  const displayedInventoryCalendar = displayedAvailability ? inventoryCalendar : null;
+  const totalInventory = displayedAvailability?.categories.reduce((sum, category) => sum + category.total_inventory, 0) ?? 0;
+  const totalReservedRoomStays = displayedAvailability?.categories.reduce((sum, category) => sum + category.reserved_room_stays, 0) ?? 0;
+  const totalOutOfService = displayedAvailability?.categories.reduce((sum, category) => sum + category.out_of_service, 0) ?? 0;
+  const totalAvailable = displayedAvailability?.categories.reduce((sum, category) => sum + category.available, 0) ?? 0;
   const sellThroughRate = totalInventory === 0 ? 0 : Math.round((totalReservedRoomStays / totalInventory) * 100);
   const queryDays = buildDateRange(from, to).map((date) => ({
     date,
@@ -91,20 +106,73 @@ export function AvailabilityPage() {
     shortDate: new Date(`${date}T00:00:00.000Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
   }));
   const stopSellCount =
-    inventoryCalendar?.categories.reduce(
+    displayedInventoryCalendar?.categories.reduce(
       (sum, category) => sum + category.rows.filter((row) => row.stop_sell).length,
       0,
     ) ?? 0;
   const restrictedNightCount =
-    inventoryCalendar?.categories.reduce(
+    displayedInventoryCalendar?.categories.reduce(
       (sum, category) =>
         sum + category.rows.filter((row) => row.stop_sell || row.min_stay != null || row.max_stay != null).length,
       0,
     ) ?? 0;
-  const topAvailableCategory = availability?.categories.reduce<AvailabilitySummary['categories'][number] | null>(
+  const topAvailableCategory = displayedAvailability?.categories.reduce<AvailabilitySummary['categories'][number] | null>(
     (currentTop, category) => (!currentTop || category.available > currentTop.available ? category : currentTop),
     null,
   );
+  const previewInventoryCalendar = displayedInventoryCalendar
+    ? {
+        ...displayedInventoryCalendar,
+        categories: displayedInventoryCalendar.categories.map((category) => ({
+          ...category,
+          rows: category.rows.slice(0, INVENTORY_CALENDAR_PREVIEW_DAYS),
+        })),
+      }
+    : null;
+  const inventoryCalendarRowCount =
+    displayedInventoryCalendar?.categories.reduce((sum, category) => sum + category.rows.length, 0) ?? 0;
+  const previewInventoryCalendarRowCount =
+    previewInventoryCalendar?.categories.reduce((sum, category) => sum + category.rows.length, 0) ?? 0;
+  const hiddenInventoryCalendarRowCount = Math.max(0, inventoryCalendarRowCount - previewInventoryCalendarRowCount);
+  const inventoryCategorySummaries =
+    displayedInventoryCalendar?.categories.map((category) => {
+      const totalAvailable = category.rows.reduce((sum, row) => sum + row.available_rooms, 0);
+      const totalBlocked = category.rows.reduce((sum, row) => sum + row.blocked_rooms, 0);
+      const totalReserved = category.rows.reduce((sum, row) => sum + row.reserved_rooms, 0);
+      const restrictedRows = category.rows.filter((row) => row.stop_sell || row.min_stay != null || row.max_stay != null).length;
+      const minAvailable = category.rows.reduce<number | null>(
+        (minimum, row) => (minimum == null || row.available_rooms < minimum ? row.available_rooms : minimum),
+        null,
+      );
+
+      return {
+        roomCategoryId: category.room_category_id,
+        name: category.name,
+        code: category.code,
+        nights: category.rows.length,
+        averageAvailable: category.rows.length === 0 ? 0 : Math.round(totalAvailable / category.rows.length),
+        minAvailable: minAvailable ?? 0,
+        totalBlocked,
+        totalReserved,
+        restrictedRows,
+      };
+    }) ?? [];
+  const inventoryExceptionRows =
+    displayedInventoryCalendar?.categories.flatMap((category) =>
+      category.rows
+        .filter((row) => row.stop_sell || row.min_stay != null || row.max_stay != null || row.blocked_rooms > 0 || row.available_rooms <= 0)
+        .map((row) => ({
+          ...row,
+          roomCategoryId: category.room_category_id,
+          roomCategoryName: category.name,
+        })),
+    ) ?? [];
+  const visibleInventoryExceptionRows = inventoryExceptionRows.slice(0, 12);
+  const hiddenInventoryExceptionRows = Math.max(0, inventoryExceptionRows.length - visibleInventoryExceptionRows.length);
+  const inventoryCalendarDates = displayedInventoryCalendar
+    ? Array.from(new Set(displayedInventoryCalendar.categories.flatMap((category) => category.rows.map((row) => row.date)))).sort()
+    : [];
+  const inventoryCalendarGridTemplate = `13rem repeat(${Math.max(inventoryCalendarDates.length, 1)}, minmax(4.4rem, 1fr))`;
 
   async function fetchAvailabilitySnapshot(query: PersistedAvailabilityQuery) {
     const [availabilityResponse, inventoryResponse] = await Promise.all([
@@ -136,6 +204,10 @@ export function AvailabilityPage() {
 
     try {
       const query = { propertyId, from, to };
+      if (!query.propertyId) {
+        setError('Select a property before checking availability.');
+        return;
+      }
       const snapshot = await fetchAvailabilitySnapshot(query);
       setAvailability(snapshot.availability);
       setInventoryCalendar(snapshot.inventoryCalendar);
@@ -219,14 +291,15 @@ export function AvailabilityPage() {
           <div className="booking-form-grid">
             <label>
               Property
-              <select onChange={(event) => setPropertyId(event.target.value)} required value={propertyId}>
-                <option value="">Select property</option>
-                {properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
+              <CustomSelect
+                onChange={setPropertyId}
+                options={properties.map((property) => ({
+                  label: property.name,
+                  value: property.id,
+                }))}
+                placeholder="Select property"
+                value={propertyId}
+              />
             </label>
             <label>
               From
@@ -270,12 +343,12 @@ export function AvailabilityPage() {
               </div>
               <div>
                 <dt>Property</dt>
-                <dd>{availability?.property_name ?? 'Not loaded'}</dd>
+                <dd>{displayedAvailability?.property_name ?? 'Not loaded'}</dd>
               </div>
               <div>
                 <dt>Date window</dt>
                 <dd>
-                  {availability ? `${availability.from} to ${availability.to}` : `${from} to ${to}`}
+                  {displayedAvailability ? `${displayedAvailability.from} to ${displayedAvailability.to}` : `${from} to ${to}`}
                 </dd>
               </div>
               <div>
@@ -324,7 +397,7 @@ export function AvailabilityPage() {
       </div>
       */}
 
-      {availability && (
+      {displayedAvailability && (
         <>
           <div className="info-strip availability-commercial-strip">
             <strong>Commercial view</strong>
@@ -494,7 +567,7 @@ export function AvailabilityPage() {
           */}
 
           <div className="availability-category-grid">
-            {availability.categories.map((category) => {
+            {displayedAvailability.categories.map((category) => {
               const committedPercent =
                 category.total_inventory === 0 ? 0 : Math.min(100, Math.round((category.reserved_room_stays / category.total_inventory) * 100));
               const maintenancePercent =
@@ -546,50 +619,164 @@ export function AvailabilityPage() {
             })}
           </div>
 
-          {inventoryCalendar && (
-            <div className="table-card">
+          {displayedInventoryCalendar && (
+            <div className="availability-calendar-dashboard">
               <div className="table-heading">
                 <div>
                   <p className="eyebrow">Inventory calendar</p>
-                  <h3>Per-night inventory rules</h3>
+                  <h3>Room-type availability board</h3>
+                </div>
+                <span className="cell-note">{inventoryCalendarRowCount} room-night rows in this query</span>
+              </div>
+
+              <div className="availability-board-scroll">
+                <div className="availability-board-grid" style={{ gridTemplateColumns: inventoryCalendarGridTemplate }}>
+                  <div className="availability-board-corner">Room type</div>
+                  {inventoryCalendarDates.map((date) => (
+                    <div className="availability-board-date" key={date}>
+                      <strong>{formatShortDate(date)}</strong>
+                      <span>{formatWeekday(date)}</span>
+                    </div>
+                  ))}
+
+                  {displayedInventoryCalendar.categories.map((category) => {
+                    const rowByDate = new Map(category.rows.map((row) => [row.date, row]));
+                    const summary = inventoryCategorySummaries.find((item) => item.roomCategoryId === category.room_category_id);
+
+                    return (
+                      <div className="availability-board-row" key={category.room_category_id} style={{ display: 'contents' }}>
+                        <div className="availability-board-room">
+                          <strong>{category.name}</strong>
+                          <span>
+                            Avg {summary?.averageAvailable ?? 0} · Low {summary?.minAvailable ?? 0} · {summary?.restrictedRows ?? 0} restricted
+                          </span>
+                        </div>
+                        {inventoryCalendarDates.map((date) => {
+                          const row = rowByDate.get(date);
+
+                          if (!row) {
+                            return (
+                              <div className="availability-board-cell missing" key={date}>
+                                <strong>-</strong>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className={`availability-board-cell ${availabilityCellTone(row)}`} key={date}>
+                              <strong>{row.available_rooms}</strong>
+                              <span>{row.reserved_rooms} booked</span>
+                              {row.blocked_rooms > 0 && <em>{row.blocked_rooms} blocked</em>}
+                              {(row.stop_sell || row.min_stay != null || row.max_stay != null) && (
+                                <small>{formatRestrictionSummary(row)}</small>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Room type</th>
-                    <th>Date</th>
-                    <th>Total</th>
-                    <th>Blocked</th>
-                    <th>Reserved</th>
-                    <th>Available</th>
-                    <th>Stop sell</th>
-                    <th>Min stay</th>
-                    <th>Max stay</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {inventoryCalendar.categories.flatMap((category) =>
-                    category.rows.map((row) => (
-                      <tr key={`${category.room_category_id}:${row.date}`}>
-                        <td>{category.name}</td>
-                        <td>{row.date}</td>
-                        <td>{row.total_rooms}</td>
-                        <td>{row.blocked_rooms}</td>
-                        <td>{row.reserved_rooms}</td>
-                        <td>{row.available_rooms}</td>
-                        <td>
-                          <span className={row.stop_sell ? 'status-pill error' : 'status-pill available'}>
-                            {row.stop_sell ? 'Closed (internal only)' : 'Open'}
-                          </span>
-                        </td>
-                        <td>{row.min_stay ?? '-'}</td>
-                        <td>{row.max_stay ?? '-'}</td>
+
+              <div className="availability-board-legend">
+                <span><i className="available" /> Healthy</span>
+                <span><i className="limited" /> Low inventory</span>
+                <span><i className="closed" /> Sold out or stop sell</span>
+                <span><i className="restricted" /> Restricted</span>
+              </div>
+
+              <details className="availability-exception-card">
+                <summary>
+                  Attention list
+                  {hiddenInventoryExceptionRows > 0 ? ` · ${hiddenInventoryExceptionRows} more hidden` : ''}
+                </summary>
+                <div className="table-heading">
+                  <div>
+                    <p className="eyebrow">Attention needed</p>
+                    <h3>Blocked, restricted, or sold-out nights</h3>
+                  </div>
+                  {hiddenInventoryExceptionRows > 0 && <span className="cell-note">{hiddenInventoryExceptionRows} more hidden</span>}
+                </div>
+                {visibleInventoryExceptionRows.length > 0 ? (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Room type</th>
+                        <th>Date</th>
+                        <th>Available</th>
+                        <th>Blocked</th>
+                        <th>Reserved</th>
+                        <th>Rule</th>
                       </tr>
-                    )),
-                  )}
-                </tbody>
-              </table>
+                    </thead>
+                    <tbody>
+                      {visibleInventoryExceptionRows.map((row) => (
+                        <tr key={`${row.roomCategoryId}:${row.date}`}>
+                          <td>{row.roomCategoryName}</td>
+                          <td>{row.date}</td>
+                          <td>{row.available_rooms}</td>
+                          <td>{row.blocked_rooms}</td>
+                          <td>{row.reserved_rooms}</td>
+                          <td>
+                            {row.stop_sell ? 'Stop sell' : null}
+                            {row.min_stay != null ? `${row.stop_sell ? ' · ' : ''}Min ${row.min_stay}` : null}
+                            {row.max_stay != null ? `${row.stop_sell || row.min_stay != null ? ' · ' : ''}Max ${row.max_stay}` : null}
+                            {!row.stop_sell && row.min_stay == null && row.max_stay == null ? '-' : null}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="muted">No blocked, restricted, or sold-out nights in this window.</p>
+                )}
+              </details>
+
+              {/* {previewInventoryCalendar && <details className="availability-raw-calendar">
+                <summary>
+                  Raw per-night preview
+                  {hiddenInventoryCalendarRowCount > 0
+                    ? ` · first ${INVENTORY_CALENDAR_PREVIEW_DAYS} nights shown, ${hiddenInventoryCalendarRowCount} rows hidden`
+                    : ''}
+                </summary>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Room type</th>
+                      <th>Date</th>
+                      <th>Total</th>
+                      <th>Blocked</th>
+                      <th>Reserved</th>
+                      <th>Available</th>
+                      <th>Stop sell</th>
+                      <th>Min stay</th>
+                      <th>Max stay</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewInventoryCalendar.categories.flatMap((category) =>
+                      category.rows.map((row) => (
+                        <tr key={`${category.room_category_id}:${row.date}`}>
+                          <td>{category.name}</td>
+                          <td>{row.date}</td>
+                          <td>{row.total_rooms}</td>
+                          <td>{row.blocked_rooms}</td>
+                          <td>{row.reserved_rooms}</td>
+                          <td>{row.available_rooms}</td>
+                          <td>
+                            <span className={row.stop_sell ? 'status-pill error' : 'status-pill available'}>
+                              {row.stop_sell ? 'Closed (internal only)' : 'Open'}
+                            </span>
+                          </td>
+                          <td>{row.min_stay ?? '-'}</td>
+                          <td>{row.max_stay ?? '-'}</td>
+                        </tr>
+                      )),
+                    )}
+                  </tbody>
+                </table>
+              </details>} */}
             </div>
           )}
 
@@ -598,7 +785,7 @@ export function AvailabilityPage() {
               <div>
                 <p className="eyebrow">Rate posture</p>
                 <h3>
-                  {availability.property_name}: {availability.from} to {availability.to}
+                  {displayedAvailability.property_name}: {displayedAvailability.from} to {displayedAvailability.to}
                 </h3>
               </div>
             </div>
@@ -614,7 +801,7 @@ export function AvailabilityPage() {
                 </tr>
               </thead>
               <tbody>
-                {availability.categories.map((category) => (
+                {displayedAvailability.categories.map((category) => (
                   <tr key={category.room_category_id}>
                     <td>{category.name}</td>
                     <td>{category.total_inventory}</td>
@@ -643,6 +830,33 @@ function previousDate(value: string) {
   return date.toISOString().slice(0, 10);
 }
 
+type InventoryCalendarRow = InventoryCalendarSummary['categories'][number]['rows'][number];
+
+function availabilityCellTone(row: InventoryCalendarRow) {
+  if (row.stop_sell || row.available_rooms <= 0) return 'closed';
+  if (row.min_stay != null || row.max_stay != null) return 'restricted';
+  if (row.available_rooms <= 2 || row.blocked_rooms > 0) return 'limited';
+  return 'healthy';
+}
+
+function formatRestrictionSummary(row: InventoryCalendarRow) {
+  const parts = [
+    row.stop_sell ? 'Stop sell' : null,
+    row.min_stay != null ? `Min ${row.min_stay}` : null,
+    row.max_stay != null ? `Max ${row.max_stay}` : null,
+  ].filter((part): part is string => Boolean(part));
+
+  return parts.join(' · ');
+}
+
+function formatShortDate(value: string) {
+  return new Date(`${value}T00:00:00.000Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatWeekday(value: string) {
+  return new Date(`${value}T00:00:00.000Z`).toLocaleDateString(undefined, { weekday: 'short' });
+}
+
 function readPersistedAvailabilityState(): PersistedAvailabilityState | null {
   try {
     const rawState = localStorage.getItem(AVAILABILITY_STORAGE_KEY);
@@ -659,6 +873,10 @@ function readPersistedAvailabilityState(): PersistedAvailabilityState | null {
 
 function writePersistedAvailabilityState(state: PersistedAvailabilityState) {
   localStorage.setItem(AVAILABILITY_STORAGE_KEY, JSON.stringify(state));
+}
+
+function clearPersistedAvailabilityState() {
+  localStorage.removeItem(AVAILABILITY_STORAGE_KEY);
 }
 
 function SignalStat({ label, value }: { label: string; value: number }) {

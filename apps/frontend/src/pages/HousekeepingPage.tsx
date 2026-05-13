@@ -2,6 +2,7 @@ import { FormEvent, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { HousekeepingPriority, HousekeepingStatus, HousekeepingTask, Property, Room } from '../api/types';
+import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
 
 const defaultForm = {
@@ -123,56 +124,56 @@ export function HousekeepingPage() {
           <div className="booking-form-grid">
             <label>
               Property
-              <select
-                onChange={(event) => setForm({ ...form, property_id: event.target.value, room_id: '' })}
-                required
+              <CustomSelect
+                onChange={(value) => setForm({ ...form, property_id: value, room_id: '' })}
+                options={properties.map((property) => ({
+                  label: property.name,
+                  value: property.id,
+                }))}
+                placeholder="Select property"
                 value={form.property_id}
-              >
-                <option value="">Select property</option>
-                {properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <label>
               Room
-              <select onChange={(event) => setForm({ ...form, room_id: event.target.value })} required value={form.room_id}>
-                <option value="">Select room</option>
-                {rooms
+              <CustomSelect
+                onChange={(value) => setForm({ ...form, room_id: value })}
+                options={rooms
                   .filter((room) => !form.property_id || room.property_id === form.property_id)
-                  .map((room) => (
-                    <option key={room.id} value={room.id}>
-                      {room.room_number} - {room.room_category.name}
-                    </option>
-                  ))}
-              </select>
+                  .map((room) => ({
+                    label: `${room.room_number} - ${room.room_category.name}`,
+                    value: room.id,
+                  }))}
+                placeholder="Select room"
+                value={form.room_id}
+              />
             </label>
             <label>
               Status
-              <select
-                onChange={(event) => setForm({ ...form, status: event.target.value as HousekeepingStatus })}
+              <CustomSelect
+                onChange={(value) => setForm({ ...form, status: value as HousekeepingStatus })}
+                options={[
+                  { label: 'Dirty', value: 'DIRTY' },
+                  { label: 'Cleaning', value: 'CLEANING' },
+                  { label: 'Clean', value: 'CLEAN' },
+                  { label: 'Inspected', value: 'INSPECTED' },
+                  { label: 'Out of service', value: 'OUT_OF_SERVICE' },
+                ]}
                 value={form.status}
-              >
-                <option value="DIRTY">Dirty</option>
-                <option value="CLEANING">Cleaning</option>
-                <option value="CLEAN">Clean</option>
-                <option value="INSPECTED">Inspected</option>
-                <option value="OUT_OF_SERVICE">Out of service</option>
-              </select>
+              />
             </label>
             <label>
               Priority
-              <select
-                onChange={(event) => setForm({ ...form, priority: event.target.value as HousekeepingPriority })}
+              <CustomSelect
+                onChange={(value) => setForm({ ...form, priority: value as HousekeepingPriority })}
+                options={[
+                  { label: 'Low', value: 'LOW' },
+                  { label: 'Normal', value: 'NORMAL' },
+                  { label: 'High', value: 'HIGH' },
+                  { label: 'Urgent', value: 'URGENT' },
+                ]}
                 value={form.priority}
-              >
-                <option value="LOW">Low</option>
-                <option value="NORMAL">Normal</option>
-                <option value="HIGH">High</option>
-                <option value="URGENT">Urgent</option>
-              </select>
+              />
             </label>
             <label>
               Due date

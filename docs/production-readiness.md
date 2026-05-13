@@ -32,6 +32,12 @@ Core boundary tables:
 
 The current `ChannelProviderService` uses adapter dispatch. `MOCK` accepts sync payloads locally. `SITEMINDER`, `BOOKING_COM`, and `AIRBNB` currently reject live syncs with explicit not-implemented errors until provider-specific API clients, credentials, retry policy, and webhook reconciliation are added.
 
+For Zodomus-specific environment tuning, use [docs/zodomus-env-profiles.md](/Users/cronberry/Hms/docs/zodomus-env-profiles.md). The short version is:
+
+- sandbox should stay conservative
+- production should still use modest concurrency and batching
+- production credentials should not be treated as unlimited provider capacity
+
 ## Payment Provider Boundary
 
 The payment module uses adapter dispatch. `MOCK`, `CASH`, `CARD`, and `UPI` use the local adapter for MVP collection/refund workflows. Payment collection/refunds support `Idempotency-Key`. `RAZORPAY` and `STRIPE` currently reject live calls until SDK/API credentials, webhook signature validation, and reconciliation flows are added.

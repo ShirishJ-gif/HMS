@@ -2,6 +2,7 @@ import { ReactNode, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { Billing, DashboardSummary, HousekeepingTask, Property, ReservationGroup } from '../api/types';
 import { fetchAllPages } from '../api/pagination';
+import { CustomSelect } from '../components/CustomSelect';
 import { FilterBar } from '../components/FilterBar';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
@@ -252,14 +253,17 @@ export function OperationsBoardPage() {
         </label>
         <label>
           Property
-          <select onChange={(event) => setPropertyFilter(event.target.value)} value={propertyFilter}>
-            <option value="ALL">All properties</option>
-            {properties.map((property) => (
-              <option key={property.id} value={property.id}>
-                {property.name}
-              </option>
-            ))}
-          </select>
+          <CustomSelect
+            onChange={setPropertyFilter}
+            options={[
+              { label: 'All properties', value: 'ALL' },
+              ...properties.map((property) => ({
+                label: property.name,
+                value: property.id,
+              })),
+            ]}
+            value={propertyFilter}
+          />
         </label>
         <label>
           Service date

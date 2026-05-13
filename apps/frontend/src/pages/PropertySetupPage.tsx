@@ -1,7 +1,8 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useRef, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { PricingRule, Property, RatePlan, RoomCategory } from '../api/types';
+import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
 
@@ -48,6 +49,7 @@ export function PropertySetupPage() {
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [editingPricingRuleId, setEditingPricingRuleId] = useState<string | null>(null);
+  const pricingRuleFormRef = useRef<HTMLFormElement | null>(null);
   const [propertyForm, setPropertyForm] = useState(defaultPropertyForm);
   const [categoryForm, setCategoryForm] = useState(defaultCategoryForm);
   const [ratePlanForm, setRatePlanForm] = useState(defaultRatePlanForm);
@@ -113,7 +115,10 @@ export function PropertySetupPage() {
         max_occupancy: Number(categoryForm.max_occupancy),
         description: categoryForm.description || undefined,
       });
-      setCategoryForm(defaultCategoryForm);
+      setCategoryForm((current) => ({
+        ...defaultCategoryForm,
+        property_id: current.property_id,
+      }));
       setActionStatus('Room category created.');
       setReloadKey((value) => value + 1);
     });
@@ -123,7 +128,12 @@ export function PropertySetupPage() {
     event.preventDefault();
     await runAction('create-rate-plan', async () => {
       await api.post('/rate-plans', ratePlanForm);
-      setRatePlanForm(defaultRatePlanForm);
+      setRatePlanForm((current) => ({
+        ...defaultRatePlanForm,
+        property_id: current.property_id,
+        room_category_id: current.room_category_id,
+        currency: current.currency,
+      }));
       setActionStatus('Rate plan created.');
       setReloadKey((value) => value + 1);
     });
@@ -133,7 +143,11 @@ export function PropertySetupPage() {
     event.preventDefault();
     await runAction(editingPricingRuleId ? 'update-pricing-rule' : 'create-pricing-rule', async () => {
       const payload = {
-        ...pricingRuleForm,
+        property_id: pricingRuleForm.property_id,
+        rate_plan_id: pricingRuleForm.rate_plan_id,
+        name: pricingRuleForm.name,
+        type: pricingRuleForm.type,
+        adjustment_percent: pricingRuleForm.adjustment_percent,
         occupancy_threshold:
           pricingRuleForm.type === 'OCCUPANCY' && pricingRuleForm.occupancy_threshold
             ? Number(pricingRuleForm.occupancy_threshold)
@@ -148,7 +162,11 @@ export function PropertySetupPage() {
         await api.post('/pricing-rules', payload);
       }
 
-      setPricingRuleForm(defaultPricingRuleForm);
+      setPricingRuleForm((current) => ({
+        ...defaultPricingRuleForm,
+        property_id: current.property_id,
+        rate_plan_id: editingPricingRuleId ? '' : current.rate_plan_id,
+      }));
       setEditingPricingRuleId(null);
       setActionStatus(editingPricingRuleId ? 'Pricing rule updated.' : 'Pricing rule created.');
       setReloadKey((value) => value + 1);
@@ -194,6 +212,9 @@ export function PropertySetupPage() {
       start_date: rule.start_date ?? '',
       end_date: rule.end_date ?? '',
       occupancy_threshold: rule.occupancy_threshold == null ? '' : String(rule.occupancy_threshold),
+    });
+    requestAnimationFrame(() => {
+      pricingRuleFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }
 
@@ -383,18 +404,15 @@ export function PropertySetupPage() {
             </div>
             <label>
               Property
-              <select
-                onChange={(event) => setCategoryForm({ ...categoryForm, property_id: event.target.value })}
-                required
+              <CustomSelect
+                onChange={(value) => setCategoryForm({ ...categoryForm, property_id: value })}
+                options={properties.map((property) => ({
+                  label: property.name,
+                  value: property.id,
+                }))}
+                placeholder="Select property"
                 value={categoryForm.property_id}
-              >
-                <option value="">Select property</option>
-                {properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <label>
               Category name
@@ -447,35 +465,29 @@ export function PropertySetupPage() {
             </div>
             <label>
               Property
-              <select
-                onChange={(event) => setRatePlanForm({ ...ratePlanForm, property_id: event.target.value })}
-                required
+              <CustomSelect
+                onChange={(value) => setRatePlanForm({ ...ratePlanForm, property_id: value })}
+                options={properties.map((property) => ({
+                  label: property.name,
+                  value: property.id,
+                }))}
+                placeholder="Select property"
                 value={ratePlanForm.property_id}
-              >
-                <option value="">Select property</option>
-                {properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <label>
               Room category
-              <select
-                onChange={(event) => setRatePlanForm({ ...ratePlanForm, room_category_id: event.target.value })}
-                required
-                value={ratePlanForm.room_category_id}
-              >
-                <option value="">Select category</option>
-                {categories
+              <CustomSelect
+                onChange={(value) => setRatePlanForm({ ...ratePlanForm, room_category_id: value })}
+                options={categories
                   .filter((category) => !ratePlanForm.property_id || category.property_id === ratePlanForm.property_id)
-                  .map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-              </select>
+                  .map((category) => ({
+                    label: category.name,
+                    value: category.id,
+                  }))}
+                placeholder="Select category"
+                value={ratePlanForm.room_category_id}
+              />
             </label>
             <label>
               Plan name
@@ -521,48 +533,43 @@ export function PropertySetupPage() {
             </button>
           </form>
 
-          <form className="card form-grid" onSubmit={submitPricingRule}>
+          <form className="card form-grid pricing-rule-form" onSubmit={submitPricingRule} ref={pricingRuleFormRef}>
             <div className="section-heading form-section-heading">
               <div>
                 <p className="eyebrow">Dynamic pricing</p>
                 <h3>{editingPricingRuleId ? 'Edit pricing rule' : 'Create pricing rule'}</h3>
               </div>
             </div>
+            {editingPricingRuleId && <p className="cell-note">Editing an existing pricing rule. Update the fields below and save.</p>}
             <label>
               Property
-              <select
+              <CustomSelect
                 disabled={!!editingPricingRuleId}
-                onChange={(event) =>
-                  setPricingRuleForm({ ...pricingRuleForm, property_id: event.target.value, rate_plan_id: '' })
+                onChange={(value) =>
+                  setPricingRuleForm({ ...pricingRuleForm, property_id: value, rate_plan_id: '' })
                 }
-                required
+                options={properties.map((property) => ({
+                  label: property.name,
+                  value: property.id,
+                }))}
+                placeholder="Select property"
                 value={pricingRuleForm.property_id}
-              >
-                <option value="">Select property</option>
-                {properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <label>
               Rate plan
-              <select
+              <CustomSelect
                 disabled={!!editingPricingRuleId}
-                onChange={(event) => setPricingRuleForm({ ...pricingRuleForm, rate_plan_id: event.target.value })}
-                required
-                value={pricingRuleForm.rate_plan_id}
-              >
-                <option value="">Select rate plan</option>
-                {ratePlans
+                onChange={(value) => setPricingRuleForm({ ...pricingRuleForm, rate_plan_id: value })}
+                options={ratePlans
                   .filter((ratePlan) => !pricingRuleForm.property_id || ratePlan.property_id === pricingRuleForm.property_id)
-                  .map((ratePlan) => (
-                    <option key={ratePlan.id} value={ratePlan.id}>
-                      {ratePlan.room_category.name} · {ratePlan.name}
-                    </option>
-                  ))}
-              </select>
+                  .map((ratePlan) => ({
+                    label: `${ratePlan.room_category.name} · ${ratePlan.name}`,
+                    value: ratePlan.id,
+                  }))}
+                placeholder="Select rate plan"
+                value={pricingRuleForm.rate_plan_id}
+              />
             </label>
             <label>
               Rule name
@@ -575,23 +582,23 @@ export function PropertySetupPage() {
             </label>
             <label>
               Rule type
-              <select
-                onChange={(event) =>
+              <CustomSelect
+                onChange={(value) =>
                   setPricingRuleForm({
                     ...pricingRuleForm,
-                    type: event.target.value,
+                    type: value,
                     start_date: '',
                     end_date: '',
                     occupancy_threshold: '',
                   })
                 }
-                required
+                options={[
+                  { label: 'Weekend', value: 'WEEKEND' },
+                  { label: 'Festival / date range', value: 'DATE_RANGE' },
+                  { label: 'Occupancy surge', value: 'OCCUPANCY' },
+                ]}
                 value={pricingRuleForm.type}
-              >
-                <option value="WEEKEND">Weekend</option>
-                <option value="DATE_RANGE">Festival / date range</option>
-                <option value="OCCUPANCY">Occupancy surge</option>
-              </select>
+              />
             </label>
             <label>
               Adjustment %
@@ -681,18 +688,15 @@ export function PropertySetupPage() {
           <h3 className="form-title">Property photos</h3>
           <label>
             Property
-            <select
-              onChange={(event) => setPropertyImageForm({ ...propertyImageForm, property_id: event.target.value })}
-              required
+            <CustomSelect
+              onChange={(value) => setPropertyImageForm({ ...propertyImageForm, property_id: value })}
+              options={properties.map((property) => ({
+                label: property.name,
+                value: property.id,
+              }))}
+              placeholder="Select property"
               value={propertyImageForm.property_id}
-            >
-              <option value="">Select property</option>
-              {properties.map((property) => (
-                <option key={property.id} value={property.id}>
-                  {property.name}
-                </option>
-              ))}
-            </select>
+            />
           </label>
           <label>
             Caption
@@ -733,18 +737,15 @@ export function PropertySetupPage() {
               <h3 className="form-title">Room category photos</h3>
               <label>
                 Room category
-                <select
-                  onChange={(event) => setRoomImageForm({ ...roomImageForm, room_category_id: event.target.value })}
-                  required
+                <CustomSelect
+                  onChange={(value) => setRoomImageForm({ ...roomImageForm, room_category_id: value })}
+                  options={categories.map((category) => ({
+                    label: `${category.property.name} · ${category.name}`,
+                    value: category.id,
+                  }))}
+                  placeholder="Select category"
                   value={roomImageForm.room_category_id}
-                >
-                  <option value="">Select category</option>
-                  {categories.map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.property.name} · {category.name}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
               <label>
                 Caption

@@ -129,7 +129,7 @@ Outbound:
 
 Inbound:
 
-- `GET /reservations-queue`
+- `GET /reservations-summary`
 - `GET /reservations`
 
 ## Webhook Endpoint
@@ -178,13 +178,13 @@ Verification supports:
 4. HMS matches a ready Zodomus connection
 5. HMS queues a `BOOKINGS` channel sync
 6. If the webhook includes `reservationId`, HMS tries a targeted reservation-detail fetch first
-7. If targeted fetch is unusable, HMS falls back to reservation queue plus summary reconciliation
+7. If targeted fetch is unusable, HMS falls back to reservation summary plus detail reconciliation
 8. HMS imports the resolved reservation payloads
 9. HMS fans out inventory updates if inventory changed
 
 For inventory pushes:
 
-- HMS sends one `/availability` call per provider room per date
+- HMS sends batched `/availability` calls for contiguous room/date ranges with the same availability
 - inventory row results are persisted locally
 - partial provider failure becomes `PARTIAL_FAILED` instead of pretending the whole sync succeeded
 

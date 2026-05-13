@@ -2,6 +2,7 @@ import { FormEvent, useDeferredValue, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { Guest, Property, ReservationGroup } from '../api/types';
+import { CustomSelect } from '../components/CustomSelect';
 import { FilterBar } from '../components/FilterBar';
 import { useAsync } from '../hooks/useAsync';
 
@@ -83,18 +84,15 @@ export function GuestsPage() {
       <form className="card form-grid" onSubmit={submitGuest}>
         <label>
           Property
-          <select
-            onChange={(event) => setForm({ ...form, property_id: event.target.value })}
-            required
+          <CustomSelect
+            onChange={(value) => setForm({ ...form, property_id: value })}
+            options={properties.map((property) => ({
+              label: property.name,
+              value: property.id,
+            }))}
+            placeholder="Select property"
             value={form.property_id}
-          >
-            <option value="">Select property</option>
-            {properties.map((property) => (
-              <option key={property.id} value={property.id}>
-                {property.name}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <label>
           Name
@@ -191,14 +189,17 @@ function GuestRegistrySection({
         </label>
         <label>
           Property
-          <select onChange={(event) => setPropertyFilter(event.target.value)} value={propertyFilter}>
-            <option value="ALL">All properties</option>
-            {properties.map((property) => (
-              <option key={property.id} value={property.id}>
-                {property.name}
-              </option>
-            ))}
-          </select>
+          <CustomSelect
+            onChange={setPropertyFilter}
+            options={[
+              { label: 'All properties', value: 'ALL' },
+              ...properties.map((property) => ({
+                label: property.name,
+                value: property.id,
+              })),
+            ]}
+            value={propertyFilter}
+          />
         </label>
       </FilterBar>
 

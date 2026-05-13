@@ -53,6 +53,27 @@ describe('BackgroundJobService sync outcome resolution', () => {
     });
   });
 
+  it('marks booking syncs as failed when reservation summary returnCode is non-200', () => {
+    const outcome = (service as unknown as {
+      resolveSyncOutcome: (
+        syncType: ChannelSyncType,
+        responsePayload: Record<string, unknown>,
+      ) => { status: ChannelSyncStatus; errorMessage: string | null };
+    }).resolveSyncOutcome(ChannelSyncType.BOOKINGS, {
+      reservation_summary: {
+        status: {
+          returnCode: 400,
+          returnMessage: 'Invalid property id',
+        },
+      },
+    });
+
+    expect(outcome).toEqual({
+      status: ChannelSyncStatus.FAILED,
+      errorMessage: 'Invalid property id',
+    });
+  });
+
   it('marks booking syncs as partially failed when import summary reports failures', () => {
     const outcome = (service as unknown as {
       resolveSyncOutcome: (
@@ -81,6 +102,7 @@ describe('BackgroundJobService sync outcome resolution', () => {
 
 describe('BackgroundJobService Zodomus sync window defaults', () => {
   const originalWindowDays = process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS;
+  const originalEnvironment = process.env.ZODOMUS_ENVIRONMENT;
 
   afterEach(() => {
     if (originalWindowDays === undefined) {
@@ -88,23 +110,32 @@ describe('BackgroundJobService Zodomus sync window defaults', () => {
     } else {
       process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS = originalWindowDays;
     }
+
+    if (originalEnvironment === undefined) {
+      delete process.env.ZODOMUS_ENVIRONMENT;
+    } else {
+      process.env.ZODOMUS_ENVIRONMENT = originalEnvironment;
+    }
   });
 
-  it('enforces the minimum sync window for saved automation config', () => {
+  it('caps saved automation sync windows in sandbox', () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
     process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS = '30';
     const service = Object.create(BackgroundJobService.prototype) as BackgroundJobService;
     const syncWindowDays = (service as unknown as {
       readSyncWindowDays: (credentials: Record<string, unknown>) => number;
     }).readSyncWindowDays({
+      environment: 'sandbox',
       automation: {
         sync_window_days: 30,
       },
     });
 
-    expect(syncWindowDays).toBe(365);
+    expect(syncWindowDays).toBe(7);
   });
 
-  it('uses the same minimum sync window when automation config is missing', () => {
+  it('keeps the production minimum sync window when automation config is missing', () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'production';
     process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS = '30';
     const service = Object.create(BackgroundJobService.prototype) as BackgroundJobService;
     const syncWindowDays = (service as unknown as {
@@ -112,6 +143,21 @@ describe('BackgroundJobService Zodomus sync window defaults', () => {
     }).readSyncWindowDays(null);
 
     expect(syncWindowDays).toBe(365);
+  });
+});
+
+describe('BackgroundJobService retry classification', () => {
+  it('does not retry Zodomus auth and rate-limit failures', () => {
+    const service = Object.create(BackgroundJobService.prototype) as BackgroundJobService;
+    const authRetryable = (service as unknown as {
+      isRetryableJobFailure: (jobType: string, message: string) => boolean;
+    }).isRetryableJobFailure('CHANNEL_SYNC', 'Zodomus GET /account failed with status 401.');
+    const rateRetryable = (service as unknown as {
+      isRetryableJobFailure: (jobType: string, message: string) => boolean;
+    }).isRetryableJobFailure('CHANNEL_SYNC', 'Zodomus POST /rates failed with status 429.');
+
+    expect(authRetryable).toBe(false);
+    expect(rateRetryable).toBe(false);
   });
 });
 

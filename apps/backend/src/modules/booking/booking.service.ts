@@ -868,7 +868,7 @@ export class BookingService {
   ): Prisma.ReservationGroupWhereInput {
     return {
       ...(propertyId ? { propertyId } : {}),
-      ...(status ? { reservationStatus: status } : {}),
+      ...(status ? { status } : {}),
       ...(search
         ? {
             OR: [

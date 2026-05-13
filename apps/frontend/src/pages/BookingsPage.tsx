@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages, PaginatedResponse } from '../api/pagination';
 import { Property, ReservationGroup } from '../api/types';
+import { CustomSelect } from '../components/CustomSelect';
 import { FilterBar } from '../components/FilterBar';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
@@ -166,24 +167,31 @@ export function BookingsPage() {
             </label>
             <label>
               Property
-              <select onChange={(event) => setPropertyFilter(event.target.value)} value={propertyFilter}>
-                <option value="ALL">All properties</option>
-                {properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
+              <CustomSelect
+                onChange={setPropertyFilter}
+                options={[
+                  { label: 'All properties', value: 'ALL' },
+                  ...properties.map((property) => ({
+                    label: property.name,
+                    value: property.id,
+                  })),
+                ]}
+                value={propertyFilter}
+              />
             </label>
             <label>
               Status
-              <select onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
-                <option value="ALL">All statuses</option>
-                <option value="BOOKED">Booked</option>
-                <option value="CHECKED_IN">Checked in</option>
-                <option value="CHECKED_OUT">Checked out</option>
-                <option value="CANCELLED">Cancelled</option>
-              </select>
+              <CustomSelect
+                onChange={setStatusFilter}
+                options={[
+                  { label: 'All statuses', value: 'ALL' },
+                  { label: 'Booked', value: 'BOOKED' },
+                  { label: 'Checked in', value: 'CHECKED_IN' },
+                  { label: 'Checked out', value: 'CHECKED_OUT' },
+                  { label: 'Cancelled', value: 'CANCELLED' },
+                ]}
+                value={statusFilter}
+              />
             </label>
           </FilterBar>
           <div className="view-switch">
@@ -864,6 +872,10 @@ function buildTimelineRows(groups: DisplayReservationGroup[]): TimelineRow[] {
     >();
 
     for (const room of group.rooms) {
+      if (!shouldShowRoomInTimeline(room.reservation_status)) {
+        continue;
+      }
+
       const label =
         room.guest_name ??
         group.primary_guest?.name ??
@@ -909,6 +921,11 @@ function buildTimelineRows(groups: DisplayReservationGroup[]): TimelineRow[] {
       status: row.status,
     }));
   });
+}
+
+function shouldShowRoomInTimeline(status: string | null | undefined) {
+  const normalized = status?.trim().toUpperCase();
+  return normalized === 'BOOKED' || normalized === 'CHECKED_IN';
 }
 
 function groupVisibleReservations(groups: ReservationGroup[]): DisplayReservationGroup[] {

@@ -8,6 +8,7 @@ import {
   formatSignedNumber,
 } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
+import { CustomSelect } from '../components/CustomSelect';
 
 export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace }) {
   const selectedConnection = workspace.selectedConnection;
@@ -28,13 +29,43 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
             ledger.
           </p>
         </div>
-        {selectedConnection ? (
-          <div className="webhook-sync-header-meta">
-            <span className={`status-pill ${connectionStatusTone}`}>{selectedConnection.status}</span>
-            <span className="status-pill">{selectedConnection.property.code}</span>
-            <span className="status-pill">{selectedConnection.provider}</span>
+        <section className="ota-mapping-connection-card webhook-sync-connection-card">
+          <div className="ota-mapping-connection-topline">
+            <div>
+              <p className="eyebrow">OTA connection</p>
+              <h3>{selectedConnection ? formatConnectionLabel(selectedConnection) : 'Select OTA'}</h3>
+            </div>
+            {selectedConnection ? <span className={`channel-mode-badge ${connectionStatusTone}`}>{selectedConnection.status}</span> : null}
           </div>
-        ) : null}
+          {workspace.zodomusConnections.length > 1 ? (
+            <label>
+              OTA connection
+              <CustomSelect
+                disabled={workspace.zodomusConnections.length === 0}
+                onChange={workspace.selectConnection}
+                options={workspace.zodomusConnections.map((connection) => ({
+                  label: formatConnectionLabel(connection),
+                  value: connection.id,
+                }))}
+                placeholder="Select connection"
+                value={workspace.selectedConnectionId}
+              />
+            </label>
+          ) : (
+            <div className="ota-mapping-connection-single">
+              <span className="ota-mapping-connection-single-label">OTA connection</span>
+            </div>
+          )}
+          {selectedConnection ? (
+            <div className="ota-mapping-connection-meta webhook-sync-header-meta">
+              <span className="status-pill">{selectedConnection.property.code}</span>
+              <span className="status-pill">{selectedConnection.provider}</span>
+              <span className="status-pill">{providerSummary?.environment ?? 'Default'}</span>
+            </div>
+          ) : (
+            <p className="muted">Choose a saved Zodomus connection to inspect sync health and webhook intake.</p>
+          )}
+        </section>
       </div>
 
       {workspace.loading && <p className="muted">Loading channel diagnostics...</p>}
@@ -42,31 +73,6 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
       {workspace.status && <p className="success">{workspace.status}</p>}
 
       <div className="channel-workspace webhook-sync-workspace">
-        <aside className="channel-rail webhook-sync-rail">
-          <section className="channel-panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Connection</p>
-                <h3>Select OTA</h3>
-              </div>
-            </div>
-            <label>
-              OTA connection
-              <select disabled={workspace.zodomusConnections.length === 0} onChange={(event) => workspace.selectConnection(event.target.value)} value={workspace.selectedConnectionId}>
-                <option value="">Select connection</option>
-                {workspace.zodomusConnections.map((connection) => (
-                  <option key={connection.id} value={connection.id}>
-                    {formatConnectionLabel(connection)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <p className="muted">
-              {workspace.zodomusConnections.length} saved connection{workspace.zodomusConnections.length === 1 ? '' : 's'} available in this workspace.
-            </p>
-          </section>
-        </aside>
-
         <div className="channel-main webhook-sync-main">
           {selectedConnection ? (
             <>
@@ -145,6 +151,30 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
                 <div className="section-heading">
                   <div>
                     <p className="eyebrow">Operations</p>
+                    <h3>Manual sync runbook</h3>
+                  </div>
+                </div>
+                <div className="webhook-sync-scope-grid">
+                  <article className="webhook-sync-scope-note">
+                    <p className="eyebrow">Inventory</p>
+                    <h4>{workspace.syncGuidance.inventory.title}</h4>
+                    <p>{workspace.syncGuidance.inventory.when}</p>
+                    <p>{workspace.syncGuidance.inventory.warning}</p>
+                  </article>
+                  <article className="webhook-sync-scope-note">
+                    <p className="eyebrow">Rates</p>
+                    <h4>{workspace.syncGuidance.rates.title}</h4>
+                    <p>{workspace.syncGuidance.rates.when}</p>
+                    <p>{workspace.syncGuidance.rates.warning}</p>
+                  </article>
+                </div>
+                <p className="channel-panel-footnote">{workspace.syncGuidance.queueHint}</p>
+              </section>
+
+              <section className="channel-panel webhook-sync-wide-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Operations</p>
                     <h3>Sync health</h3>
                   </div>
                   <div className="button-row">
@@ -175,6 +205,11 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
                   Automation currently compares or pushes a {workspace.syncWindowDays}-day window from today. Use the detailed logs below for request and
                   provider payloads.
                 </p>
+                {!providerSummary?.setup_status.ready ? (
+                  <p className="channel-panel-footnote">
+                    This connection is not yet ready. Manual sync calls can still be queued from HMS, but the provider may reject them until setup and final checks are complete.
+                  </p>
+                ) : null}
               </section>
 
               <div className="webhook-sync-log-grid">

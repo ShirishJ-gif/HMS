@@ -865,6 +865,22 @@ describe('App integration', () => {
     expect(dashboardAfterPayment.revenue_today).toBe(dashboardAfterInvoice.revenue_today + billing.body.total);
   });
 
+  it('filters reservation feed by reservation status', async () => {
+    const checkedInFeed = await request(app.getHttpServer())
+      .get('/bookings/feed')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .query({ status: 'CHECKED_IN' })
+      .expect(200);
+
+    expect(checkedInFeed.body.data.length).toBeGreaterThan(0);
+    expect(
+      checkedInFeed.body.data.every(
+        (group: { import_blocked: boolean; reservation_status: string }) =>
+          !group.import_blocked && group.reservation_status === 'CHECKED_IN',
+      ),
+    ).toBe(true);
+  });
+
   it('surfaces blocked imports in the reservation feed and imports them after inventory is fixed', async () => {
     jest.spyOn(ChannelProviderService.prototype, 'validateConnection').mockResolvedValue({
       provider: 'ZODOMUS',
@@ -1661,6 +1677,79 @@ describe('App integration', () => {
     });
     expect(syncLogs).toHaveLength(1);
     expect(syncLogs[0].status).toBe('SUCCEEDED');
+  });
+
+  it('saves room and rate mappings together in one batch request', async () => {
+    const roomCategory = await prisma.roomCategory.create({
+      data: {
+        propertyId: propertyAId,
+        name: `${tag}-Batch-Category`,
+        code: `${tag}-BATCH-CAT`,
+        maxOccupancy: 2,
+      },
+    });
+
+    const ratePlan = await prisma.ratePlan.create({
+      data: {
+        propertyId: propertyAId,
+        roomCategoryId: roomCategory.id,
+        name: `${tag}-Batch-Rate`,
+        code: `${tag}-BATCH-RATE`,
+        baseRate: '3200.00',
+        currency: 'INR',
+        isActive: true,
+      },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/channels/${channelConnectionAId}/mappings/batch`)
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        room_mappings: [
+          {
+            room_category_id: roomCategory.id,
+            external_room_id: `${tag}-batch-room`,
+            external_room_name: 'Batch Room',
+          },
+        ],
+        rate_mappings: [
+          {
+            rate_plan_id: ratePlan.id,
+            external_rate_id: `${tag}-batch-rate-id`,
+            external_rate_name: 'Batch Rate Name',
+          },
+        ],
+      })
+      .expect(201);
+
+    expect(response.body.room_mappings).toHaveLength(1);
+    expect(response.body.rate_mappings).toHaveLength(1);
+    expect(response.body.room_mappings[0].room_category_id).toBe(roomCategory.id);
+    expect(response.body.rate_mappings[0].rate_plan_id).toBe(ratePlan.id);
+    expect(response.body.rate_mappings[0].external_room_id).toBe(`${tag}-batch-room`);
+    expect(response.body.rate_mappings[0].external_rate_id).toBe(`${tag}-batch-rate-id`);
+
+    const persistedRoomMapping = await prisma.channelRoomMapping.findUniqueOrThrow({
+      where: {
+        channelConnectionId_roomCategoryId: {
+          channelConnectionId: channelConnectionAId,
+          roomCategoryId: roomCategory.id,
+        },
+      },
+    });
+
+    const persistedRateMapping = await prisma.channelRateMapping.findUniqueOrThrow({
+      where: {
+        channelConnectionId_ratePlanId: {
+          channelConnectionId: channelConnectionAId,
+          ratePlanId: ratePlan.id,
+        },
+      },
+    });
+
+    expect(persistedRoomMapping.externalRoomId).toBe(`${tag}-batch-room`);
+    expect(persistedRateMapping.externalRoomId).toBe(`${tag}-batch-room`);
+    expect(persistedRateMapping.externalRateId).toBe(`${tag}-batch-rate-id`);
   });
 
   it('builds daily inventory rows for channel sync payloads', async () => {

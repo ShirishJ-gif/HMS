@@ -1,5 +1,6 @@
 import { formatConnectionLabel, SetupBadge, SummaryTile } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
+import { CustomSelect } from '../components/CustomSelect';
 
 export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace }) {
   return (
@@ -43,24 +44,26 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
             </div>
             <label>
               Hotel property
-              <select onChange={(event) => workspace.setPropertyId(event.target.value)} required value={workspace.propertyId}>
-                <option value="">Select property</option>
-                {workspace.properties.map((property) => (
-                  <option key={property.id} value={property.id}>
-                    {property.name}
-                  </option>
-                ))}
-              </select>
+              <CustomSelect
+                onChange={workspace.setPropertyId}
+                options={workspace.properties.map((property) => ({
+                  label: property.name,
+                  value: property.id,
+                }))}
+                placeholder="Select property"
+                value={workspace.propertyId}
+              />
             </label>
             <label>
               OTA
-              <select onChange={(event) => workspace.setZodomusOtaKey(event.target.value as typeof workspace.zodomusOtaKey)} value={workspace.zodomusOtaKey}>
-                {workspace.zodomusOtaOptions.map((option) => (
-                  <option key={option.key} value={option.key}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+              <CustomSelect
+                onChange={(value) => workspace.setZodomusOtaKey(value as typeof workspace.zodomusOtaKey)}
+                options={workspace.zodomusOtaOptions.map((option) => ({
+                  label: option.label,
+                  value: option.key,
+                }))}
+                value={workspace.zodomusOtaKey}
+              />
             </label>
             <label>
               Zodomus property ID
@@ -85,18 +88,16 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
             </div>
             <label>
               OTA connection
-              <select
+              <CustomSelect
                 disabled={workspace.zodomusConnections.length === 0}
-                onChange={(event) => workspace.selectConnection(event.target.value)}
+                onChange={workspace.selectConnection}
+                options={workspace.zodomusConnections.map((connection) => ({
+                  label: formatConnectionLabel(connection),
+                  value: connection.id,
+                }))}
+                placeholder="Select connection"
                 value={workspace.selectedConnectionId}
-              >
-                <option value="">Select connection</option>
-                {workspace.zodomusConnections.map((connection) => (
-                  <option key={connection.id} value={connection.id}>
-                    {formatConnectionLabel(connection)}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             {workspace.selectedConnection ? (
               <div className="connection-card">
@@ -124,11 +125,132 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
               <p className="muted">Add an OTA connection to start onboarding.</p>
             )}
           </section>
+
+          {workspace.selectedConnection && (
+            <>
+              <section className="channel-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Workspace</p>
+                    <h3>Readiness status</h3>
+                  </div>
+                </div>
+                <div className="wizard-summary">
+                  <SetupBadge done={Boolean(workspace.persistedSetupStatus?.activated)} label="Activated" />
+                  <SetupBadge done={Boolean(workspace.persistedSetupStatus?.catalog_loaded)} label="IDs loaded" />
+                  <SetupBadge done={workspace.selectedConnection.room_mappings.length > 0} label="Rooms mapped" />
+                  <SetupBadge done={workspace.selectedConnection.rate_mappings.length > 0} label="Rates mapped" />
+                  <SetupBadge done={Boolean(workspace.persistedSetupStatus?.rooms_activated)} label="Rooms activated" />
+                  <SetupBadge done={Boolean(workspace.persistedSetupStatus?.ready)} label="Ready" />
+                </div>
+                <div className="channel-readiness-grid">
+                  <ReadinessStat label="Provider rooms" value={String(workspace.mappingHealth.providerRooms)} />
+                  <ReadinessStat label="Provider products" value={String(workspace.mappingHealth.providerRates)} />
+                  <ReadinessStat
+                    label="Mapped rooms"
+                    value={`${workspace.mappingHealth.mappedRooms}/${workspace.mappingHealth.localRoomCategories}`}
+                  />
+                  <ReadinessStat
+                    label="Mapped rates"
+                    value={`${workspace.mappingHealth.mappedRates}/${workspace.mappingHealth.localRatePlans}`}
+                  />
+                </div>
+              </section>
+
+              <section className="channel-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Mapping health</p>
+                    <h3>Room and rate coverage</h3>
+                  </div>
+                </div>
+                <div className="channel-readiness-grid">
+                  <ReadinessStat label="HMS room categories" value={String(workspace.mappingHealth.localRoomCategories)} />
+                  <ReadinessStat label="Provider rooms" value={String(workspace.mappingHealth.providerRooms)} />
+                  <ReadinessStat label="HMS rate plans" value={String(workspace.mappingHealth.localRatePlans)} />
+                  <ReadinessStat label="Provider products" value={String(workspace.mappingHealth.providerRates)} />
+                </div>
+                {(workspace.mappingHealth.needsMoreRoomCategories || workspace.mappingHealth.needsMoreRatePlans) && (
+                  <div className="channel-warning-banner">
+                    <strong>HMS catalog does not fully match the provider catalog.</strong>
+                    <span>
+                      {workspace.mappingHealth.needsMoreRoomCategories
+                        ? `Add ${workspace.mappingHealth.localRoomCategoryShortfall} more HMS room categor${workspace.mappingHealth.localRoomCategoryShortfall === 1 ? 'y' : 'ies'} or reduce provider rooms. `
+                        : ''}
+                      {workspace.mappingHealth.needsMoreRatePlans
+                        ? `Add ${workspace.mappingHealth.localRatePlanShortfall} more HMS rate plan${workspace.mappingHealth.localRatePlanShortfall === 1 ? '' : 's'} or deactivate extra provider products.`
+                        : ''}
+                    </span>
+                  </div>
+                )}
+                {(workspace.mappingHealth.unmappedRoomCategories.length > 0 || workspace.mappingHealth.unmappedRatePlans.length > 0) && (
+                  <div className="channel-gap-grid">
+                    <article className="channel-gap-card">
+                      <p className="eyebrow">Unmapped rooms</p>
+                      <h4>{workspace.mappingHealth.unmappedRoomCategories.length}</h4>
+                      <p>
+                        {workspace.mappingHealth.unmappedRoomCategories.length > 0
+                          ? workspace.mappingHealth.unmappedRoomCategories
+                              .slice(0, 4)
+                              .map((category) => `${category.name} (${category.code})`)
+                              .join(', ')
+                          : 'All HMS room categories are mapped.'}
+                      </p>
+                    </article>
+                    <article className="channel-gap-card">
+                      <p className="eyebrow">Unmapped rates</p>
+                      <h4>{workspace.mappingHealth.unmappedRatePlans.length}</h4>
+                      <p>
+                        {workspace.mappingHealth.unmappedRatePlans.length > 0
+                          ? workspace.mappingHealth.unmappedRatePlans
+                              .slice(0, 4)
+                              .map((ratePlan) => `${ratePlan.name} (${ratePlan.code})`)
+                              .join(', ')
+                          : 'All current HMS rate plans are mapped.'}
+                      </p>
+                    </article>
+                  </div>
+                )}
+              </section>
+            </>
+          )}
         </aside>
 
         <div className="channel-main">
           {workspace.selectedConnection && (
             <>
+              <section className="channel-panel channel-guidance-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Next step</p>
+                    <h3>Operator runbook</h3>
+                    <p className="channel-panel-intro">
+                      Follow this sequence and stop when the provider reports a blocker. Do not continue to sync until the setup path is clear.
+                    </p>
+                  </div>
+                  <span className={`channel-mode-badge ${workspace.persistedSetupStatus?.ready ? 'active' : 'idle'}`}>
+                    {workspace.persistedSetupStatus?.ready ? 'Ready for sync' : 'Needs setup'}
+                  </span>
+                </div>
+                <div className="channel-next-step-card">
+                  <strong>{workspace.nextSetupAction}</strong>
+                  <span>
+                    The steps below reflect the current connection state, mapping counts, and provider check results for this OTA link.
+                  </span>
+                </div>
+                <div className="channel-runbook-grid">
+                  {workspace.setupRunbook.map((step, index) => (
+                    <article className={`channel-runbook-step ${step.done ? 'done' : 'pending'}`} key={step.key}>
+                      <span className="channel-runbook-order">0{index + 1}</span>
+                      <div>
+                        <strong>{step.label}</strong>
+                        <p>{step.detail}</p>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+
               {workspace.channelWarnings.length > 0 && (
                 <section className="channel-panel">
                   <div className="section-heading">
@@ -151,44 +273,39 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
               <section className="channel-panel">
                 <div className="section-heading">
                   <div>
-                    <p className="eyebrow">Workspace</p>
-                    <h3>Readiness status</h3>
-                  </div>
-                </div>
-                <div className="wizard-summary">
-                  <SetupBadge done={Boolean(workspace.persistedSetupStatus?.activated)} label="Activated" />
-                  <SetupBadge done={Boolean(workspace.persistedSetupStatus?.catalog_loaded)} label="IDs loaded" />
-                  <SetupBadge done={workspace.selectedConnection.room_mappings.length > 0} label="Rooms mapped" />
-                  <SetupBadge done={workspace.selectedConnection.rate_mappings.length > 0} label="Rates mapped" />
-                  <SetupBadge done={Boolean(workspace.persistedSetupStatus?.rooms_activated)} label="Rooms activated" />
-                  <SetupBadge done={Boolean(workspace.persistedSetupStatus?.ready)} label="Ready" />
-                </div>
-              </section>
-
-              <section className="channel-panel">
-                <div className="section-heading">
-                  <div>
                     <p className="eyebrow">Provider IDs</p>
                     <h3>Room and rate IDs</h3>
                   </div>
                 </div>
-                {workspace.persistedSetupStatus?.last_check_message && (
-                  <p className="muted">
-                    Last provider check: {workspace.persistedSetupStatus.last_check_message}
-                    {workspace.persistedSetupStatus.last_check_code ? ` (${workspace.persistedSetupStatus.last_check_code})` : ''}
-                  </p>
-                )}
-                {workspace.persistedSetupStatus?.last_activation_message && (
-                  <p className="muted">
-                    Last activation: {workspace.persistedSetupStatus.last_activation_message}
-                    {workspace.persistedSetupStatus.last_activation_code ? ` (${workspace.persistedSetupStatus.last_activation_code})` : ''}
-                  </p>
-                )}
-                {workspace.persistedSetupStatus?.last_rooms_activation_message && (
-                  <p className="muted">
-                    Last room activation: {workspace.persistedSetupStatus.last_rooms_activation_message}
-                    {workspace.persistedSetupStatus.last_rooms_activation_code ? ` (${workspace.persistedSetupStatus.last_rooms_activation_code})` : ''}
-                  </p>
+                <div className="channel-provider-copy">
+                  {workspace.persistedSetupStatus?.last_check_message && (
+                    <p className="muted">
+                      Last provider check: {workspace.persistedSetupStatus.last_check_message}
+                      {workspace.persistedSetupStatus.last_check_code ? ` (${workspace.persistedSetupStatus.last_check_code})` : ''}
+                    </p>
+                  )}
+                  {workspace.persistedSetupStatus?.last_activation_message && (
+                    <p className="muted">
+                      Last activation: {workspace.persistedSetupStatus.last_activation_message}
+                      {workspace.persistedSetupStatus.last_activation_code ? ` (${workspace.persistedSetupStatus.last_activation_code})` : ''}
+                    </p>
+                  )}
+                  {workspace.persistedSetupStatus?.last_rooms_activation_message && (
+                    <p className="muted">
+                      Last room activation: {workspace.persistedSetupStatus.last_rooms_activation_message}
+                      {workspace.persistedSetupStatus.last_rooms_activation_code ? ` (${workspace.persistedSetupStatus.last_rooms_activation_code})` : ''}
+                    </p>
+                  )}
+                </div>
+                {workspace.parsedProviderCheckStatuses && workspace.parsedProviderCheckStatuses.length > 0 && (
+                  <div className="channel-provider-status-grid">
+                    {workspace.parsedProviderCheckStatuses.map((status) => (
+                      <article className="channel-provider-status-card" key={status.label}>
+                        <span>{status.label}</span>
+                        <strong>{status.value}</strong>
+                      </article>
+                    ))}
+                  </div>
                 )}
                 <div className="button-row">
                   <button className="secondary-button" disabled={!workspace.canLoadCatalog || workspace.pendingAction === 'load-provider-catalog'} onClick={() => void workspace.loadProviderCatalog()} type="button">
@@ -360,6 +477,15 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
 function AutomationStatCard({ label, value }: { label: string; value: string }) {
   return (
     <article className="channel-automation-stat">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </article>
+  );
+}
+
+function ReadinessStat({ label, value }: { label: string; value: string }) {
+  return (
+    <article className="channel-automation-stat channel-readiness-stat">
       <span>{label}</span>
       <strong>{value}</strong>
     </article>

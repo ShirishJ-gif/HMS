@@ -9,6 +9,7 @@ import {
   ReservationGroupFolio,
   ReservationGroupPaymentCollection,
 } from '../api/types';
+import { CustomSelect } from '../components/CustomSelect';
 import { FilterBar } from '../components/FilterBar';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
@@ -238,25 +239,22 @@ export function PaymentsPage() {
           <div className="booking-form-grid">
             <label>
               Invoice
-              <select
-                onChange={(event) => {
-                  const billing = billings.find((item) => item.id === event.target.value);
+              <CustomSelect
+                onChange={(value) => {
+                  const billing = billings.find((item) => item.id === value);
                   setForm({
                     ...form,
-                    billing_id: event.target.value,
+                    billing_id: value,
                     amount: billing && billing.balance_due > 0 ? billing.balance_due.toFixed(2) : '',
                   });
                 }}
-                required
+                options={billings.map((billing) => ({
+                  label: `${billing.reservation_room.guest.name} - ${formatCurrency(billing.balance_due)} due`,
+                  value: billing.id,
+                }))}
+                placeholder="Select invoice"
                 value={form.billing_id}
-              >
-                <option value="">Select invoice</option>
-                {billings.map((billing) => (
-                  <option key={billing.id} value={billing.id}>
-                    {billing.reservation_room.guest.name} - {formatCurrency(billing.balance_due)} due
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <label>
               Amount
@@ -272,17 +270,18 @@ export function PaymentsPage() {
             </label>
             <label>
               Provider
-              <select
-                onChange={(event) => setForm({ ...form, provider: event.target.value as PaymentProvider })}
+              <CustomSelect
+                onChange={(value) => setForm({ ...form, provider: value as PaymentProvider })}
+                options={[
+                  { label: 'Mock', value: 'MOCK' },
+                  { label: 'Cash', value: 'CASH' },
+                  { label: 'Card', value: 'CARD' },
+                  { label: 'UPI', value: 'UPI' },
+                  { label: 'Razorpay', value: 'RAZORPAY' },
+                  { label: 'Stripe', value: 'STRIPE' },
+                ]}
                 value={form.provider}
-              >
-                <option value="MOCK">Mock</option>
-                <option value="CASH">Cash</option>
-                <option value="CARD">Card</option>
-                <option value="UPI">UPI</option>
-                <option value="RAZORPAY">Razorpay</option>
-                <option value="STRIPE">Stripe</option>
-              </select>
+              />
             </label>
             <label>
               Reference
@@ -342,24 +341,32 @@ export function PaymentsPage() {
         </label>
         <label>
           Provider
-          <select onChange={(event) => setProviderFilter(event.target.value as 'ALL' | PaymentProvider)} value={providerFilter}>
-            <option value="ALL">All providers</option>
-            <option value="MOCK">Mock</option>
-            <option value="CASH">Cash</option>
-            <option value="CARD">Card</option>
-            <option value="UPI">UPI</option>
-            <option value="RAZORPAY">Razorpay</option>
-            <option value="STRIPE">Stripe</option>
-          </select>
+          <CustomSelect
+            onChange={(value) => setProviderFilter(value as 'ALL' | PaymentProvider)}
+            options={[
+              { label: 'All providers', value: 'ALL' },
+              { label: 'Mock', value: 'MOCK' },
+              { label: 'Cash', value: 'CASH' },
+              { label: 'Card', value: 'CARD' },
+              { label: 'UPI', value: 'UPI' },
+              { label: 'Razorpay', value: 'RAZORPAY' },
+              { label: 'Stripe', value: 'STRIPE' },
+            ]}
+            value={providerFilter}
+          />
         </label>
         <label>
           Status
-          <select onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)} value={statusFilter}>
-            <option value="ALL">All statuses</option>
-            <option value="SUCCEEDED">Succeeded</option>
-            <option value="FAILED">Failed</option>
-            <option value="REFUNDED">Refunded</option>
-          </select>
+          <CustomSelect
+            onChange={(value) => setStatusFilter(value as typeof statusFilter)}
+            options={[
+              { label: 'All statuses', value: 'ALL' },
+              { label: 'Succeeded', value: 'SUCCEEDED' },
+              { label: 'Failed', value: 'FAILED' },
+              { label: 'Refunded', value: 'REFUNDED' },
+            ]}
+            value={statusFilter}
+          />
         </label>
       </FilterBar>
 
@@ -610,17 +617,18 @@ export function PaymentsPage() {
                     </label>
                     <label>
                       Provider
-                      <select
-                        onChange={(event) => setGroupPaymentForm({ ...groupPaymentForm, provider: event.target.value as PaymentProvider })}
+                      <CustomSelect
+                        onChange={(value) => setGroupPaymentForm({ ...groupPaymentForm, provider: value as PaymentProvider })}
+                        options={[
+                          { label: 'Mock', value: 'MOCK' },
+                          { label: 'Cash', value: 'CASH' },
+                          { label: 'Card', value: 'CARD' },
+                          { label: 'UPI', value: 'UPI' },
+                          { label: 'Razorpay', value: 'RAZORPAY' },
+                          { label: 'Stripe', value: 'STRIPE' },
+                        ]}
                         value={groupPaymentForm.provider}
-                      >
-                        <option value="MOCK">Mock</option>
-                        <option value="CASH">Cash</option>
-                        <option value="CARD">Card</option>
-                        <option value="UPI">UPI</option>
-                        <option value="RAZORPAY">Razorpay</option>
-                        <option value="STRIPE">Stripe</option>
-                      </select>
+                      />
                     </label>
                     <label>
                       Reference

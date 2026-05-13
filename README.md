@@ -74,7 +74,6 @@ Scoped seed logins:
 ```text
 Harbour admin: admin.harbour@hms.local / Admin@12345
 Harbour staff: staff.harbour@hms.local / Staff@12345
-Lakeview admin: admin.lakeview@hms.local / Admin@12345
 ```
 
 The default database URL is:

@@ -190,7 +190,7 @@ This document lists the features currently implemented in the Hotel Management S
 - Create room-category mappings to external room IDs.
 - Create rate-plan mappings to external rate IDs.
 - Trigger syncs for `INVENTORY`, `RATES`, and `BOOKINGS`.
-- Zodomus booking import now reconciles reservations from both provider `reservations-queue` and `reservations-summary`, not queue-only discovery.
+- Zodomus booking import is now webhook-first and summary/detail-based, avoiding provider `reservations-queue` for normal reservation retrieval.
 - Zodomus booking import can fall back from legacy provider room IDs such as `90002` / `90003` to canonical mapped room IDs when the provider payload uses older aliases.
 - Zodomus booking import can fall back to a mapped rate plan for the resolved room category when the provider payload does not match a room-scoped rate mapping directly.
 - Zodomus booking import skips new provider reservations whose latest departure date is already before the current local date, instead of treating stale sandbox history as an inventory failure.

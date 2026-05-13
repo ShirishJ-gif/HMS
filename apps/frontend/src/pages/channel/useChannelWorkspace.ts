@@ -148,6 +148,30 @@ function defaultPriceModelId(channelId: string | null | undefined) {
   return 1;
 }
 
+function parseProviderStatusMessage(message: string | null | undefined) {
+  if (!message) return null;
+
+  try {
+    const parsed = JSON.parse(message);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+
+    return Object.entries(parsed).flatMap(([label, value]) =>
+      typeof value === 'string' && value.trim()
+        ? [
+            {
+              label,
+              value: value.trim(),
+            },
+          ]
+        : [],
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   const {
     diagnosticsEnabled = true,
@@ -257,6 +281,140 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       selectedConnection.rate_mappings.length > 0,
   );
   const selectedPropertyScopeId = selectedConnection?.property_id ?? null;
+  const providerCatalogRoomCount = persistedSetupStatus?.catalog_room_count ?? providerCatalog?.rooms.length ?? 0;
+  const providerCatalogRateCount = persistedSetupStatus?.catalog_rate_count ?? providerCatalog?.rates.length ?? 0;
+  const mappedRoomCategoryIds = useMemo(
+    () => new Set(selectedConnection?.room_mappings.map((mapping) => mapping.room_category_id) ?? []),
+    [selectedConnection?.room_mappings],
+  );
+  const mappedRatePlanIds = useMemo(
+    () => new Set(selectedConnection?.rate_mappings.map((mapping) => mapping.rate_plan_id) ?? []),
+    [selectedConnection?.rate_mappings],
+  );
+  const unmappedRoomCategories = useMemo(
+    () => scopedCategories.filter((category) => !mappedRoomCategoryIds.has(category.id)),
+    [mappedRoomCategoryIds, scopedCategories],
+  );
+  const unmappedRatePlans = useMemo(
+    () => scopedRatePlans.filter((ratePlan) => !mappedRatePlanIds.has(ratePlan.id)),
+    [mappedRatePlanIds, scopedRatePlans],
+  );
+  const roomMappingGap = Math.max(providerCatalogRoomCount - (selectedConnection?.room_mappings.length ?? 0), 0);
+  const rateMappingGap = Math.max(providerCatalogRateCount - (selectedConnection?.rate_mappings.length ?? 0), 0);
+  const localRatePlanShortfall =
+    providerCatalogRateCount > 0 ? Math.max(providerCatalogRateCount - scopedRatePlans.length, 0) : 0;
+  const localRoomCategoryShortfall =
+    providerCatalogRoomCount > 0 ? Math.max(providerCatalogRoomCount - scopedCategories.length, 0) : 0;
+  const parsedProviderCheckStatuses = useMemo(
+    () => parseProviderStatusMessage(persistedSetupStatus?.last_check_message),
+    [persistedSetupStatus?.last_check_message],
+  );
+  const setupRunbook = [
+    {
+      key: 'activate',
+      label: 'Property activation',
+      done: Boolean(persistedSetupStatus?.activated),
+      detail: persistedSetupStatus?.activated
+        ? 'Provider accepted the property link.'
+        : 'Activate the property link first or wait for provider approval.',
+    },
+    {
+      key: 'catalog',
+      label: 'Provider IDs',
+      done: Boolean(persistedSetupStatus?.catalog_loaded),
+      detail: persistedSetupStatus?.catalog_loaded
+        ? `${providerCatalogRoomCount} rooms and ${providerCatalogRateCount} provider products are loaded.`
+        : 'Load the provider catalog so room and rate IDs are available for mapping.',
+    },
+    {
+      key: 'rooms',
+      label: 'Room mappings',
+      done: selectedConnection ? unmappedRoomCategories.length === 0 && selectedConnection.room_mappings.length > 0 : false,
+      detail: selectedConnection
+        ? `${selectedConnection.room_mappings.length}/${scopedCategories.length} HMS room categories mapped.`
+        : 'Choose a connection first.',
+    },
+    {
+      key: 'rates',
+      label: 'Rate mappings',
+      done: selectedConnection ? unmappedRatePlans.length === 0 && selectedConnection.rate_mappings.length > 0 : false,
+      detail: selectedConnection
+        ? `${selectedConnection.rate_mappings.length}/${scopedRatePlans.length} HMS rate plans mapped.`
+        : 'Choose a connection first.',
+    },
+    {
+      key: 'activation',
+      label: 'Room activation',
+      done: Boolean(persistedSetupStatus?.rooms_activated),
+      detail: persistedSetupStatus?.rooms_activated
+        ? 'Mapped products were sent to the provider for activation.'
+        : 'Activate mapped rooms after room and rate mappings are saved.',
+    },
+    {
+      key: 'ready',
+      label: 'Ready for sync',
+      done: Boolean(persistedSetupStatus?.ready),
+      detail: persistedSetupStatus?.ready
+        ? 'Inventory and rate pushes can run against this connection.'
+        : 'Run the final property check and resolve remaining provider blockers.',
+    },
+  ];
+  const nextSetupAction =
+    !selectedConnection
+      ? 'Select or create a connection to continue onboarding.'
+      : !persistedSetupStatus?.activated
+        ? 'Re-activate the property or wait for provider approval before attempting full sync.'
+        : !persistedSetupStatus?.catalog_loaded
+          ? 'Load provider room and rate IDs before mapping anything.'
+          : unmappedRoomCategories.length > 0
+            ? `Map ${unmappedRoomCategories.length} remaining HMS room categor${unmappedRoomCategories.length === 1 ? 'y' : 'ies'}.`
+            : localRoomCategoryShortfall > 0
+              ? `HMS has ${localRoomCategoryShortfall} fewer room categories than the provider catalog. Add local room types or reduce provider rooms.`
+              : unmappedRatePlans.length > 0
+                ? `Map ${unmappedRatePlans.length} remaining HMS rate plan${unmappedRatePlans.length === 1 ? '' : 's'}.`
+                : localRatePlanShortfall > 0
+                  ? `Create ${localRatePlanShortfall} more HMS rate plan${localRatePlanShortfall === 1 ? '' : 's'} or deactivate extra provider products.`
+                  : canActivateMappedRooms && !persistedSetupStatus?.rooms_activated
+                    ? 'Activate mapped rooms so provider products become usable.'
+                    : persistedSetupStatus?.rooms_activated && !persistedSetupStatus?.ready
+                      ? 'Run property check and clear the remaining provider blockers before syncing.'
+                      : 'Connection is ready for inventory and rate sync.';
+  const mappingHealth = {
+    localRoomCategories: scopedCategories.length,
+    localRatePlans: scopedRatePlans.length,
+    mappedRooms: selectedConnection?.room_mappings.length ?? 0,
+    mappedRates: selectedConnection?.rate_mappings.length ?? 0,
+    providerRooms: providerCatalogRoomCount,
+    providerRates: providerCatalogRateCount,
+    roomMappingGap,
+    rateMappingGap,
+    localRoomCategoryShortfall,
+    localRatePlanShortfall,
+    unmappedRoomCategories,
+    unmappedRatePlans,
+    needsMoreRatePlans: localRatePlanShortfall > 0,
+    needsMoreRoomCategories: localRoomCategoryShortfall > 0,
+  };
+  const syncGuidance = {
+    inventory: {
+      title: 'Inventory sync updates availability',
+      when: 'Use after bookings, cancellations, maintenance blocks, room status changes, or room count updates.',
+      warning: !persistedSetupStatus?.ready
+        ? 'Provider setup is not ready yet, so inventory pushes may be rejected.'
+        : 'If a queued inventory sync never advances, the background job worker is probably disabled.',
+    },
+    rates: {
+      title: 'Rates sync updates sell prices',
+      when: 'Use after changing base rates, pricing rules, or rate-plan pricing for the selected date window.',
+      warning: mappingHealth.needsMoreRatePlans
+        ? `Provider exposes ${providerCatalogRateCount} products but HMS only has ${scopedRatePlans.length} rate plans, so some products still cannot map.`
+        : !persistedSetupStatus?.ready
+          ? 'Provider setup is not ready yet, so rate pushes may be rejected.'
+          : 'If a queued rates sync never advances, the background job worker is probably disabled.',
+    },
+    queueHint:
+      'Manual sync buttons enqueue work first. If the latest log stays QUEUED and never changes, check that the background job worker is running.',
+  };
   const channelWarnings = [
     !persistedSetupStatus?.activated ? 'Property activation is still pending.' : null,
     !persistedSetupStatus?.catalog_loaded ? 'Provider room/rate IDs are not loaded yet.' : null,
@@ -270,6 +428,12 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       : null,
     persistedSetupStatus?.rooms_activated && !persistedSetupStatus?.ready
       ? 'Provider room activation finished, but the final readiness check is not OK yet.'
+      : null,
+    mappingHealth.localRoomCategoryShortfall > 0
+      ? `Provider exposes ${providerCatalogRoomCount} rooms but HMS only has ${scopedCategories.length} room categories in this property.`
+      : null,
+    mappingHealth.localRatePlanShortfall > 0
+      ? `Provider exposes ${providerCatalogRateCount} products but HMS only has ${scopedRatePlans.length} rate plans to map against them.`
       : null,
   ].filter((warning): warning is string => Boolean(warning));
   const propertyActivationPriceModelId =
@@ -940,8 +1104,11 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     loadSyncLogs,
     loadWebhookEvents,
     loading,
+    mappingHealth,
+    nextSetupAction,
     pauseConnection,
     pendingAction,
+    parsedProviderCheckStatuses,
     persistedSetupStatus,
     properties,
     propertyActivationPriceModelId,
@@ -995,7 +1162,9 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     syncLogs,
     syncLogsError,
     syncLogsLoading,
+    syncGuidance,
     syncWindowDays,
+    setupRunbook,
     webhookEvents,
     webhookEventsError,
     webhookEventsLoading,

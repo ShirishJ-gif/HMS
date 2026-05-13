@@ -38,57 +38,58 @@ export class ZodomusChannelAdapter {
     if (payload.sync_type === ChannelSyncType.INVENTORY) {
       this.requireExternalHotelId(payload.external_hotel_id, payload.sync_type);
       const inventoryRows = this.readPayloadArray(payload.inventory, 'inventory sync');
+      const inventorySegments = this.batchInventoryRows(inventoryRows);
       const rowResults = await this.mapWithConcurrency(
-        inventoryRows,
+        inventorySegments,
         this.readSyncConcurrency(),
-        async (inventoryRow) => {
-          const row = this.readPayloadRecord(inventoryRow, 'inventory sync item');
-          const roomId = this.requiredString(row.external_room_id, 'inventory.external_room_id');
-          const date = this.requiredString(row.date, 'inventory.date');
-          const nextDate = this.nextDate(date);
-          const availability = this.requiredInteger(row.available, 'inventory.available');
+        async (segment) => {
           const response = await client
             .pushAvailability({
               channelId: Number(connectionConfig.channel_code),
               propertyId: payload.external_hotel_id,
-              roomId,
-              dateFrom: date,
-              dateTo: nextDate,
-              availability,
+              roomId: segment.external_room_id,
+              dateFrom: segment.date_from,
+              dateTo: segment.date_to,
+              availability: segment.available,
             })
             .then((providerResponse) => {
               const providerError = this.readProviderFailure(providerResponse);
 
-              return providerError
-                ? {
-                    date,
-                    external_room_id: roomId,
-                    available: availability,
-                    status: 'FAILED',
-                    error_message: providerError,
-                    provider_response: providerResponse,
-                  }
-                : {
-                    date,
-                    external_room_id: roomId,
-                    available: availability,
-                    status: 'SUCCEEDED',
-                    provider_response: providerResponse,
-                  };
+              return segment.rows.map((row) =>
+                providerError
+                  ? {
+                      date: row.date,
+                      external_room_id: segment.external_room_id,
+                      available: segment.available,
+                      status: 'FAILED' as const,
+                      error_message: providerError,
+                      provider_response: providerResponse,
+                    }
+                  : {
+                      date: row.date,
+                      external_room_id: segment.external_room_id,
+                      available: segment.available,
+                      status: 'SUCCEEDED' as const,
+                      provider_response: providerResponse,
+                    },
+              );
             })
-            .catch((error: unknown) => ({
-              date,
-              external_room_id: roomId,
-              available: availability,
-              status: 'FAILED',
-              error_message: this.readErrorMessage(error),
-            }));
+            .catch((error: unknown) =>
+              segment.rows.map((row) => ({
+                date: row.date,
+                external_room_id: segment.external_room_id,
+                available: segment.available,
+                status: 'FAILED' as const,
+                error_message: this.readErrorMessage(error),
+              })),
+            );
 
           return response;
         },
       );
-      const succeededRows = rowResults.filter((result) => result.status === 'SUCCEEDED');
-      const failedRows = rowResults.filter((result) => result.status === 'FAILED');
+      const flattenedRowResults = rowResults.flat();
+      const succeededRows = flattenedRowResults.filter((result) => result.status === 'SUCCEEDED');
+      const failedRows = flattenedRowResults.filter((result) => result.status === 'FAILED');
 
       return {
         provider: payload.provider,
@@ -99,12 +100,12 @@ export class ZodomusChannelAdapter {
         date_from: payload.from ?? null,
         date_to: payload.to ?? null,
         room_count: inventoryRows.length,
-        row_results: this.asJsonValue(rowResults),
+        row_results: this.asJsonValue(flattenedRowResults),
         response: this.asJsonValue(
           succeededRows.flatMap((result) => ('provider_response' in result ? [result.provider_response] : [])),
         ),
         summary: {
-          total_rows: rowResults.length,
+          total_rows: flattenedRowResults.length,
           succeeded_rows: succeededRows.length,
           failed_rows: failedRows.length,
         },
@@ -114,65 +115,63 @@ export class ZodomusChannelAdapter {
     if (payload.sync_type === ChannelSyncType.RATES) {
       this.requireExternalHotelId(payload.external_hotel_id, payload.sync_type);
       const rateRows = this.readPayloadArray(payload.rates, 'rate sync');
+      const rateSegments = this.batchRateRows(rateRows);
       const rowResults = await this.mapWithConcurrency(
-        rateRows,
+        rateSegments,
         this.readSyncConcurrency(),
-        async (rateRow) => {
-          const row = this.readPayloadRecord(rateRow, 'rate sync item');
-          const date = this.requiredString(row.date, 'rates.date');
-          const nextDate = this.nextDate(date);
-          const roomId = this.requiredString(row.external_room_id, 'rates.external_room_id');
-          const rateId = this.requiredString(row.external_rate_id, 'rates.external_rate_id');
-          const currencyCode = this.requiredString(row.currency, 'rates.currency');
-          const baseRate = this.requiredNumber(row.base_rate, 'rates.base_rate');
-
+        async (segment) => {
           return client
             .pushRates({
               channelId: Number(connectionConfig.channel_code),
               propertyId: payload.external_hotel_id,
-              roomId,
-              rateId,
-              dateFrom: date,
-              dateTo: nextDate,
-              currencyCode,
+              roomId: segment.external_room_id,
+              rateId: segment.external_rate_id,
+              dateFrom: segment.date_from,
+              dateTo: segment.date_to,
+              currencyCode: segment.currency,
               prices: {
-                price: baseRate.toFixed(2),
+                price: segment.base_rate.toFixed(2),
               },
             })
             .then((providerResponse) => {
               const providerError = this.readProviderFailure(providerResponse);
 
-              return providerError
-                ? {
-                    date,
-                    external_room_id: roomId,
-                    external_rate_id: rateId,
-                    base_rate: baseRate,
-                    status: 'FAILED',
-                    error_message: providerError,
-                    provider_response: providerResponse,
-                  }
-                : {
-                    date,
-                    external_room_id: roomId,
-                    external_rate_id: rateId,
-                    base_rate: baseRate,
-                    status: 'SUCCEEDED',
-                    provider_response: providerResponse,
-                  };
+              return segment.rows.map((row) =>
+                providerError
+                  ? {
+                      date: row.date,
+                      external_room_id: segment.external_room_id,
+                      external_rate_id: segment.external_rate_id,
+                      base_rate: segment.base_rate,
+                      status: 'FAILED' as const,
+                      error_message: providerError,
+                      provider_response: providerResponse,
+                    }
+                  : {
+                      date: row.date,
+                      external_room_id: segment.external_room_id,
+                      external_rate_id: segment.external_rate_id,
+                      base_rate: segment.base_rate,
+                      status: 'SUCCEEDED' as const,
+                      provider_response: providerResponse,
+                    },
+              );
             })
-            .catch((error: unknown) => ({
-              date,
-              external_room_id: roomId,
-              external_rate_id: rateId,
-              base_rate: baseRate,
-              status: 'FAILED',
-              error_message: this.readErrorMessage(error),
-            }));
+            .catch((error: unknown) =>
+              segment.rows.map((row) => ({
+                date: row.date,
+                external_room_id: segment.external_room_id,
+                external_rate_id: segment.external_rate_id,
+                base_rate: segment.base_rate,
+                status: 'FAILED' as const,
+                error_message: this.readErrorMessage(error),
+              })),
+            );
         },
       );
-      const succeededRows = rowResults.filter((result) => result.status === 'SUCCEEDED');
-      const failedRows = rowResults.filter((result) => result.status === 'FAILED');
+      const flattenedRowResults = rowResults.flat();
+      const succeededRows = flattenedRowResults.filter((result) => result.status === 'SUCCEEDED');
+      const failedRows = flattenedRowResults.filter((result) => result.status === 'FAILED');
 
       return {
         provider: payload.provider,
@@ -183,12 +182,12 @@ export class ZodomusChannelAdapter {
         date_from: payload.from ?? null,
         date_to: payload.to ?? null,
         rate_count: rateRows.length,
-        row_results: this.asJsonValue(rowResults),
+        row_results: this.asJsonValue(flattenedRowResults),
         response: this.asJsonValue(
           succeededRows.flatMap((result) => ('provider_response' in result ? [result.provider_response] : [])),
         ),
         summary: {
-          total_rows: rowResults.length,
+          total_rows: flattenedRowResults.length,
           succeeded_rows: succeededRows.length,
           failed_rows: failedRows.length,
         },
@@ -225,17 +224,12 @@ export class ZodomusChannelAdapter {
         }
       }
 
-      const reservationQueue = await client.pullReservationQueue({
-        channelId: connectionConfig.channel_code,
-        propertyId,
-      });
       const reservationSummary = await client.getReservationsSummary({
         channelId: connectionConfig.channel_code,
         propertyId,
       });
       const reservations = await this.fetchReservationDetails(
         client,
-        reservationQueue,
         reservationSummary,
         connectionConfig.channel_code,
         propertyId,
@@ -246,15 +240,15 @@ export class ZodomusChannelAdapter {
         sync_type: payload.sync_type,
         environment: appCredentials.environment,
         ota_name: connectionConfig.ota_name,
-        reservation_queue: this.asJsonValue(reservationQueue),
+        reservation_queue: null,
         reservation_summary: this.asJsonValue(reservationSummary),
         reservations: this.asJsonValue(reservations),
         reservation_import: this.asJsonValue({
-          mode: targetedReservationImport?.mode ?? 'queue_poll',
-          strategy: 'queue_reconciliation',
+          mode: targetedReservationImport?.mode ?? 'summary_poll',
+          strategy: 'summary_reconciliation',
           reservation_id: targetedReservationImport?.reservationId ?? null,
         }),
-        message: 'Zodomus reservation queue and summary fetched and prepared for local booking import.',
+        message: 'Zodomus reservation summary fetched and prepared for local booking import.',
       };
     }
 
@@ -329,15 +323,19 @@ export class ZodomusChannelAdapter {
   private readSyncConcurrency() {
     const raw = process.env.ZODOMUS_SYNC_CONCURRENCY?.trim();
     if (!raw) {
-      return 8;
+      return this.defaultSyncConcurrency();
     }
 
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      return 8;
+      return this.defaultSyncConcurrency();
     }
 
     return Math.min(parsed, 32);
+  }
+
+  private defaultSyncConcurrency() {
+    return process.env.ZODOMUS_ENVIRONMENT?.trim() === 'sandbox' ? 1 : 8;
   }
 
   private async mapWithConcurrency<T, R>(
@@ -802,12 +800,11 @@ export class ZodomusChannelAdapter {
 
   private async fetchReservationDetails(
     client: ZodomusClient,
-    queuePayload: unknown,
     summaryPayload: unknown,
     channelId: string,
     propertyId: string,
   ) {
-    const references = this.extractReservationReferences(queuePayload, summaryPayload);
+    const references = this.extractReservationReferences(summaryPayload);
     const reservations = await Promise.all(
       references.map(async (reference) => {
         try {
@@ -832,6 +829,118 @@ export class ZodomusChannelAdapter {
     );
 
     return reservations.filter((entry) => entry !== null);
+  }
+
+  private batchInventoryRows(rows: unknown[]) {
+    const sortedRows = rows
+      .map((row) => this.readPayloadRecord(row, 'inventory sync item'))
+      .map((row) => ({
+        date: this.requiredString(row.date, 'inventory.date'),
+        external_room_id: this.requiredString(row.external_room_id, 'inventory.external_room_id'),
+        available: this.requiredInteger(row.available, 'inventory.available'),
+      }))
+      .sort((left, right) => {
+        if (left.external_room_id !== right.external_room_id) {
+          return left.external_room_id.localeCompare(right.external_room_id);
+        }
+
+        return left.date.localeCompare(right.date);
+      });
+
+    const segments: Array<{
+      external_room_id: string;
+      available: number;
+      date_from: string;
+      date_to: string;
+      rows: Array<{ date: string }>;
+    }> = [];
+
+    for (const row of sortedRows) {
+      const previous = segments[segments.length - 1];
+      if (
+        previous &&
+        previous.external_room_id === row.external_room_id &&
+        previous.available === row.available &&
+        previous.date_to === row.date
+      ) {
+        previous.rows.push({ date: row.date });
+        previous.date_to = this.nextDate(row.date);
+        continue;
+      }
+
+      segments.push({
+        external_room_id: row.external_room_id,
+        available: row.available,
+        date_from: row.date,
+        date_to: this.nextDate(row.date),
+        rows: [{ date: row.date }],
+      });
+    }
+
+    return segments;
+  }
+
+  private batchRateRows(rows: unknown[]) {
+    const sortedRows = rows
+      .map((row) => this.readPayloadRecord(row, 'rate sync item'))
+      .map((row) => ({
+        date: this.requiredString(row.date, 'rates.date'),
+        external_room_id: this.requiredString(row.external_room_id, 'rates.external_room_id'),
+        external_rate_id: this.requiredString(row.external_rate_id, 'rates.external_rate_id'),
+        currency: this.requiredString(row.currency, 'rates.currency'),
+        base_rate: this.requiredNumber(row.base_rate, 'rates.base_rate'),
+      }))
+      .sort((left, right) => {
+        const roomCompare = left.external_room_id.localeCompare(right.external_room_id);
+        if (roomCompare !== 0) {
+          return roomCompare;
+        }
+
+        const rateCompare = left.external_rate_id.localeCompare(right.external_rate_id);
+        if (rateCompare !== 0) {
+          return rateCompare;
+        }
+
+        return left.date.localeCompare(right.date);
+      });
+
+    const segments: Array<{
+      external_room_id: string;
+      external_rate_id: string;
+      currency: string;
+      base_rate: number;
+      date_from: string;
+      date_to: string;
+      rows: Array<{ date: string }>;
+    }> = [];
+
+    for (const row of sortedRows) {
+      const previous = segments[segments.length - 1];
+      if (
+        previous &&
+        previous.external_room_id === row.external_room_id &&
+        previous.external_rate_id === row.external_rate_id &&
+        previous.currency === row.currency &&
+        previous.base_rate === row.base_rate &&
+        previous.date_to === row.date
+      ) {
+        previous.rows.push({ date: row.date });
+        previous.date_to = this.nextDate(row.date);
+        continue;
+      }
+
+      segments.push({
+        external_room_id: row.external_room_id,
+        external_rate_id: row.external_rate_id,
+        currency: row.currency,
+        base_rate: row.base_rate,
+        date_from: row.date,
+        date_to: this.nextDate(row.date),
+        rows: [{ date: row.date }],
+      });
+    }
+
+    return segments;
   }
 
   private async tryFetchReservationDetailById(

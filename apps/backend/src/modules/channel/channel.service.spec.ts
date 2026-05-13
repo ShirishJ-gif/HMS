@@ -53,6 +53,27 @@ describe('ChannelService sync outcome resolution', () => {
     });
   });
 
+  it('marks booking syncs as failed when reservation summary returnCode is non-200', () => {
+    const outcome = (service as unknown as {
+      resolveSyncOutcome: (
+        syncType: ChannelSyncType,
+        responsePayload: Record<string, unknown>,
+      ) => { status: ChannelSyncStatus; errorMessage: string | null };
+    }).resolveSyncOutcome(ChannelSyncType.BOOKINGS, {
+      reservation_summary: {
+        status: {
+          returnCode: 400,
+          returnMessage: 'Invalid property id',
+        },
+      },
+    });
+
+    expect(outcome).toEqual({
+      status: ChannelSyncStatus.FAILED,
+      errorMessage: 'Invalid property id',
+    });
+  });
+
   it('marks booking syncs as partially failed when import summary reports failures', () => {
     const outcome = (service as unknown as {
       resolveSyncOutcome: (
@@ -81,6 +102,7 @@ describe('ChannelService sync outcome resolution', () => {
 
 describe('ChannelService Zodomus automation defaults', () => {
   const originalWindowDays = process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS;
+  const originalEnvironment = process.env.ZODOMUS_ENVIRONMENT;
 
   afterEach(() => {
     if (originalWindowDays === undefined) {
@@ -88,9 +110,16 @@ describe('ChannelService Zodomus automation defaults', () => {
     } else {
       process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS = originalWindowDays;
     }
+
+    if (originalEnvironment === undefined) {
+      delete process.env.ZODOMUS_ENVIRONMENT;
+    } else {
+      process.env.ZODOMUS_ENVIRONMENT = originalEnvironment;
+    }
   });
 
-  it('enforces a minimum forward sync window for existing connections', () => {
+  it('caps sandbox sync windows to a short forward range', () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
     process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS = '30';
     const service = Object.create(ChannelService.prototype) as ChannelService;
     const automation = (service as unknown as {
@@ -98,16 +127,42 @@ describe('ChannelService Zodomus automation defaults', () => {
         sync_window_days: number;
       };
     }).readZodomusAutomationConfig({
+      environment: 'sandbox',
       automation: {
         enabled: true,
         sync_window_days: 30,
       },
     });
 
-    expect(automation.sync_window_days).toBe(365);
+    expect(automation.sync_window_days).toBe(7);
   });
 
-  it('uses the same minimum forward sync window for default automation config', () => {
+  it('raises sandbox automation intervals to safer minimums for existing connections', () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
+    const service = Object.create(ChannelService.prototype) as ChannelService;
+    const automation = (service as unknown as {
+      readZodomusAutomationConfig: (record: Prisma.InputJsonObject) => {
+        inventory_interval_minutes: number;
+        rates_interval_minutes: number;
+        bookings_interval_minutes: number;
+      };
+    }).readZodomusAutomationConfig({
+      environment: 'sandbox',
+      automation: {
+        enabled: true,
+        inventory_interval_minutes: 15,
+        rates_interval_minutes: 60,
+        bookings_interval_minutes: 5,
+      },
+    });
+
+    expect(automation.inventory_interval_minutes).toBe(60);
+    expect(automation.rates_interval_minutes).toBe(180);
+    expect(automation.bookings_interval_minutes).toBe(15);
+  });
+
+  it('keeps the production minimum forward sync window', () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'production';
     process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS = '30';
     const service = Object.create(ChannelService.prototype) as ChannelService;
     const automation = (service as unknown as {
@@ -117,6 +172,27 @@ describe('ChannelService Zodomus automation defaults', () => {
     }).defaultZodomusAutomationConfig();
 
     expect(automation.sync_window_days).toBe(365);
+  });
+
+  it('skips automated scheduling while sandbox auth failures are still in cooldown', () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
+    const service = Object.create(ChannelService.prototype) as ChannelService;
+    const inCooldown = (service as unknown as {
+      isZodomusSyncInCooldown: (
+        syncLogs: Array<{ createdAt: Date; errorMessage: string | null }>,
+        environment?: string | null,
+      ) => boolean;
+    }).isZodomusSyncInCooldown(
+      [
+        {
+          createdAt: new Date(Date.now() - 10 * 60_000),
+          errorMessage: 'Zodomus GET /reservations-queue?channelId=1&propertyId=100 failed with status 401.',
+        },
+      ],
+      'sandbox',
+    );
+
+    expect(inCooldown).toBe(true);
   });
 });
 

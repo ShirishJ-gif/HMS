@@ -22,6 +22,8 @@ These describe the current reservation-centric system and should be treated as t
 - [metrics-alerting.md](/Users/cronberry/Hms/docs/metrics-alerting.md)
 - [legacy-booking-migration-validation.md](/Users/cronberry/Hms/docs/legacy-booking-migration-validation.md)
 - [ConnectionLifecycle.md](/Users/cronberry/Hms/docs/ConnectionLifecycle.md)
+- [zodomus-env-profiles.md](/Users/cronberry/Hms/docs/zodomus-env-profiles.md)
+- [zodomus-safe-testing-runbook.md](/Users/cronberry/Hms/docs/zodomus-safe-testing-runbook.md)
 - [zodomus-api-webhook-reference.md](/Users/cronberry/Hms/docs/zodomus-api-webhook-reference.md)
 - [zodomus-inventory-import-issue.md](/Users/cronberry/Hms/docs/zodomus-inventory-import-issue.md)
 

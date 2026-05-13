@@ -230,8 +230,8 @@ Body:
 
 HMS then calls:
 
-1. `GET /reservations-queue`
-2. `GET /reservations` for each queued reference
+1. `GET /reservations-summary`
+2. `GET /reservations` for each discovered reference
 
 Then HMS importer:
 
@@ -289,7 +289,7 @@ This keeps:
 
 - webhook = fast trigger
 - targeted reservation fetch = fast-path import when the webhook identifies a booking
-- reservation queue/detail APIs = fallback and normalized reconciliation source
+- reservation summary/detail APIs = fallback and normalized reconciliation source
 
 ## 10. Inventory fan-out after import
 

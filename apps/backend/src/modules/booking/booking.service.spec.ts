@@ -145,4 +145,22 @@ describe('BookingService', () => {
 
     expect(tx.billing.create).not.toHaveBeenCalled();
   });
+
+  it('builds reservation feed status filters with the prisma status field', () => {
+    const where = (
+      service as unknown as {
+        reservationFeedImportedWhere: (
+          propertyId: string | null,
+          search: string,
+          status?: BookingStatus,
+        ) => Record<string, unknown>;
+      }
+    ).reservationFeedImportedWhere('property-1', 'ops', BookingStatus.CHECKED_IN);
+
+    expect(where).toMatchObject({
+      propertyId: 'property-1',
+      status: BookingStatus.CHECKED_IN,
+    });
+    expect(where).not.toHaveProperty('reservationStatus');
+  });
 });
