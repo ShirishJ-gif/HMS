@@ -14,6 +14,15 @@ type CustomSelectProps = {
   value: string;
 };
 
+const triggerChevron =
+  'relative flex w-full min-h-[3.25rem] items-center justify-between rounded-xl border border-slate-200/90 bg-white px-4 py-3.5 pr-11 text-left text-sm font-semibold text-slate-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] transition-all before:pointer-events-none before:absolute before:right-[1.1rem] before:top-1/2 before:h-0.5 before:w-[0.48rem] before:-translate-y-1/2 before:rounded-full before:bg-slate-500 before:transition-transform after:pointer-events-none after:absolute after:right-[0.95rem] after:top-1/2 after:h-0.5 after:w-[0.48rem] after:-translate-y-1/2 after:rounded-full after:bg-slate-500 after:transition-transform';
+
+const menuClass =
+  'absolute left-0 right-0 top-[calc(100%+0.45rem)] z-40 grid max-h-72 gap-0.5 overflow-y-auto rounded-xl border border-slate-200/90 bg-white/95 p-1.5 shadow-2xl shadow-slate-900/15 ring-1 ring-slate-200/60 backdrop-blur-md [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden';
+
+const optionClass =
+  'flex w-full items-center justify-between gap-4 rounded-lg border border-transparent bg-transparent px-3 py-2.5 text-left text-sm font-semibold text-slate-800 transition-colors hover:border-indigo-200/80 hover:bg-indigo-50/80';
+
 export function CustomSelect({
   disabled = false,
   lockWhenSingleOption = false,
@@ -111,31 +120,40 @@ export function CustomSelect({
 
   if (shouldLockToSingleOption) {
     return (
-      <div className="custom-select custom-select-locked" ref={rootRef}>
-        <div className="custom-select-trigger" role="textbox" aria-readonly="true">
+      <div className="relative" ref={rootRef}>
+        <div
+          className={`${triggerChevron} before:rotate-45 after:-rotate-45 cursor-default border-slate-200/90`}
+          role="textbox"
+          aria-readonly="true"
+        >
           <span>{selectedOption?.label ?? options[0]?.label ?? placeholder}</span>
         </div>
       </div>
     );
   }
 
+  const triggerState =
+    open
+      ? 'before:-rotate-45 after:rotate-45 border-indigo-400 ring-2 ring-indigo-500/15'
+      : 'before:rotate-45 after:-rotate-45 border-slate-200/90 hover:border-slate-300';
+
   return (
-    <div className={`custom-select${disabled ? ' disabled' : ''}${open ? ' open' : ''}`} ref={rootRef}>
+    <div className="relative" ref={rootRef}>
       <button
         aria-controls={listboxId}
         aria-expanded={open}
         aria-haspopup="listbox"
-        className="custom-select-trigger"
+        className={`${triggerChevron} ${triggerState} disabled:cursor-not-allowed disabled:border-slate-200/80 disabled:bg-slate-50 disabled:text-slate-400`}
         disabled={disabled}
         id={buttonId}
         onClick={() => setOpen((current) => !current)}
         onKeyDown={handleButtonKeyDown}
         type="button"
       >
-        <span className={selectedOption ? '' : 'placeholder'}>{selectedOption?.label ?? placeholder}</span>
+        <span className={selectedOption ? '' : 'text-slate-400'}>{selectedOption?.label ?? placeholder}</span>
       </button>
       {open ? (
-        <div aria-labelledby={buttonId} className="custom-select-menu" id={listboxId} role="listbox">
+        <div aria-labelledby={buttonId} className={menuClass} id={listboxId} role="listbox">
           {options.length > 0 ? (
             options.map((option, index) => {
               const selected = option.value === value;
@@ -144,7 +162,11 @@ export function CustomSelect({
               return (
                 <button
                   aria-selected={selected}
-                  className={`custom-select-option${selected ? ' selected' : ''}${highlighted ? ' highlighted' : ''}`}
+                  className={`${optionClass} ${
+                    selected
+                      ? 'border-emerald-200/90 bg-emerald-50/90'
+                      : ''
+                  } ${highlighted && !selected ? 'border-indigo-200/90 bg-indigo-50/90' : ''}`}
                   key={option.value}
                   onClick={() => commitSelection(option.value)}
                   onMouseEnter={() => setHighlightedIndex(index)}
@@ -152,12 +174,14 @@ export function CustomSelect({
                   type="button"
                 >
                   <span>{option.label}</span>
-                  {selected ? <strong>Selected</strong> : null}
+                  {selected ? (
+                    <strong className="text-[0.65rem] font-bold uppercase tracking-wide text-emerald-700">Selected</strong>
+                  ) : null}
                 </button>
               );
             })
           ) : (
-            <div className="custom-select-empty">No options available</div>
+            <div className="px-3 py-2.5 text-sm font-semibold text-slate-500">No options available</div>
           )}
         </div>
       ) : null}

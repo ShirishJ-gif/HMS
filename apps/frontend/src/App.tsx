@@ -108,93 +108,130 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
-      <aside className={mobileNavOpen ? 'sidebar mobile-open' : 'sidebar'}>
-        <div className="sidebar-brand sidebar-brand-row">
-          <span className="sidebar-brand-badge">
-            <SidebarIcon name="brand" />
-          </span>
-          <div>
-            <h1>HMS Admin</h1>
-            <p className="sidebar-copy">Hotel operations</p>
+    <div className="grid h-dvh min-h-0 w-full grid-cols-1 overflow-hidden bg-gradient-to-br from-slate-100 via-slate-50 to-slate-200/90 min-[901px]:grid-cols-[17rem_1fr]">
+      <aside
+        className={[
+          'relative z-40 flex h-dvh min-h-0 w-full flex-col gap-5 overflow-x-hidden overflow-y-auto border-r border-white/10 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 px-4 py-5 text-slate-100 shadow-[4px_0_40px_-12px_rgba(0,0,0,0.35)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+          'max-[900px]:fixed max-[900px]:inset-y-0 max-[900px]:left-0 max-[900px]:w-[min(22rem,86vw)] max-[900px]:border-r max-[900px]:px-4 max-[900px]:py-5 max-[900px]:shadow-2xl max-[900px]:transition-transform max-[900px]:duration-200 max-[900px]:ease-out',
+          mobileNavOpen ? 'max-[900px]:translate-x-0' : 'max-[900px]:-translate-x-full',
+        ].join(' ')}
+      >
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_120%_80%_at_100%_0%,rgba(45,212,191,0.12),transparent_55%),radial-gradient(ellipse_80%_60%_at_0%_100%,rgba(99,102,241,0.14),transparent_50%)] opacity-90"
+        />
+        <div className="relative flex shrink-0 items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500/30 to-teal-500/25 text-white shadow-inner ring-1 ring-white/15">
+              <SidebarIcon className="h-5 w-5" name="brand" />
+            </span>
+            <div className="min-w-0">
+              <h1 className="m-0 bg-gradient-to-r from-white to-slate-300 bg-clip-text text-lg font-bold tracking-tight text-transparent sm:text-xl">
+                HMS Admin
+              </h1>
+              <p className="mt-0.5 text-xs font-semibold uppercase tracking-[0.12em] text-teal-300/90">Hotel operations</p>
+            </div>
           </div>
           <button
             aria-label="Close navigation"
-            className="mobile-nav-close"
+            className="hidden max-[900px]:inline-flex max-[900px]:h-10 max-[900px]:w-10 max-[900px]:shrink-0 max-[900px]:items-center max-[900px]:justify-center max-[900px]:rounded-xl max-[900px]:border max-[900px]:border-white/15 max-[900px]:bg-white/10 max-[900px]:text-white max-[900px]:shadow-sm max-[900px]:backdrop-blur-sm max-[900px]:transition hover:bg-white/15"
             onClick={() => setMobileNavOpen(false)}
             type="button"
           >
-            <SidebarIcon name="close" />
+            <SidebarIcon className="h-5 w-5" name="close" />
           </button>
         </div>
 
-        <nav aria-label="Admin pages">
+        <nav aria-label="Admin pages" className="relative flex min-h-0 flex-1 flex-col gap-5">
           {Array.from(new Set(pages.map((page) => page.section))).map((section) => (
-            <div className="nav-group" key={section}>
-              <p className="nav-group-label">{section}</p>
-              <div className="nav-list">
+            <div className="flex flex-col gap-2" key={section}>
+              <p className="m-0 text-[0.65rem] font-bold uppercase tracking-[0.14em] text-slate-500">{section}</p>
+              <div className="flex flex-col gap-1">
                 {pages
                   .filter((page) => page.section === section)
-                  .map((page) => (
-                    <button
-                      className={activePage === page.id ? 'nav-item active' : 'nav-item'}
-                      key={page.id}
-                      onClick={() => handlePageSelect(page.id)}
-                      type="button"
-                    >
-                      <span className="nav-item-icon">
-                        <SidebarIcon name={page.icon} />
-                      </span>
-                      {page.label}
-                    </button>
-                  ))}
+                  .map((page) => {
+                    const active = activePage === page.id;
+                    return (
+                      <button
+                        className={[
+                          'group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-[0.92rem] font-semibold transition',
+                          active
+                            ? 'border-teal-400/35 bg-gradient-to-r from-teal-500/20 via-emerald-500/10 to-indigo-500/15 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]'
+                            : 'border-transparent text-slate-300 hover:border-white/10 hover:bg-white/5 hover:text-white',
+                        ].join(' ')}
+                        key={page.id}
+                        onClick={() => handlePageSelect(page.id)}
+                        type="button"
+                      >
+                        <span
+                          className={[
+                            'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ring-1 transition',
+                            active
+                              ? 'bg-white/15 text-white ring-white/20'
+                              : 'bg-white/5 text-slate-400 ring-white/5 group-hover:bg-white/10 group-hover:text-white',
+                          ].join(' ')}
+                        >
+                          <SidebarIcon className="h-[1.05rem] w-[1.05rem]" name={page.icon} />
+                        </span>
+                        <span className="min-w-0 flex-1 leading-snug">{page.label}</span>
+                      </button>
+                    );
+                  })}
               </div>
             </div>
           ))}
         </nav>
 
-        <div className="sidebar-user-card">
-          <div className="sidebar-user-avatar">{user.name.charAt(0).toUpperCase()}</div>
-          <div className="sidebar-user-copy">
-            <strong>{user.name}</strong>
-            <span>{user.role.replace('_', ' ')}</span>
+        <div className="relative mt-auto flex shrink-0 items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.06] p-3 shadow-inner backdrop-blur-sm">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/40 to-teal-600/35 text-sm font-bold text-white ring-2 ring-white/10">
+            {user.name.charAt(0).toUpperCase()}
+          </div>
+          <div className="min-w-0 flex-1">
+            <strong className="block truncate text-sm font-semibold text-white">{user.name}</strong>
+            <span className="block truncate text-xs font-medium capitalize text-slate-400">
+              {user.role.replace('_', ' ')}
+            </span>
           </div>
           <button
-            className="sidebar-user-action"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-slate-200 transition hover:border-rose-400/30 hover:bg-rose-500/15 hover:text-rose-100"
             onClick={() => {
               clearChannelWorkspaceCache(user.id);
               clearStoredSession();
               setMobileNavOpen(false);
               setUser(null);
             }}
+            title="Sign out"
             type="button"
           >
-            <SidebarIcon name="logout" />
+            <SidebarIcon className="h-[1.05rem] w-[1.05rem]" name="logout" />
           </button>
         </div>
       </aside>
       <button
         aria-hidden={!mobileNavOpen}
-        className={mobileNavOpen ? 'mobile-nav-backdrop visible' : 'mobile-nav-backdrop'}
+        className={[
+          'fixed inset-0 z-30 bg-slate-950/50 backdrop-blur-[2px] transition-opacity min-[901px]:hidden',
+          mobileNavOpen ? 'opacity-100' : 'pointer-events-none opacity-0',
+        ].join(' ')}
         onClick={() => setMobileNavOpen(false)}
         tabIndex={mobileNavOpen ? 0 : -1}
         type="button"
       />
 
-      <main className="main-panel">
-        <div className="mobile-topbar">
+      <main className="h-dvh min-h-0 w-full overflow-y-auto overflow-x-hidden overscroll-contain px-4 pb-10 pt-4 [scrollbar-width:none] sm:px-6 md:px-6 md:pb-12 md:pt-5 max-[900px]:pt-3 [&::-webkit-scrollbar]:hidden max-sm:h-auto max-sm:min-h-0 max-sm:overflow-y-visible max-sm:px-4 max-sm:pb-8 max-sm:pt-3">
+        <div className="mb-4 hidden max-[900px]:flex max-[900px]:items-center max-[900px]:gap-3">
           <button
             aria-expanded={mobileNavOpen}
             aria-label="Open navigation"
-            className="mobile-topbar-action"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/90 bg-white text-slate-800 shadow-md shadow-slate-900/10 ring-1 ring-white/80 transition hover:border-indigo-200 hover:bg-slate-50"
             onClick={() => setMobileNavOpen(true)}
             type="button"
           >
-            <SidebarIcon name="menu" />
+            <SidebarIcon className="h-5 w-5" name="menu" />
           </button>
-          <div className="mobile-topbar-copy">
-            <p>{activePageMeta.section}</p>
-            <strong>{activePageMeta.label}</strong>
+          <div className="min-w-0">
+            <p className="m-0 text-[0.65rem] font-bold uppercase tracking-[0.12em] text-slate-500">{activePageMeta.section}</p>
+            <strong className="block truncate text-base font-bold text-slate-900">{activePageMeta.label}</strong>
           </div>
         </div>
         {activePage === 'dashboard' && <DashboardPage />}
@@ -225,9 +262,10 @@ function isChannelWorkspacePage(page: Page) {
   return page === 'mapping' || page === 'channels' || page === 'webhooks';
 }
 
-function SidebarIcon({ name }: { name: SidebarIconName }) {
+function SidebarIcon({ className, name }: { className?: string; name: SidebarIconName }) {
   const sharedProps = {
-    fill: 'none',
+    className: className ?? 'h-5 w-5',
+    fill: 'none' as const,
     stroke: 'currentColor',
     strokeLinecap: 'round' as const,
     strokeLinejoin: 'round' as const,
