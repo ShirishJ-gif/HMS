@@ -317,7 +317,8 @@ export class BookingService {
     const scopedPropertyId = propertyIdFilter(user);
     const effectivePropertyId = scopedPropertyId ?? query.property_id ?? null;
     const statusFilter = query.status;
-    const importedWhere = this.reservationFeedImportedWhere(effectivePropertyId, search, statusFilter);
+    const includeCancelled = query.include_cancelled ?? false;
+    const importedWhere = this.reservationFeedImportedWhere(effectivePropertyId, search, statusFilter, includeCancelled);
     const importedTake = page * limit;
 
     const [groups, importedTotal] = await this.prisma.$transaction([
@@ -350,6 +351,7 @@ export class BookingService {
       importedReservationIds,
       search,
       statusFilter,
+      includeCancelled,
     );
 
     const merged = [...importedResponses, ...providerOnlyResponses]
@@ -778,6 +780,7 @@ export class BookingService {
     importedReservationIds: Set<string>,
     search: string,
     statusFilter?: BookingStatus,
+    includeCancelled = false,
   ) {
     const syncLogs = await this.prisma.channelSyncLog.findMany({
       where: {
@@ -854,6 +857,10 @@ export class BookingService {
           continue;
         }
 
+        if (!statusFilter && !includeCancelled && response.reservation_status === BookingStatus.CANCELLED) {
+          continue;
+        }
+
         providerOnlyReservations.push(response);
       }
     }
@@ -865,10 +872,11 @@ export class BookingService {
     propertyId: string | null,
     search: string,
     status?: BookingStatus,
+    includeCancelled = false,
   ): Prisma.ReservationGroupWhereInput {
     return {
       ...(propertyId ? { propertyId } : {}),
-      ...(status ? { status } : {}),
+      ...(status ? { status } : includeCancelled ? {} : { status: { not: BookingStatus.CANCELLED } }),
       ...(search
         ? {
             OR: [

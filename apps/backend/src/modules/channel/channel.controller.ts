@@ -195,6 +195,12 @@ export class ChannelController {
     return this.channelService.sync(id, dto, user, idempotencyKey);
   }
 
+  @Post(':id/reservations-summary-backfill')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  backfillReservationsSummary(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.channelService.backfillReservationsSummary(id, user);
+  }
+
   @Get(':id/sync-logs')
   findSyncLogs(
     @CurrentUser() user: AuthenticatedUser,

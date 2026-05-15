@@ -1,11 +1,11 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { Billing, DashboardSummary, HousekeepingTask, Property, ReservationGroup } from '../api/types';
 import { fetchAllPages } from '../api/pagination';
 import { CustomSelect } from '../components/CustomSelect';
 import { FilterBar } from '../components/FilterBar';
-import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
+import { MetricCard, StatusBadge, labelCls, inputCls, secondaryBtn, linkBtn, ErrorMsg, LoadingMsg } from './ui';
 
 type BoardRow = {
   reservation_group_id: string;
@@ -16,736 +16,378 @@ type BoardRow = {
   room: ReservationGroup['rooms'][number];
 };
 
+type OperationsBoardData = {
+  billings: Billing[];
+  dashboard: DashboardSummary;
+  housekeeping: HousekeepingTask[];
+  properties: Property[];
+  reservationGroups: ReservationGroup[];
+};
+type OperationsBoardState = {
+  data: OperationsBoardData | null;
+  error: string | null;
+  loading: boolean;
+};
+
+let operationsBoardCache: OperationsBoardData | null = null;
+let operationsBoardCacheUpdatedAt = 0;
+const operationsBoardCacheTtlMs = 60_000;
+
 export function OperationsBoardPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [propertyFilter, setPropertyFilter] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
-  const [pendingReservationRoomActionId, setPendingReservationRoomActionId] = useState<string | null>(null);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [boardState, setBoardState] = useState<OperationsBoardState>(() => ({
+    data: operationsBoardCache,
+    error: null,
+    loading: !operationsBoardCache,
+  }));
   const today = getLocalDate();
-  const dashboardState = useAsync(async () => (await api.get<DashboardSummary>('/dashboard/summary')).data, [reloadKey]);
-  const reservationGroupsState = useAsync(
-    async () => fetchAllPages<ReservationGroup>('/bookings/groups'),
-    [reloadKey],
-  );
-  const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), []);
-  const housekeepingState = useAsync(async () => fetchAllPages<HousekeepingTask>('/housekeeping'), [reloadKey]);
-  const billingsState = useAsync(async () => fetchAllPages<Billing>('/billings'), [reloadKey]);
 
-  async function checkInReservationRoom(id: string) {
-    setActionError(null);
-    setPendingReservationRoomActionId(id);
+  useEffect(() => {
+    let active = true;
+    const hasFreshCache =
+      operationsBoardCache &&
+      reloadKey === 0 &&
+      Date.now() - operationsBoardCacheUpdatedAt < operationsBoardCacheTtlMs;
 
-    try {
-      await api.put(`/bookings/groups/rooms/${id}/checkin`);
-      setReloadKey((value) => value + 1);
-    } catch (error) {
-      setActionError(getApiErrorMessage(error));
-    } finally {
-      setPendingReservationRoomActionId(null);
+    if (hasFreshCache) {
+      setBoardState({ data: operationsBoardCache, error: null, loading: false });
+      return () => {
+        active = false;
+      };
     }
+
+    setBoardState((current) => ({
+      ...current,
+      error: null,
+      loading: !current.data,
+    }));
+
+    Promise.all([
+      api.get<DashboardSummary>('/dashboard/summary'),
+      fetchAllPages<ReservationGroup>('/bookings/groups'),
+      fetchAllPages<Property>('/properties'),
+      fetchAllPages<HousekeepingTask>('/housekeeping'),
+      fetchAllPages<Billing>('/billings'),
+    ])
+      .then(([dashboardResponse, loadedReservationGroups, loadedProperties, loadedHousekeeping, loadedBillings]) => {
+        if (!active) return;
+        const nextData = {
+          billings: loadedBillings,
+          dashboard: dashboardResponse.data,
+          housekeeping: loadedHousekeeping,
+          properties: loadedProperties,
+          reservationGroups: loadedReservationGroups,
+        };
+        operationsBoardCache = nextData;
+        operationsBoardCacheUpdatedAt = Date.now();
+        setBoardState({ data: nextData, error: null, loading: false });
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        setBoardState((current) => ({
+          data: current.data,
+          error: getApiErrorMessage(err),
+          loading: false,
+        }));
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [reloadKey]);
+
+  async function checkIn(id: string) {
+    setActionError(null); setPendingId(id);
+    try { await api.put(`/bookings/groups/rooms/${id}/checkin`); setReloadKey((v) => v + 1); }
+    catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); }
+  }
+  async function checkOut(id: string) {
+    setActionError(null); setPendingId(id);
+    try { await api.put(`/bookings/groups/rooms/${id}/checkout`); setReloadKey((v) => v + 1); }
+    catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); }
+  }
+  async function sendReminder(id: string) {
+    setActionError(null); setPendingId(id);
+    try { await api.post(`/bookings/groups/rooms/${id}/checkin-reminder`); setReloadKey((v) => v + 1); }
+    catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); }
   }
 
-  async function checkOutReservationRoom(id: string) {
-    setActionError(null);
-    setPendingReservationRoomActionId(id);
+  const properties = boardState.data?.properties ?? [];
+  const propertyScopeLabel = propertyFilter === 'ALL' ? 'All properties' : (properties.find((p) => p.id === propertyFilter)?.name ?? 'Selected');
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const reservationGroups = (boardState.data?.reservationGroups ?? []).filter((g) => propertyFilter === 'ALL' || g.property.id === propertyFilter);
+  const tasks = (boardState.data?.housekeeping ?? []).filter((t) => propertyFilter === 'ALL' || t.property.id === propertyFilter);
+  const billings = (boardState.data?.billings ?? []).filter((b) => propertyFilter === 'ALL' || b.reservation_room.property.id === propertyFilter);
 
-    try {
-      await api.put(`/bookings/groups/rooms/${id}/checkout`);
-      setReloadKey((value) => value + 1);
-    } catch (error) {
-      setActionError(getApiErrorMessage(error));
-    } finally {
-      setPendingReservationRoomActionId(null);
-    }
-  }
-
-  async function sendReservationRoomReminder(id: string) {
-    setActionError(null);
-    setPendingReservationRoomActionId(id);
-
-    try {
-      await api.post(`/bookings/groups/rooms/${id}/checkin-reminder`);
-      setReloadKey((value) => value + 1);
-    } catch (error) {
-      setActionError(getApiErrorMessage(error));
-    } finally {
-      setPendingReservationRoomActionId(null);
-    }
-  }
-
-  const properties = propertiesState.data ?? [];
-  const hasPropertyFilter = propertyFilter !== 'ALL';
-  const propertyScopeLabel = propertyFilter === 'ALL' ? 'All properties' : properties.find((property) => property.id === propertyFilter)?.name ?? 'Selected property';
-  const normalizedSearchQuery = normalizeSearchValue(searchQuery);
-  const reservationGroups = (reservationGroupsState.data ?? []).filter(
-    (group) => propertyFilter === 'ALL' || group.property.id === propertyFilter,
-  );
-  const tasks = (housekeepingState.data ?? []).filter(
-    (task) => propertyFilter === 'ALL' || task.property.id === propertyFilter,
-  );
-  const billings = (billingsState.data ?? []).filter(
-    (billing) => propertyFilter === 'ALL' || billing.reservation_room.property.id === propertyFilter,
-  );
-
-  const roomBalanceByReservationRoomId = new Map<string, number>();
-  const groupBalanceByReservationGroupId = new Map<string, number>();
-
-  for (const billing of billings) {
-    roomBalanceByReservationRoomId.set(
-      billing.reservation_room_id,
-      (roomBalanceByReservationRoomId.get(billing.reservation_room_id) ?? 0) + billing.balance_due,
-    );
-    groupBalanceByReservationGroupId.set(
-      billing.reservation_room.reservation_group_id,
-      (groupBalanceByReservationGroupId.get(billing.reservation_room.reservation_group_id) ?? 0) + billing.balance_due,
-    );
+  const roomBalanceMap = new Map<string, number>();
+  const groupBalanceMap = new Map<string, number>();
+  for (const b of billings) {
+    roomBalanceMap.set(b.reservation_room_id, (roomBalanceMap.get(b.reservation_room_id) ?? 0) + b.balance_due);
+    groupBalanceMap.set(b.reservation_room.reservation_group_id, (groupBalanceMap.get(b.reservation_room.reservation_group_id) ?? 0) + b.balance_due);
   }
 
   const openTasksByRoomId = new Map<string, HousekeepingTask[]>();
-
   for (const task of tasks) {
-    if (task.status === 'CLEAN') {
-      continue;
-    }
-
+    if (task.status === 'CLEAN') continue;
     const current = openTasksByRoomId.get(task.room_id) ?? [];
-    current.push(task);
-    openTasksByRoomId.set(task.room_id, current);
+    current.push(task); openTasksByRoomId.set(task.room_id, current);
   }
 
-  const allRows: BoardRow[] = reservationGroups.flatMap((group) =>
-    group.rooms.map((room) => ({
-      reservation_group_id: group.id,
-      reservation_group_status: group.reservation_status,
-      external_reservation_id: group.external_reservation_id,
-      property: group.property,
-      primary_guest_name: group.primary_guest?.name ?? 'Imported guest',
-      room,
-    })),
-  );
-  const filteredRows = normalizedSearchQuery.length === 0 ? allRows : allRows.filter((row) => matchesBoardSearch(row, normalizedSearchQuery));
+  const allRows: BoardRow[] = reservationGroups.flatMap((g) => g.rooms.map((r) => ({ reservation_group_id: g.id, reservation_group_status: g.reservation_status, external_reservation_id: g.external_reservation_id, property: g.property, primary_guest_name: g.primary_guest?.name ?? 'Imported guest', room: r })));
+  const filteredRows = normalizedQuery ? allRows.filter((row) => [row.room.guest_name, row.primary_guest_name, row.property.name, row.external_reservation_id, row.room.room.room_number, row.room.room_category.name, row.room.rate_plan.name].filter(Boolean).join(' ').toLowerCase().includes(normalizedQuery)) : allRows;
 
-  const arrivals = filteredRows
-    .filter((row) => row.room.arrival_date === today && row.room.reservation_status === 'BOOKED')
-    .sort((left, right) => {
-      const propertyCompare = left.property.name.localeCompare(right.property.name);
-      return propertyCompare !== 0 ? propertyCompare : left.primary_guest_name.localeCompare(right.primary_guest_name);
-    });
-  const inHouse = filteredRows
-    .filter((row) => row.room.reservation_status === 'CHECKED_IN')
-    .sort((left, right) => left.room.departure_date.localeCompare(right.room.departure_date));
-  const departures = filteredRows
-    .filter((row) => row.room.departure_date === today && ['CHECKED_IN', 'CHECKED_OUT'].includes(row.room.reservation_status))
-    .sort((left, right) => left.primary_guest_name.localeCompare(right.primary_guest_name));
-  const lateArrivals = filteredRows.filter((row) => row.room.arrival_date < today && row.room.reservation_status === 'BOOKED');
-  const checkInQueue = [...lateArrivals, ...arrivals].sort((left, right) => {
-    const leftLate = left.room.arrival_date < today;
-    const rightLate = right.room.arrival_date < today;
-
-    if (leftLate !== rightLate) {
-      return leftLate ? -1 : 1;
-    }
-
-    const arrivalCompare = left.room.arrival_date.localeCompare(right.room.arrival_date);
-    if (arrivalCompare !== 0) {
-      return arrivalCompare;
-    }
-
-    const propertyCompare = left.property.name.localeCompare(right.property.name);
-    return propertyCompare !== 0 ? propertyCompare : left.primary_guest_name.localeCompare(right.primary_guest_name);
-  });
+  const arrivals = filteredRows.filter((r) => r.room.arrival_date === today && r.room.reservation_status === 'BOOKED').sort((a, b) => a.property.name.localeCompare(b.property.name) || a.primary_guest_name.localeCompare(b.primary_guest_name));
+  const inHouse = filteredRows.filter((r) => r.room.reservation_status === 'CHECKED_IN').sort((a, b) => a.room.departure_date.localeCompare(b.room.departure_date));
+  const departures = filteredRows.filter((r) => r.room.departure_date === today && ['CHECKED_IN', 'CHECKED_OUT'].includes(r.room.reservation_status)).sort((a, b) => a.primary_guest_name.localeCompare(b.primary_guest_name));
+  const lateArrivals = filteredRows.filter((r) => r.room.arrival_date < today && r.room.reservation_status === 'BOOKED');
+  const checkInQueue = [...lateArrivals, ...arrivals].sort((a, b) => { const la = a.room.arrival_date < today, lb = b.room.arrival_date < today; if (la !== lb) return la ? -1 : 1; return a.room.arrival_date.localeCompare(b.room.arrival_date) || a.property.name.localeCompare(b.property.name) || a.primary_guest_name.localeCompare(b.primary_guest_name); });
   const visibleRows = [...checkInQueue, ...departures, ...inHouse];
-  const blockedRows = visibleRows.filter((row) => row.room.room.id && (openTasksByRoomId.get(row.room.room.id) ?? []).length > 0);
-  const balanceRows = visibleRows.filter((row) => (groupBalanceByReservationGroupId.get(row.reservation_group_id) ?? 0) > 0);
-  const visibleBalanceTotal = Array.from(
-    new Set(visibleRows.map((row) => row.reservation_group_id)),
-    (reservationGroupId) => groupBalanceByReservationGroupId.get(reservationGroupId) ?? 0,
-  ).reduce((sum, value) => sum + value, 0);
-  const hasSearchFilter = normalizedSearchQuery.length > 0;
-  const activeFilterCount = Number(hasPropertyFilter) + Number(hasSearchFilter);
-  const arrivalsMetricValue = hasSearchFilter ? arrivals.length : dashboardState.data?.reservation_room_arrivals_today ?? arrivals.length;
-  const departuresMetricValue = hasSearchFilter ? departures.length : dashboardState.data?.reservation_room_departures_today ?? departures.length;
-  const pendingBalanceMetricValue = hasSearchFilter ? visibleBalanceTotal : dashboardState.data?.pending_balance_total ?? visibleBalanceTotal;
-  const priorityQueueItems = [
-    {
-      key: 'late',
-      label: 'Late arrivals',
-      value: lateArrivals.length.toString(),
-      detail: 'Booked before today and still waiting for check-in.',
-      targetId: lateArrivals[0] ? getStayCardId(lateArrivals[0].room.id) : 'operations-check-in',
-    },
-    {
-      key: 'housekeeping',
-      label: 'Room readiness',
-      value: blockedRows.length.toString(),
-      detail: 'Stays touching rooms with open housekeeping or readiness work.',
-      targetId: blockedRows[0] ? getStayCardId(blockedRows[0].room.id) : 'operations-in-house',
-    },
-    {
-      key: 'balance',
-      label: 'Pending collections',
-      value: formatCurrency(dashboardState.data?.pending_balance_total ?? 0),
-      detail: 'Imported folios with balance still due before check-out.',
-      targetId: balanceRows[0] ? getStayCardId(balanceRows[0].room.id) : 'operations-in-house',
-    },
-  ].filter((item) => {
-    if (item.key === 'balance') {
-      return (dashboardState.data?.pending_balance_total ?? 0) > 0;
-    }
+  const blockedRows = visibleRows.filter((r) => r.room.room.id && (openTasksByRoomId.get(r.room.room.id) ?? []).length > 0);
+  const hasFilters = propertyFilter !== 'ALL' || normalizedQuery.length > 0;
 
-    return Number(item.value) > 0;
-  });
+  const priorityItems = [
+    { key: 'late', label: 'Late arrivals', value: lateArrivals.length.toString(), detail: 'Booked before today and still waiting.', targetId: `stay-${lateArrivals[0]?.room.id ?? 'checkin'}` },
+    { key: 'hk', label: 'Room readiness', value: blockedRows.length.toString(), detail: 'Stays with open housekeeping work.', targetId: `stay-${blockedRows[0]?.room.id ?? 'inhouse'}` },
+    { key: 'balance', label: 'Pending collections', value: formatCurrency(boardState.data?.dashboard.pending_balance_total ?? 0), detail: 'Open folio balances before checkout.', targetId: `stay-${visibleRows.find((r) => (groupBalanceMap.get(r.reservation_group_id) ?? 0) > 0)?.room.id ?? 'inhouse'}` },
+  ].filter((item) => item.key === 'balance' ? (boardState.data?.dashboard.pending_balance_total ?? 0) > 0 : Number(item.value) > 0);
+
+  const loading = boardState.loading && !boardState.data;
+  const error = boardState.error;
 
   return (
-    <section className="operations-board-page">
-      <div className="page-header">
-        <div>
-          <p className="eyebrow">Front desk</p>
-          <h2>Operations Board</h2>
-          <p className="page-subtitle">
-            Run check-ins, departures, and in-house stays from one staff board without dropping into channel or ledger detail.
-          </p>
-          <div className="operations-header-meta">
-            <span className="operations-header-chip">Service date {formatDisplayDate(today)}</span>
-            <span className="operations-header-chip">{propertyScopeLabel}</span>
-            <span className="operations-header-chip">{checkInQueue.length} in check-in queue</span>
-          </div>
+    <section className="space-y-5">
+      <div>
+        <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-amber-500 mb-1">Front desk</p>
+        <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Operations Board</h2>
+        <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-2xl">
+          Run check-ins, departures, and in-house stays from one staff board without dropping into channel or ledger detail.
+        </p>
+        <div className="flex flex-wrap gap-2 mt-2">
+          {[`Service date ${formatDisplayDate(today)}`, propertyScopeLabel, `${checkInQueue.length} in check-in queue`].map((chip) => (
+            <span key={chip} className="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-slate-100 text-slate-600">{chip}</span>
+          ))}
         </div>
       </div>
 
       <FilterBar
+        title="Refine operations view"
+        description="Scope the board by property or jump straight to a guest, room, reservation, category, or rate plan."
         actions={
-          <div className="operations-filter-actions">
-            <div className="operations-filter-summary">
-              <strong>{visibleRows.length}</strong>
-              <span>{hasSearchFilter ? 'stays match search' : 'stays in board scope'}</span>
-            </div>
-            <div className="operations-filter-summary">
-              <strong>{activeFilterCount}</strong>
-              <span>{activeFilterCount === 1 ? 'active filter' : 'active filters'}</span>
-            </div>
-            <button
-              className="secondary-button operations-filter-reset"
-              disabled={!hasPropertyFilter && !hasSearchFilter}
-              onClick={() => {
-                setPropertyFilter('ALL');
-                setSearchQuery('');
-              }}
-              type="button"
-            >
-              Reset filters
-            </button>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-500"><strong className="text-slate-800">{visibleRows.length}</strong> stays in scope</span>
+            <button className={secondaryBtn + ' !text-xs !px-3 !py-1.5'} disabled={!hasFilters} onClick={() => { setPropertyFilter('ALL'); setSearchQuery(''); }} type="button">Reset filters</button>
           </div>
         }
-        className="operations-filter-bar"
-        description="Scope the board by property or jump straight to a guest, room, reservation, category, or rate plan without losing the live queue."
-        title="Refine operations view"
       >
-        <label>
-          Quick search
-          <input
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Guest, room, reservation, category, or rate plan"
-            type="search"
-            value={searchQuery}
-          />
+        <label className={labelCls}>
+          <span>Quick search</span>
+          <input className={inputCls} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Guest, room, reservation, category, or rate" type="search" value={searchQuery} />
         </label>
-        <label>
-          Property
-          <CustomSelect
-            onChange={setPropertyFilter}
-            options={[
-              { label: 'All properties', value: 'ALL' },
-              ...properties.map((property) => ({
-                label: property.name,
-                value: property.id,
-              })),
-            ]}
-            value={propertyFilter}
-          />
+        <label className={labelCls}>
+          <span>Property</span>
+          <CustomSelect onChange={setPropertyFilter} options={[{ label: 'All properties', value: 'ALL' }, ...properties.map((p) => ({ label: p.name, value: p.id }))]} value={propertyFilter} />
         </label>
-        <label>
-          Service date
-          <input disabled type="date" value={today} />
+        <label className={labelCls}>
+          <span>Service date</span>
+          <input className={inputCls + ' bg-slate-50'} disabled type="date" value={today} />
         </label>
       </FilterBar>
 
-      {actionError && <p className="error">{actionError}</p>}
-      {(dashboardState.loading || reservationGroupsState.loading || propertiesState.loading || housekeepingState.loading || billingsState.loading) && (
-        <p className="muted">Loading front desk operations...</p>
-      )}
-      {(dashboardState.error || reservationGroupsState.error || propertiesState.error || housekeepingState.error || billingsState.error) && (
-        <p className="error">
-          {dashboardState.error ?? reservationGroupsState.error ?? propertiesState.error ?? housekeepingState.error ?? billingsState.error}
-        </p>
-      )}
+      {actionError && <ErrorMsg>{actionError}</ErrorMsg>}
+      {loading && <LoadingMsg>Loading front desk operations…</LoadingMsg>}
+      {error && <ErrorMsg>{error}</ErrorMsg>}
 
-      <div className="operations-snapshot-grid">
-        <SnapshotCard
-          label="Arrivals today"
-          value={arrivalsMetricValue.toString()}
-          tone="gold"
-          detail={`${lateArrivals.length} late arrivals still waiting`}
-        />
-        <SnapshotCard
-          label="In house now"
-          value={inHouse.length.toString()}
-          tone="green"
-          detail={`${blockedRows.length} stays touch rooms with open housekeeping`}
-        />
-        <SnapshotCard
-          label="Departures today"
-          value={departuresMetricValue.toString()}
-          tone="blue"
-          detail={`${departures.filter((row) => row.room.reservation_status === 'CHECKED_OUT').length} already checked out`}
-        />
-        <SnapshotCard
-          label="Pending folio balance"
-          value={formatCurrency(pendingBalanceMetricValue)}
-          tone="rose"
-          detail={`${dashboardState.data?.open_housekeeping_tasks ?? tasks.length} open housekeeping tasks`}
-        />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <MetricCard label="Arrivals today" value={(normalizedQuery ? arrivals.length : (boardState.data?.dashboard.reservation_room_arrivals_today ?? arrivals.length)).toString()} tone="gold" sub={`${lateArrivals.length} late arrivals`} />
+        <MetricCard label="In house now" value={inHouse.length.toString()} tone="green" sub={`${blockedRows.length} housekeeping blockers`} />
+        <MetricCard label="Departures today" value={(normalizedQuery ? departures.length : (boardState.data?.dashboard.reservation_room_departures_today ?? departures.length)).toString()} tone="blue" sub={`${departures.filter((r) => r.room.reservation_status === 'CHECKED_OUT').length} checked out`} />
+        <MetricCard label="Pending folio balance" value={formatCurrency(normalizedQuery ? Array.from(new Set(visibleRows.map((r) => r.reservation_group_id)), (id) => groupBalanceMap.get(id) ?? 0).reduce((s, v) => s + v, 0) : (boardState.data?.dashboard.pending_balance_total ?? 0))} tone="rose" sub={`${boardState.data?.dashboard.open_housekeeping_tasks ?? tasks.length} housekeeping tasks`} />
       </div>
 
-      <div className="operations-board-layout">
-        <BoardSection
-          className="operations-frontdesk-section"
-          sectionId="operations-check-in"
-          title="Check-in queue"
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Check-in queue */}
+        <BoardColumn
+          id="col-checkin"
           eyebrow="Front desk"
-          description="Late arrivals float to the top so the desk can clear missed arrivals before working the standard service-day queue."
-          emptyText="No booked room stays need check-in right now."
-          emptyStateDetail="All arrivals are clear for the current scope. Late arrivals and same-day check-ins will appear here."
-          emptyStateTitle="All check-ins cleared"
-          rows={checkInQueue}
-          renderRow={(row) => (
-            <StayActionCard
-              key={row.room.id}
-              row={row}
-              balanceDue={groupBalanceByReservationGroupId.get(row.reservation_group_id) ?? 0}
-              housekeepingTasks={row.room.room.id ? openTasksByRoomId.get(row.room.room.id) ?? [] : []}
-              variant="live"
-              primaryAction={
-                <button
-                  className="link-button compact-button"
-                  disabled={pendingReservationRoomActionId === row.room.id}
-                  onClick={() => void checkInReservationRoom(row.room.id)}
-                  type="button"
-                >
-                  {pendingReservationRoomActionId === row.room.id ? 'Processing...' : 'Check in'}
-                </button>
-              }
-              secondaryAction={
-                <button
-                  className="secondary-button compact-button"
-                  disabled={pendingReservationRoomActionId === row.room.id}
-                  onClick={() => void sendReservationRoomReminder(row.room.id)}
-                  type="button"
-                >
-                  {pendingReservationRoomActionId === row.room.id ? 'Processing...' : 'Send reminder'}
-                </button>
-              }
-            />
-          )}
-        />
-        <BoardSection
-          className="operations-turnover-section"
-          sectionId="operations-departures"
-          title="Departures today"
+          title="Check-in queue"
+          description="Late arrivals float to the top so the desk can clear missed arrivals first."
+          count={checkInQueue.length}
+          emptyTitle="All check-ins cleared"
+          emptyDetail="Late arrivals and same-day check-ins will appear here."
+        >
+          {checkInQueue.map((row) => (
+            <StayCard key={row.room.id} row={row} balanceDue={groupBalanceMap.get(row.reservation_group_id) ?? 0} hkTasks={row.room.room.id ? (openTasksByRoomId.get(row.room.room.id) ?? []) : []} today={today}>
+              <button className={linkBtn + ' !text-xs !px-3 !py-1.5'} disabled={pendingId === row.room.id} onClick={() => void checkIn(row.room.id)} type="button">{pendingId === row.room.id ? 'Processing…' : 'Check in'}</button>
+              <button className={secondaryBtn + ' !text-xs !px-3 !py-1.5'} disabled={pendingId === row.room.id} onClick={() => void sendReminder(row.room.id)} type="button">Send reminder</button>
+            </StayCard>
+          ))}
+        </BoardColumn>
+
+        {/* Departures */}
+        <BoardColumn
+          id="col-departures"
           eyebrow="Turnover"
-          description="Departing stays stay grouped here with checkout state, folio balance, and room-readiness blockers in one scan."
-          emptyText="No imported room stays depart today."
-          emptyStateDetail="No in-house stays are due to leave today in the current property scope."
-          emptyStateTitle="No departures waiting"
-          rows={departures}
-          renderRow={(row) => (
-            <StayActionCard
-              key={row.room.id}
-              row={row}
-              balanceDue={groupBalanceByReservationGroupId.get(row.reservation_group_id) ?? 0}
-              housekeepingTasks={row.room.room.id ? openTasksByRoomId.get(row.room.room.id) ?? [] : []}
-              primaryAction={
-                row.room.reservation_status === 'CHECKED_IN' ? (
-                  <button
-                    className="link-button compact-button"
-                    disabled={pendingReservationRoomActionId === row.room.id}
-                    onClick={() => void checkOutReservationRoom(row.room.id)}
-                    type="button"
-                  >
-                    {pendingReservationRoomActionId === row.room.id ? 'Processing...' : 'Check out'}
-                  </button>
-                ) : undefined
-              }
-            />
-          )}
-        />
-        <article className="insight-panel operations-section operations-action-needed-section">
-          <div className="section-heading">
-            <div className="operations-section-copy">
-              <p className="eyebrow">Action needed</p>
-              <div className="operations-section-title-row">
-                <h3>Priority queue</h3>
-                <span className="status-pill">{priorityQueueItems.length}</span>
-              </div>
-              <p className="operations-section-description">
-                Jump to the next queue that needs intervention instead of scanning the full board top to bottom.
-              </p>
+          title="Departures today"
+          description="Departing stays with checkout state, folio balance, and room-readiness blockers."
+          count={departures.length}
+          emptyTitle="No departures waiting"
+          emptyDetail="No in-house stays are due to leave today in the current scope."
+        >
+          {departures.map((row) => (
+            <StayCard key={row.room.id} row={row} balanceDue={groupBalanceMap.get(row.reservation_group_id) ?? 0} hkTasks={row.room.room.id ? (openTasksByRoomId.get(row.room.room.id) ?? []) : []} today={today}>
+              {row.room.reservation_status === 'CHECKED_IN' && (
+                <button className={linkBtn + ' !text-xs !px-3 !py-1.5'} disabled={pendingId === row.room.id} onClick={() => void checkOut(row.room.id)} type="button">{pendingId === row.room.id ? 'Processing…' : 'Check out'}</button>
+              )}
+            </StayCard>
+          ))}
+        </BoardColumn>
+
+        {/* Priority queue */}
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Action needed</p>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold text-slate-900">Priority queue</h3>
+              <span className="w-5 h-5 rounded-full bg-slate-100 text-xs font-bold text-slate-600 flex items-center justify-center">{priorityItems.length}</span>
             </div>
+            <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">Jump to the next queue that needs intervention.</p>
           </div>
-          {priorityQueueItems.length > 0 ? (
-            <div className="operations-priority-list">
-              {priorityQueueItems.map((item) => (
-                <button
-                  className="operations-priority-item"
-                  key={item.key}
-                  onClick={() => scrollToBoardTarget(item.targetId)}
-                  type="button"
-                >
-                  <span className="operations-priority-value">{item.value}</span>
-                  <span className="operations-priority-copy">
-                    <strong>{item.label}</strong>
-                    <span>{item.detail}</span>
-                  </span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <EmptyBoardState
-              detail="Late arrivals, housekeeping blockers, and pending balances will surface here when intervention is needed."
-              title="Front desk is clear"
-            />
-          )}
-        </article>
-        <BoardSection
-          className="operations-live-stays-section"
-          contentClassName="operations-live-card-list"
-          sectionId="operations-in-house"
-          title="In house"
-          eyebrow="Live stays"
-          description="Checked-in stays keep departure timing, folio pressure, and room readiness visible without opening the full reservation."
-          emptyText="No imported room stays are currently checked in."
-          emptyStateDetail="Checked-in stays will appear here with departure timing, folio balance, and room readiness context."
-          emptyStateTitle="No active in-house stays"
-          rows={inHouse}
-          renderRow={(row) => (
-            <StayActionCard
-              key={row.room.id}
-              row={row}
-              balanceDue={groupBalanceByReservationGroupId.get(row.reservation_group_id) ?? 0}
-              housekeepingTasks={row.room.room.id ? openTasksByRoomId.get(row.room.room.id) ?? [] : []}
-              variant="live"
-              primaryAction={
-                <button
-                  className="link-button compact-button"
-                  disabled={pendingReservationRoomActionId === row.room.id}
-                  onClick={() => void checkOutReservationRoom(row.room.id)}
-                  type="button"
-                >
-                  {pendingReservationRoomActionId === row.room.id ? 'Processing...' : 'Check out'}
-                </button>
-              }
-            />
-          )}
-        />
+          <div className="p-3">
+            {priorityItems.length > 0 ? (
+              <div className="space-y-2">
+                {priorityItems.map((item) => (
+                  <button key={item.key} onClick={() => document.getElementById(item.targetId)?.scrollIntoView({ behavior: 'smooth', block: 'center' })} type="button" className="w-full text-left flex items-center gap-3 bg-slate-50 hover:bg-indigo-50 border border-slate-100 hover:border-indigo-200 rounded-xl p-3 transition-colors">
+                    <span className="text-xl font-extrabold text-slate-900 min-w-[3rem] text-right">{item.value}</span>
+                    <div>
+                      <strong className="text-xs font-bold text-slate-800 block">{item.label}</strong>
+                      <span className="text-xs text-slate-400 leading-relaxed">{item.detail}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="py-6 text-center">
+                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 mb-2">All clear</span>
+                <p className="text-sm font-bold text-slate-800">Front desk is clear</p>
+                <p className="text-xs text-slate-400 mt-1 leading-relaxed">Late arrivals, housekeeping blockers, and pending balances will surface here.</p>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* In house — full width */}
+      <BoardColumn
+        id="col-inhouse"
+        eyebrow="Live stays"
+        title="In house"
+        description="Checked-in stays with departure timing, folio balance, and room readiness context."
+        count={inHouse.length}
+        emptyTitle="No active in-house stays"
+        emptyDetail="Checked-in stays will appear here with departure timing and folio context."
+        grid
+      >
+        {inHouse.map((row) => (
+          <StayCard key={row.room.id} row={row} balanceDue={groupBalanceMap.get(row.reservation_group_id) ?? 0} hkTasks={row.room.room.id ? (openTasksByRoomId.get(row.room.room.id) ?? []) : []} today={today}>
+            <button className={linkBtn + ' !text-xs !px-3 !py-1.5'} disabled={pendingId === row.room.id} onClick={() => void checkOut(row.room.id)} type="button">{pendingId === row.room.id ? 'Processing…' : 'Check out'}</button>
+          </StayCard>
+        ))}
+      </BoardColumn>
     </section>
   );
 }
 
-function SnapshotCard({
-  label,
-  value,
-  tone,
-  detail,
-}: {
-  label: string;
-  value: string;
-  tone: 'gold' | 'green' | 'blue' | 'rose';
-  detail: string;
+function BoardColumn({ id, eyebrow, title, description, count, emptyTitle, emptyDetail, children, grid }: {
+  id: string; eyebrow: string; title: string; description?: string; count: number;
+  emptyTitle: string; emptyDetail: string; children?: ReactNode; grid?: boolean;
 }) {
   return (
-    <article className={`metric-card operations-snapshot-card ${tone}`}>
-      <p>{label}</p>
-      <strong>{value}</strong>
-      <span>{detail}</span>
-    </article>
-  );
-}
-
-function BoardSection({
-  title,
-  eyebrow,
-  rows,
-  emptyText,
-  emptyStateDetail,
-  emptyStateTitle,
-  renderRow,
-  className,
-  contentClassName,
-  sectionId,
-  description,
-}: {
-  title: string;
-  eyebrow: string;
-  rows: BoardRow[];
-  emptyText: string;
-  emptyStateDetail?: string;
-  emptyStateTitle?: string;
-  renderRow: (row: BoardRow) => ReactNode;
-  className?: string;
-  contentClassName?: string;
-  sectionId?: string;
-  description?: string;
-}) {
-  return (
-    <article className={`insight-panel operations-section${className ? ` ${className}` : ''}`} id={sectionId}>
-      <div className="table-heading operations-section-heading">
-        <div className="operations-section-copy">
-          <p className="eyebrow">{eyebrow}</p>
-          <div className="operations-section-title-row">
-            <h3>{title}</h3>
-            <span className="status-pill">{rows.length}</span>
-          </div>
-          {description ? <p className="operations-section-description">{description}</p> : null}
+    <div id={id} className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-slate-100">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">{eyebrow}</p>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-bold text-slate-900">{title}</h3>
+          <span className="w-5 h-5 rounded-full bg-slate-100 text-xs font-bold text-slate-600 flex items-center justify-center">{count}</span>
         </div>
+        {description && <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">{description}</p>}
       </div>
-      <div className={contentClassName ?? 'operations-card-stack'}>
-        {rows.length === 0 ? (
-          <EmptyBoardState detail={emptyStateDetail ?? emptyText} title={emptyStateTitle ?? 'Nothing to work right now'} />
-        ) : (
-          rows.map((row) => renderRow(row))
-        )}
+      <div className={`p-3 max-h-[36rem] overflow-y-auto scrollbar-none ${grid ? 'grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3' : 'space-y-2.5'}`}>
+        {count === 0 ? (
+          <div className="py-8 text-center col-span-full">
+            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 mb-2">All clear</span>
+            <p className="text-sm font-bold text-slate-700">{emptyTitle}</p>
+            <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto leading-relaxed">{emptyDetail}</p>
+          </div>
+        ) : children}
       </div>
-    </article>
-  );
-}
-
-function EmptyBoardState({ title, detail }: { title: string; detail: string }) {
-  return (
-    <div className="empty-state-card operations-empty-state">
-      <span className="operations-empty-badge">All clear</span>
-      <strong>{title}</strong>
-      <p>{detail}</p>
     </div>
   );
 }
 
-function StayActionCard({
-  row,
-  balanceDue,
-  housekeepingTasks,
-  primaryAction,
-  secondaryAction,
-  variant = 'default',
-}: {
-  row: BoardRow;
-  balanceDue: number;
-  housekeepingTasks: HousekeepingTask[];
-  primaryAction?: ReactNode;
-  secondaryAction?: ReactNode;
-  variant?: 'default' | 'live';
+function StayCard({ row, balanceDue, hkTasks, today, children }: {
+  row: BoardRow; balanceDue: number; hkTasks: HousekeepingTask[]; today: string; children?: ReactNode;
 }) {
+  const isLate = row.room.arrival_date < today && row.room.reservation_status === 'BOOKED';
+  const isDueOut = row.room.departure_date === today && row.room.reservation_status === 'CHECKED_IN';
   const assignedRoom = row.room.room.room_number;
   const guestName = row.room.guest_name ?? row.primary_guest_name;
-  const lateArrival = row.room.arrival_date < getLocalDate() && row.room.reservation_status === 'BOOKED';
-  const departureToday = row.room.departure_date === getLocalDate();
-  const operationalNote = getOperationalNote({
-    lateArrival,
-    balanceDue,
-    departureToday,
-    housekeepingTaskCount: housekeepingTasks.length,
-    reservationStatus: row.room.reservation_status,
-  });
-  const stayFacts = [
-    { label: 'Category', value: row.room.room_category.name },
-    { label: 'Stay', value: formatStayWindow(row.room.arrival_date, row.room.departure_date) },
-    { label: 'Rate plan', value: row.room.rate_plan.name },
-    { label: 'Total', value: row.room.total_amount == null ? '-' : formatCurrency(row.room.total_amount) },
-  ];
-  const cardClassName = [
-    'operations-stay-card',
-    lateArrival ? 'operations-stay-card-late' : '',
-    variant === 'live' ? 'operations-stay-card-live' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-  const metaClassName =
-    variant === 'live'
-      ? 'operations-stay-meta operations-stay-meta-live'
-      : 'operations-stay-meta';
-  const tags = (
-    <>
-      {departureToday && row.room.reservation_status === 'CHECKED_IN' ? <span className="operations-tag">Due out today</span> : null}
-      {row.room.adults != null || row.room.children != null ? (
-        <span className="operations-tag">
-          {row.room.adults ?? 0} adults / {row.room.children ?? 0} children
-        </span>
-      ) : null}
-      {housekeepingTasks.length > 0 ? <span className="operations-tag warning">Readiness work open</span> : null}
-      {balanceDue > 0 ? <span className="operations-tag danger">Balance {formatCurrency(balanceDue)}</span> : null}
-    </>
-  );
+
+  const note = isLate ? 'Arrival date passed — clear before standard check-ins.'
+    : hkTasks.length > 0 ? 'Room has open housekeeping work.'
+    : balanceDue > 0 ? 'Outstanding folio balance should be cleared before checkout.'
+    : isDueOut ? 'Guest is due out today.'
+    : null;
+
+  const stayFmtr = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
+  const fmtDate = (d: string) => stayFmtr.format(new Date(`${d}T00:00:00`));
 
   return (
-    <article className={cardClassName} id={getStayCardId(row.room.id)}>
-      <div className="operations-stay-header">
-        <div className="operations-stay-identity">
-          <div className="operations-stay-topline">
-            <span className="operations-stay-room">{assignedRoom ? `Room ${assignedRoom}` : 'Room assignment pending'}</span>
-            {lateArrival ? <span className="operations-stay-flag">Late arrival</span> : null}
+    <div id={`stay-${row.room.id}`} className={`border rounded-xl p-3.5 space-y-2.5 ${isLate ? 'bg-rose-50 border-rose-200' : 'bg-slate-50 border-slate-200'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+            <span className="text-xs font-bold text-slate-800">{assignedRoom ? `Room ${assignedRoom}` : 'Room TBD'}</span>
+            {isLate && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">Late arrival</span>}
           </div>
-          <strong className="operations-stay-guest">{guestName}</strong>
-          <div className="operations-stay-context-row">
-            <span className="operations-stay-context-pill">{row.property.name}</span>
-            <span className="operations-stay-context-pill subdued">{row.external_reservation_id}</span>
+          <p className="text-sm font-extrabold text-slate-900 leading-tight truncate">{guestName}</p>
+          <div className="flex gap-1.5 mt-1 flex-wrap">
+            <span className="text-[11px] text-slate-500">{row.property.name}</span>
+            <span className="text-[11px] text-slate-400 font-mono">{row.external_reservation_id}</span>
           </div>
         </div>
-        <span className={`status-pill ${row.room.reservation_status.toLowerCase()}`}>{row.room.reservation_status}</span>
+        <StatusBadge label={row.room.reservation_status} />
       </div>
-      {variant === 'live' ? (
-        <div className="operations-live-body">
-          <div className="operations-live-main">
-            <div className={metaClassName}>
-              {stayFacts.map((fact) => (
-                <div className="operations-stay-kv" key={fact.label}>
-                  <span>{fact.label}</span>
-                  <strong>{fact.value}</strong>
-                </div>
-              ))}
-            </div>
-            {operationalNote ? (
-              <div className="operations-runbook">
-                <p className="operations-runbook-note">{operationalNote}</p>
-              </div>
-            ) : null}
-          </div>
-          <aside className="operations-live-sidepanel">
-            <div className="operations-tag-row operations-live-tag-row">{tags}</div>
-            {(primaryAction || secondaryAction) && (
-              <div className="compact-action-row operations-stay-actions operations-live-actions">
-                {primaryAction}
-                {secondaryAction}
-              </div>
-            )}
-          </aside>
-        </div>
-      ) : null}
-      {variant !== 'live' ? (
-        <>
-          <div className={metaClassName}>
-            {stayFacts.map((fact) => (
-              <div className="operations-stay-kv" key={fact.label}>
-                <span>{fact.label}</span>
-                <strong>{fact.value}</strong>
-              </div>
-            ))}
-          </div>
-          <div className="operations-tag-row">{tags}</div>
-          {operationalNote ? (
-            <div className="operations-runbook">
-              <p className="operations-runbook-note">{operationalNote}</p>
-            </div>
-          ) : null}
-          <div className="operations-stay-footer">
-            {(primaryAction || secondaryAction) && (
-              <div className="compact-action-row operations-stay-actions">
-                {primaryAction}
-                {secondaryAction}
-              </div>
-            )}
-          </div>
-        </>
-      ) : null}
-    </article>
+
+      <div className="grid grid-cols-2 gap-1.5 text-xs">
+        <div className="bg-white border border-slate-100 rounded-lg p-2"><span className="text-slate-400 block text-[11px]">Category</span><strong className="text-slate-800 text-[12px]">{row.room.room_category.name}</strong></div>
+        <div className="bg-white border border-slate-100 rounded-lg p-2"><span className="text-slate-400 block text-[11px]">Stay</span><strong className="text-slate-800 text-[12px]">{fmtDate(row.room.arrival_date)} → {fmtDate(row.room.departure_date)}</strong></div>
+        <div className="bg-white border border-slate-100 rounded-lg p-2"><span className="text-slate-400 block text-[11px]">Rate plan</span><strong className="text-slate-800 text-[12px] truncate block">{row.room.rate_plan.name}</strong></div>
+        <div className="bg-white border border-slate-100 rounded-lg p-2"><span className="text-slate-400 block text-[11px]">Total</span><strong className="text-slate-800 text-[12px]">{row.room.total_amount == null ? '—' : formatCurrency(row.room.total_amount)}</strong></div>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        {isDueOut && row.room.reservation_status === 'CHECKED_IN' && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700">Due out today</span>}
+        {(row.room.adults != null || row.room.children != null) && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">{row.room.adults ?? 0}A / {row.room.children ?? 0}C</span>}
+        {hkTasks.length > 0 && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700">Readiness work open</span>}
+        {balanceDue > 0 && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700">Balance {formatCurrency(balanceDue)}</span>}
+      </div>
+
+      {note && <p className="text-xs text-slate-500 bg-white border border-slate-100 rounded-lg px-2.5 py-2 leading-relaxed">{note}</p>}
+
+      {children && <div className="flex items-center gap-2 pt-1">{children}</div>}
+    </div>
   );
-}
-
-function getOperationalNote({
-  lateArrival,
-  balanceDue,
-  departureToday,
-  housekeepingTaskCount,
-  reservationStatus,
-}: {
-  lateArrival: boolean;
-  balanceDue: number;
-  departureToday: boolean;
-  housekeepingTaskCount: number;
-  reservationStatus: ReservationGroup['reservation_status'];
-}) {
-  if (lateArrival) {
-    return 'Arrival date already passed. Clear this stay before standard same-day check-ins.';
-  }
-
-  if (housekeepingTaskCount > 0) {
-    return 'Room still has open housekeeping or readiness work that front desk should resolve before handoff.';
-  }
-
-  if (balanceDue > 0) {
-    return 'Outstanding folio balance is still open and should be cleared before the stay closes.';
-  }
-
-  if (departureToday && reservationStatus === 'CHECKED_IN') {
-    return 'Guest is due out today. Keep folio review and room turnover aligned with checkout timing.';
-  }
-
-  return null;
-}
-
-function getStayCardId(reservationRoomId: string) {
-  return `operations-stay-${reservationRoomId}`;
-}
-
-function scrollToBoardTarget(targetId: string) {
-  document.getElementById(targetId)?.scrollIntoView({
-    behavior: 'smooth',
-    block: 'center',
-  });
-}
-
-function formatStayWindow(arrivalDate: string, departureDate: string) {
-  const formatter = new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-  });
-
-  return `${formatter.format(parseCalendarDate(arrivalDate))} to ${formatter.format(parseCalendarDate(departureDate))}`;
-}
-
-function parseCalendarDate(value: string) {
-  return new Date(`${value}T00:00:00`);
 }
 
 function formatDisplayDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-  }).format(parseCalendarDate(value));
-}
-
-function matchesBoardSearch(row: BoardRow, normalizedQuery: string) {
-  const searchableText = [
-    row.room.guest_name,
-    row.primary_guest_name,
-    row.property.name,
-    row.external_reservation_id,
-    row.room.room.room_number,
-    row.room.room_category.name,
-    row.room.rate_plan.name,
-  ]
-    .filter(Boolean)
-    .join(' ');
-
-  return normalizeSearchValue(searchableText).includes(normalizedQuery);
-}
-
-function normalizeSearchValue(value: string) {
-  return value.trim().toLowerCase();
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(`${value}T00:00:00`));
 }
 
 function getLocalDate() {
   const now = new Date();
-  const offsetMillis = now.getTimezoneOffset() * 60 * 1000;
-  return new Date(now.getTime() - offsetMillis).toISOString().slice(0, 10);
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }

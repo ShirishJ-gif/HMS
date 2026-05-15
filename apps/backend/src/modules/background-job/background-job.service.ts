@@ -234,7 +234,7 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     const [jobs, total] = await this.prisma.$transaction([
       this.prisma.backgroundJob.findMany({
         where,
-        orderBy: [{ runAt: 'asc' }, { createdAt: 'asc' }],
+        orderBy: [{ runAt: 'desc' }, { createdAt: 'desc' }],
         skip,
         take,
       }),
@@ -627,6 +627,7 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
         ? await (async () => {
             const importSummary = await this.zodomusReservationImportService.importFromSync({
               channelConnectionId: connection.id,
+              channelSyncLogId: log.id,
               propertyId: connection.propertyId,
               responsePayload: responsePayload as unknown as Prisma.JsonValue,
             });
@@ -1054,7 +1055,7 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
   }
 
   private productionMinimumZodomusSyncWindowDays() {
-    return this.readPositiveInteger(process.env.ZODOMUS_PRODUCTION_MIN_SYNC_WINDOW_DAYS, 365);
+    return this.readPositiveInteger(process.env.ZODOMUS_PRODUCTION_ROUTINE_SYNC_WINDOW_DAYS, 90);
   }
 
   private sandboxMaximumZodomusSyncWindowDays() {
@@ -1080,7 +1081,7 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
       return Math.min(normalized, this.sandboxMaximumZodomusSyncWindowDays());
     }
 
-    return Math.max(normalized, this.productionMinimumZodomusSyncWindowDays());
+    return normalized;
   }
 
   private zodomusEnvironment(record: Record<string, Prisma.JsonValue> | null) {

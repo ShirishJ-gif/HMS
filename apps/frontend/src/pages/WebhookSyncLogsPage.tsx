@@ -1,604 +1,451 @@
-import { ChannelSyncLog, InventoryReconciliation } from '../api/types';
-import {
-  formatConnectionLabel,
-  SummaryTile,
-  SyncStateCard,
-  formatDateTime,
-  formatInventorySnapshot,
-  formatSignedNumber,
-} from './channel/ChannelUi';
+import { useEffect, useMemo, useState } from 'react';
+import { ChannelSyncLog, ChannelSyncState, InventoryReconciliation } from '../api/types';
+import { formatConnectionLabel, SummaryTile, SyncStateCard, formatDateTime, formatInventorySnapshot, formatSignedNumber } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
 import { CustomSelect } from '../components/CustomSelect';
+import { secondaryBtn, Th, Td, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
 
 export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace }) {
+  const syncLogsPerPage = 8;
+  const [syncLogPage, setSyncLogPage] = useState(1);
+  const [selectedSyncLog, setSelectedSyncLog] = useState<ChannelSyncLog | null>(null);
   const selectedConnection = workspace.selectedConnection;
   const providerSummary = selectedConnection?.provider_config_summary;
+  const syncSummary = selectedConnection?.sync_summary ?? defaultSyncSummary;
   const connectionStatusTone = mapTone(selectedConnection?.status);
-  const webhookProcessedCount = workspace.webhookEvents.filter((event) => event.status === 'PROCESSED').length;
-  const webhookFailedCount = workspace.webhookEvents.filter((event) => event.status === 'FAILED').length;
-  const webhookReplayCount = workspace.webhookEvents.filter((event) => event.duplicate).length;
+  const webhookProcessedCount = workspace.webhookEvents.filter((e) => e.status === 'PROCESSED').length;
+  const webhookFailedCount = workspace.webhookEvents.filter((e) => e.status === 'FAILED').length;
+  const webhookReplayCount = workspace.webhookEvents.filter((e) => e.duplicate).length;
+  const sortedSyncLogs = useMemo(() => [...workspace.syncLogs].sort((a, b) => compareDateDesc(a.created_at, b.created_at)), [workspace.syncLogs]);
+  const totalSyncLogPages = Math.max(1, Math.ceil(sortedSyncLogs.length / syncLogsPerPage));
+  const visibleSyncLogs = sortedSyncLogs.slice((syncLogPage - 1) * syncLogsPerPage, syncLogPage * syncLogsPerPage);
+
+  useEffect(() => { setSyncLogPage(1); setSelectedSyncLog(null); }, [workspace.selectedConnectionId, workspace.syncLogs.length]);
+  useEffect(() => { if (syncLogPage > totalSyncLogPages) setSyncLogPage(totalSyncLogPages); }, [syncLogPage, totalSyncLogPages]);
 
   return (
-    <section className="channel-page webhook-sync-page">
-      <div className="page-header webhook-sync-header">
+    <section className="space-y-5">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <p className="eyebrow">Integrations</p>
-          <h2>Connection diagnostics</h2>
-          <p className="page-subtitle">
-            Follow one OTA connection from sync health through recent attempts, row-level failures, inventory drift, and the property-scoped webhook
-            ledger.
-          </p>
+          <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-amber-500 mb-1">Integrations</p>
+          <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Connection diagnostics</h2>
+          <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-2xl">Follow one OTA connection from sync health through recent attempts, row-level failures, inventory drift, and the property-scoped webhook ledger.</p>
         </div>
-        <section className="ota-mapping-connection-card webhook-sync-connection-card">
-          <div className="ota-mapping-connection-topline">
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-4 space-y-3 min-w-[16rem]">
+          <div className="flex items-start justify-between gap-2">
             <div>
-              <p className="eyebrow">OTA connection</p>
-              <h3>{selectedConnection ? formatConnectionLabel(selectedConnection) : 'Select OTA'}</h3>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">OTA connection</p>
+              <h3 className="text-sm font-bold text-slate-900">{selectedConnection ? formatConnectionLabel(selectedConnection) : 'Select OTA'}</h3>
             </div>
-            {selectedConnection ? <span className={`channel-mode-badge ${connectionStatusTone}`}>{selectedConnection.status}</span> : null}
+            {selectedConnection && <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold ${connectionToneClass(connectionStatusTone)}`}>{selectedConnection.status}</span>}
           </div>
-          {workspace.zodomusConnections.length > 1 ? (
-            <label>
-              OTA connection
-              <CustomSelect
-                disabled={workspace.zodomusConnections.length === 0}
-                onChange={workspace.selectConnection}
-                options={workspace.zodomusConnections.map((connection) => ({
-                  label: formatConnectionLabel(connection),
-                  value: connection.id,
-                }))}
-                placeholder="Select connection"
-                value={workspace.selectedConnectionId}
-              />
+          {workspace.zodomusConnections.length > 1 && (
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-slate-600">OTA connection</span>
+              <CustomSelect disabled={workspace.zodomusConnections.length === 0} onChange={workspace.selectConnection} options={workspace.zodomusConnections.map((c) => ({ label: formatConnectionLabel(c), value: c.id }))} placeholder="Select connection" value={workspace.selectedConnectionId} />
             </label>
-          ) : (
-            <div className="ota-mapping-connection-single">
-              <span className="ota-mapping-connection-single-label">OTA connection</span>
-            </div>
           )}
           {selectedConnection ? (
-            <div className="ota-mapping-connection-meta webhook-sync-header-meta">
-              <span className="status-pill">{selectedConnection.property.code}</span>
-              <span className="status-pill">{selectedConnection.provider}</span>
-              <span className="status-pill">{providerSummary?.environment ?? 'Default'}</span>
+            <div className="flex flex-wrap gap-1.5">
+              {[selectedConnection.property.code, selectedConnection.provider, providerSummary?.environment ?? 'Default'].map((tag) => (
+                <span key={tag} className="inline-flex items-center px-2 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">{tag}</span>
+              ))}
             </div>
-          ) : (
-            <p className="muted">Choose a saved Zodomus connection to inspect sync health and webhook intake.</p>
-          )}
-        </section>
-      </div>
-
-      {workspace.loading && <p className="muted">Loading channel diagnostics...</p>}
-      {workspace.error && <p className="error">{workspace.error}</p>}
-      {workspace.status && <p className="success">{workspace.status}</p>}
-
-      <div className="channel-workspace webhook-sync-workspace">
-        <div className="channel-main webhook-sync-main">
-          {selectedConnection ? (
-            <>
-              <div className="channel-summary-grid webhook-sync-summary-grid">
-                <SummaryTile
-                  label="Inventory sync"
-                  value={selectedConnection.sync_summary.inventory.last_status ?? 'Never run'}
-                  detail={formatSyncSnapshotDetail(selectedConnection.sync_summary.inventory)}
-                />
-                <SummaryTile
-                  label="Rates sync"
-                  value={selectedConnection.sync_summary.rates.last_status ?? 'Never run'}
-                  detail={formatSyncSnapshotDetail(selectedConnection.sync_summary.rates)}
-                />
-                <SummaryTile
-                  label="Reservation import"
-                  value={selectedConnection.sync_summary.bookings.last_status ?? 'Never run'}
-                  detail={formatSyncSnapshotDetail(selectedConnection.sync_summary.bookings)}
-                />
-                <SummaryTile
-                  label="Inventory drift"
-                  value={formatReconciliationValue(workspace.inventoryReconciliation, workspace.inventoryReconciliationLoading)}
-                  detail={formatReconciliationDetail(workspace.inventoryReconciliation, workspace.inventoryReconciliationLoading)}
-                />
-              </div>
-
-              <section className="channel-panel webhook-sync-wide-panel">
-                <div className="section-heading">
-                  <div>
-                    <p className="eyebrow">Workspace</p>
-                    <h3>Connection snapshot</h3>
-                  </div>
-                  <span className={`status-pill ${connectionStatusTone}`}>{selectedConnection.status}</span>
-                </div>
-                <div className="webhook-sync-facts">
-                  <article className="webhook-sync-fact">
-                    <span>Property</span>
-                    <strong>{selectedConnection.property.name}</strong>
-                  </article>
-                  <article className="webhook-sync-fact">
-                    <span>Provider</span>
-                    <strong>{selectedConnection.provider}</strong>
-                  </article>
-                  <article className="webhook-sync-fact">
-                    <span>External hotel</span>
-                    <strong>{selectedConnection.external_hotel_id ?? 'Not linked'}</strong>
-                  </article>
-                  <article className="webhook-sync-fact">
-                    <span>Sync window</span>
-                    <strong>{workspace.syncWindowDays} day(s)</strong>
-                  </article>
-                  <article className="webhook-sync-fact">
-                    <span>Environment</span>
-                    <strong>{providerSummary?.environment ?? 'Default'}</strong>
-                  </article>
-                  <article className="webhook-sync-fact">
-                    <span>Ready state</span>
-                    <strong>{providerSummary?.setup_status.ready ? 'Ready' : 'Needs action'}</strong>
-                  </article>
-                </div>
-                <div className="webhook-sync-scope-grid">
-                  <article className="webhook-sync-scope-note">
-                    <p className="eyebrow">Connection-scoped</p>
-                    <h4>Primary diagnostics</h4>
-                    <p>Sync health, sync logs, failed inventory rows, and inventory reconciliation are tied directly to this connection ID.</p>
-                  </article>
-                  <article className="webhook-sync-scope-note">
-                    <p className="eyebrow">Property-scoped</p>
-                    <h4>Webhook ledger</h4>
-                    <p>Webhook events are filtered by property, so they describe inbound traffic for this property rather than only this single connection.</p>
-                  </article>
-                </div>
-              </section>
-
-              <section className="channel-panel webhook-sync-wide-panel">
-                <div className="section-heading">
-                  <div>
-                    <p className="eyebrow">Operations</p>
-                    <h3>Manual sync runbook</h3>
-                  </div>
-                </div>
-                <div className="webhook-sync-scope-grid">
-                  <article className="webhook-sync-scope-note">
-                    <p className="eyebrow">Inventory</p>
-                    <h4>{workspace.syncGuidance.inventory.title}</h4>
-                    <p>{workspace.syncGuidance.inventory.when}</p>
-                    <p>{workspace.syncGuidance.inventory.warning}</p>
-                  </article>
-                  <article className="webhook-sync-scope-note">
-                    <p className="eyebrow">Rates</p>
-                    <h4>{workspace.syncGuidance.rates.title}</h4>
-                    <p>{workspace.syncGuidance.rates.when}</p>
-                    <p>{workspace.syncGuidance.rates.warning}</p>
-                  </article>
-                </div>
-                <p className="channel-panel-footnote">{workspace.syncGuidance.queueHint}</p>
-              </section>
-
-              <section className="channel-panel webhook-sync-wide-panel">
-                <div className="section-heading">
-                  <div>
-                    <p className="eyebrow">Operations</p>
-                    <h3>Sync health</h3>
-                  </div>
-                  <div className="button-row">
-                    <button
-                      className="secondary-button"
-                      disabled={workspace.pendingAction === 'inventory-sync'}
-                      onClick={() => void workspace.runInventorySync()}
-                      type="button"
-                    >
-                      {workspace.pendingAction === 'inventory-sync' ? 'Queueing...' : 'Sync inventory'}
-                    </button>
-                    <button
-                      className="secondary-button"
-                      disabled={workspace.pendingAction === 'rates-sync'}
-                      onClick={() => void workspace.runRatesSync()}
-                      type="button"
-                    >
-                      {workspace.pendingAction === 'rates-sync' ? 'Queueing...' : 'Sync rates'}
-                    </button>
-                  </div>
-                </div>
-                <div className="split-panels webhook-sync-compact-cards">
-                  <SyncStateCard label="Inventory" state={selectedConnection.sync_summary.inventory} />
-                  <SyncStateCard label="Rates" state={selectedConnection.sync_summary.rates} />
-                  <SyncStateCard label="Reservation import" state={selectedConnection.sync_summary.bookings} />
-                </div>
-                <p className="muted">
-                  Automation currently compares or pushes a {workspace.syncWindowDays}-day window from today. Use the detailed logs below for request and
-                  provider payloads.
-                </p>
-                {!providerSummary?.setup_status.ready ? (
-                  <p className="channel-panel-footnote">
-                    This connection is not yet ready. Manual sync calls can still be queued from HMS, but the provider may reject them until setup and final checks are complete.
-                  </p>
-                ) : null}
-              </section>
-
-              <div className="webhook-sync-log-grid">
-                <section className="channel-panel">
-                  <div className="section-heading">
-                    <div>
-                      <p className="eyebrow">Sync logs</p>
-                      <h3>Recent connection attempts</h3>
-                    </div>
-                    <span className="status-pill">{workspace.syncLogs.length}</span>
-                  </div>
-                  {workspace.syncLogsLoading ? <p className="muted">Loading sync logs…</p> : null}
-                  {workspace.syncLogsError ? <p className="error">{workspace.syncLogsError}</p> : null}
-                  {workspace.syncLogs.length > 0 ? (
-                    <div className="diagnostic-log-list">
-                      {workspace.syncLogs.slice(0, 12).map((log, index) => {
-                        const syncSummary = summarizeSyncLog(log);
-
-                        return (
-                          <details className="diagnostic-log-item" key={log.id} open={index === 0}>
-                            <summary>
-                              <div className="diagnostic-log-top">
-                                <div className="diagnostic-log-title">
-                                  <span className={`status-pill ${mapTone(log.status)}`}>{log.status}</span>
-                                  <strong>{log.sync_type}</strong>
-                                  <span className="diagnostic-log-time">{formatDateTime(log.created_at)}</span>
-                                </div>
-                                <span className="diagnostic-log-id">{shortId(log.id)}</span>
-                              </div>
-                              <div className="diagnostic-log-meta">
-                                <span>{syncSummary.inlineSummary}</span>
-                                {syncSummary.errorText ? <span className="diagnostic-error-text">{syncSummary.errorText}</span> : null}
-                              </div>
-                            </summary>
-                            <div className="diagnostic-log-details">
-                              <div className="diagnostic-kv-grid">
-                                <DetailStat label="Created" value={formatDateTime(log.created_at)} />
-                                <DetailStat label="Status" value={log.status} />
-                                <DetailStat label="Type" value={log.sync_type} />
-                                <DetailStat label="Sync log ID" value={log.id} />
-                              </div>
-                              <div className="diagnostic-json-grid">
-                                <PayloadBlock label="Request payload" value={log.request_payload} />
-                                <PayloadBlock label="Response payload" value={log.response_payload} />
-                              </div>
-                            </div>
-                          </details>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="muted">No sync logs are available for this connection yet.</p>
-                  )}
-                </section>
-
-                <section className="channel-panel">
-                  <div className="section-heading">
-                    <div>
-                      <p className="eyebrow">Failed inventory rows</p>
-                      <h3>Persisted row analytics</h3>
-                    </div>
-                  </div>
-                  {workspace.inventoryRowResultsLoading ? <p className="muted">Loading row-level inventory failures…</p> : null}
-                  {workspace.inventoryRowResultsError ? <p className="error">{workspace.inventoryRowResultsError}</p> : null}
-                  {workspace.inventoryRowResults ? (
-                    <>
-                      <div className="split-panels webhook-sync-compact-cards">
-                        <SummaryTile
-                          detail="Historical inventory row attempts persisted for this connection across sync runs."
-                          label="Stored row attempts"
-                          value={String(workspace.inventoryRowResults.summary.total_rows)}
-                        />
-                        <SummaryTile
-                          detail="Historical failed row attempts across the persisted inventory sync runs."
-                          label="Failed row attempts"
-                          value={String(workspace.inventoryRowResults.summary.failed_rows)}
-                        />
-                        <SummaryTile
-                          detail="Distinct provider rooms that have at least one persisted failed row attempt."
-                          label="Failed rooms"
-                          value={String(workspace.inventoryRowResults.summary.failed_rooms)}
-                        />
-                        <SummaryTile
-                          detail="Rows that completed successfully and were persisted."
-                          label="Succeeded rows"
-                          value={String(workspace.inventoryRowResults.summary.succeeded_rows)}
-                        />
-                      </div>
-                      <div className="split-panels webhook-sync-mini-grid">
-                        <div className="mapping-card">
-                          <div className="section-heading">
-                            <div>
-                              <p className="eyebrow">Recent failures</p>
-                              <h3>Latest failed room/date rows</h3>
-                            </div>
-                          </div>
-                          {workspace.inventoryRowResults.recent_failed_rows.length > 0 ? (
-                            <div className="mapping-scroll">
-                              <table>
-                                <thead>
-                                  <tr>
-                                    <th>Date</th>
-                                    <th>Provider room</th>
-                                    <th>Available</th>
-                                    <th>Error</th>
-                                    <th>Seen</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {workspace.inventoryRowResults.recent_failed_rows.slice(0, 10).map((row) => (
-                                    <tr key={row.id}>
-                                      <td>{row.sync_date}</td>
-                                      <td>{row.external_room_id}</td>
-                                      <td>{row.available}</td>
-                                      <td>{row.error_message ?? '-'}</td>
-                                      <td>{formatDateTime(row.created_at)}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          ) : (
-                            <p className="muted">No failed inventory rows have been persisted for this connection yet.</p>
-                          )}
-                        </div>
-                        <div className="mapping-card">
-                          <div className="section-heading">
-                            <div>
-                              <p className="eyebrow">Recurring rooms</p>
-                              <h3>Most failure-prone provider rooms</h3>
-                            </div>
-                          </div>
-                          {workspace.inventoryRowResults.grouped_failures.length > 0 ? (
-                            <div className="mapping-scroll">
-                              <table>
-                                <thead>
-                                  <tr>
-                                    <th>Provider room</th>
-                                    <th>Failures</th>
-                                    <th>Last date</th>
-                                    <th>Last failure</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {workspace.inventoryRowResults.grouped_failures.slice(0, 10).map((row) => (
-                                    <tr key={row.external_room_id}>
-                                      <td>{row.external_room_id}</td>
-                                      <td>{row.failure_count}</td>
-                                      <td>{row.last_failed_date ?? '-'}</td>
-                                      <td>{row.last_failed_at ? formatDateTime(row.last_failed_at) : '-'}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          ) : (
-                            <p className="muted">No recurring failed rooms are currently persisted.</p>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  ) : null}
-                </section>
-              </div>
-
-              <section className="channel-panel webhook-sync-wide-panel">
-                <div className="section-heading">
-                  <div>
-                    <p className="eyebrow">Operations</p>
-                    <h3>Inventory reconciliation</h3>
-                  </div>
-                  <div className="button-row">
-                    <button
-                      className="secondary-button"
-                      disabled={workspace.inventoryReconciliationLoading || workspace.pendingAction === 'refresh-reconciliation'}
-                      onClick={() => void workspace.refreshInventoryReconciliation()}
-                      type="button"
-                    >
-                      {workspace.pendingAction === 'refresh-reconciliation' ? 'Refreshing...' : 'Refresh'}
-                    </button>
-                    <button
-                      className="secondary-button"
-                      disabled={!workspace.inventoryReconciliation?.compared_window || workspace.pendingAction === 'resync-reconciliation' || workspace.inventoryReconciliationLoading}
-                      onClick={() => void workspace.resyncInventoryDriftWindow()}
-                      type="button"
-                    >
-                      {workspace.pendingAction === 'resync-reconciliation' ? 'Queueing...' : 'Re-sync compared window'}
-                    </button>
-                    <button
-                      className="secondary-button"
-                      disabled={workspace.latestInventorySyncLog?.status !== 'PARTIAL_FAILED' || workspace.pendingAction === 'retry-failed-inventory-rows' || workspace.inventoryReconciliationLoading}
-                      onClick={() => void workspace.retryFailedInventoryRows()}
-                      type="button"
-                    >
-                      {workspace.pendingAction === 'retry-failed-inventory-rows' ? 'Queueing...' : 'Retry failed rows'}
-                    </button>
-                  </div>
-                </div>
-                {workspace.inventoryReconciliationLoading ? <p className="muted">Calculating current HMS inventory drift…</p> : null}
-                {workspace.inventoryReconciliationError ? <p className="error">{workspace.inventoryReconciliationError}</p> : null}
-                {workspace.inventoryReconciliation ? (
-                  <>
-                    <div className="wizard-summary">
-                      <span className={`status-pill ${mapTone(workspace.inventoryReconciliation.status)}`}>{formatReconciliationValue(workspace.inventoryReconciliation, false)}</span>
-                      {workspace.inventoryReconciliation.compared_window ? (
-                        <span className="status-pill">
-                          Window: {workspace.inventoryReconciliation.compared_window.from} to {workspace.inventoryReconciliation.compared_window.to}
-                        </span>
-                      ) : null}
-                      {workspace.inventoryReconciliation.latest_synced_at ? (
-                        <span className="status-pill">Last baseline: {formatDateTime(workspace.inventoryReconciliation.latest_synced_at)}</span>
-                      ) : null}
-                    </div>
-                    <div className="split-panels webhook-sync-compact-cards">
-                      <SummaryTile
-                        detail="Rows compared across the latest successful inventory window."
-                        label="Compared rows"
-                        value={String(workspace.inventoryReconciliation.summary.compared_row_count)}
-                      />
-                      <SummaryTile
-                        detail="Rows whose HMS inventory still matches the last pushed snapshot."
-                        label="Unchanged"
-                        value={String(workspace.inventoryReconciliation.summary.unchanged_rows)}
-                      />
-                      <SummaryTile
-                        detail="Rows that differ, disappeared, or were added since the last successful push."
-                        label="Drift rows"
-                        value={String(
-                          workspace.inventoryReconciliation.summary.drifted_rows +
-                            workspace.inventoryReconciliation.summary.snapshot_only_rows +
-                            workspace.inventoryReconciliation.summary.current_only_rows,
-                        )}
-                      />
-                      <SummaryTile
-                        detail="Net HMS available-room change across the compared window."
-                        label="Availability delta"
-                        value={formatSignedNumber(workspace.inventoryReconciliation.summary.total_available_delta)}
-                      />
-                    </div>
-                    {workspace.inventoryReconciliation.drift_rows.length > 0 ? (
-                      <div className="mapping-scroll">
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Date</th>
-                              <th>Provider room</th>
-                              <th>HMS room</th>
-                              <th>Status</th>
-                              <th>Last pushed</th>
-                              <th>Current HMS</th>
-                              <th>Availability delta</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {workspace.inventoryReconciliation.drift_rows.slice(0, 12).map((row) => (
-                              <tr key={`${row.date}-${row.external_room_id}`}>
-                                <td>{row.date}</td>
-                                <td>{row.external_room_id}</td>
-                                <td>{row.room_category_code ?? '-'}</td>
-                                <td>{row.status}</td>
-                                <td>{formatInventorySnapshot(row.last_pushed)}</td>
-                                <td>{formatInventorySnapshot(row.current_expected)}</td>
-                                <td>{row.delta ? formatSignedNumber(row.delta.available) : '-'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : (
-                      <p className="muted">No inventory drift is currently detected for the latest successful sync window.</p>
-                    )}
-                  </>
-                ) : null}
-              </section>
-
-              <section className="channel-panel webhook-sync-wide-panel">
-                <div className="section-heading">
-                  <div>
-                    <p className="eyebrow">Webhook events</p>
-                    <h3>Property-scoped inbound ledger</h3>
-                  </div>
-                  <span className="status-pill">{workspace.webhookEvents.length}</span>
-                </div>
-                <div className="split-panels webhook-sync-compact-cards">
-                  <SummaryTile label="Loaded events" value={String(workspace.webhookEvents.length)} detail="Current fetched event window after property filtering." />
-                  <SummaryTile label="Processed" value={String(webhookProcessedCount)} detail="Events in the loaded window that completed processing." />
-                  <SummaryTile label="Failed" value={String(webhookFailedCount)} detail="Events in the loaded window that currently show processing failure." />
-                  <SummaryTile label="Replays" value={String(webhookReplayCount)} detail="Events marked duplicate or replayed within the same loaded window." />
-                </div>
-                <p className="muted">This section stays on the page for inbound-event context, but it is intentionally lower priority than connection-scoped sync diagnostics.</p>
-                {workspace.webhookEventsLoading ? <p className="muted">Loading webhook events…</p> : null}
-                {workspace.webhookEventsError ? <p className="error">{workspace.webhookEventsError}</p> : null}
-                {workspace.webhookEvents.length > 0 ? (
-                  <div className="diagnostic-log-list">
-                    {workspace.webhookEvents.slice(0, 12).map((event, index) => (
-                      <details className="diagnostic-log-item" key={event.id} open={index === 0}>
-                        <summary>
-                          <div className="diagnostic-log-top">
-                            <div className="diagnostic-log-title">
-                              <span className={`status-pill ${mapTone(event.status)}`}>{event.status}</span>
-                              <strong>{event.event_type}</strong>
-                              <span className="diagnostic-log-time">{formatDateTime(event.received_at)}</span>
-                            </div>
-                            <span className="diagnostic-log-id">{shortId(event.id)}</span>
-                          </div>
-                          <div className="diagnostic-log-meta">
-                            <span>
-                              {event.provider} · {event.domain} · {event.duplicate ? 'Replay detected' : 'Primary event'}
-                            </span>
-                            {event.processing_error ? <span className="diagnostic-error-text">{event.processing_error}</span> : null}
-                          </div>
-                        </summary>
-                        <div className="diagnostic-log-details">
-                          <div className="diagnostic-kv-grid">
-                            <DetailStat label="Provider" value={event.provider} />
-                            <DetailStat label="Domain" value={event.domain} />
-                            <DetailStat label="Received" value={formatDateTime(event.received_at)} />
-                            <DetailStat label="Processed" value={event.processed_at ? formatDateTime(event.processed_at) : 'Not processed'} />
-                            <DetailStat label="External event" value={event.external_event_id ?? 'None'} />
-                            <DetailStat label="Property" value={event.property_id ?? 'Global'} />
-                            <DetailStat label="Duplicate" value={event.duplicate ? 'Yes' : 'No'} />
-                            <DetailStat label="Dedupe key" value={event.dedupe_key} />
-                          </div>
-                        </div>
-                      </details>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="muted">No webhook events match this property scope yet.</p>
-                )}
-              </section>
-            </>
-          ) : (
-            <section className="channel-panel webhook-sync-wide-panel">
-              <div className="section-heading">
-                <div>
-                  <p className="eyebrow">Connection</p>
-                  <h3>Choose a workspace</h3>
-                </div>
-              </div>
-              <p className="muted">Select a saved OTA connection to load its sync health, row analytics, drift checks, and webhook ledger.</p>
-            </section>
-          )}
+          ) : <p className="text-xs text-slate-400">Choose a saved Zodomus connection to inspect sync health and webhook intake.</p>}
         </div>
       </div>
+
+      {workspace.loading && <LoadingMsg>Loading channel diagnostics...</LoadingMsg>}
+      {workspace.error && <ErrorMsg>{workspace.error}</ErrorMsg>}
+      {workspace.status && <SuccessMsg>{workspace.status}</SuccessMsg>}
+
+      {selectedConnection ? (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <SummaryTile label="Inventory sync" value={syncSummary.inventory.last_status ?? 'Never run'} detail={formatSyncSnapshotDetail(syncSummary.inventory)} />
+            <SummaryTile label="Rates sync" value={syncSummary.rates.last_status ?? 'Never run'} detail={formatSyncSnapshotDetail(syncSummary.rates)} />
+            <SummaryTile label="Reservation import" value={syncSummary.bookings.last_status ?? 'Never run'} detail={formatSyncSnapshotDetail(syncSummary.bookings)} />
+            <SummaryTile label="Inventory drift" value={formatReconciliationValue(workspace.inventoryReconciliation, workspace.inventoryReconciliationLoading)} detail={formatReconciliationDetail(workspace.inventoryReconciliation, workspace.inventoryReconciliationLoading)} />
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.07fr)_minmax(21rem,0.93fr)] gap-5 items-stretch">
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Workspace</p>
+                <h3 className="text-base font-bold text-slate-900">Connection snapshot</h3>
+              </div>
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                {[['Property', selectedConnection.property.name], ['Provider', selectedConnection.provider], ['External hotel', selectedConnection.external_hotel_id ?? 'Not linked'], ['Sync window', `${workspace.syncWindowDays} day(s)`], ['Environment', providerSummary?.environment ?? 'Default'], ['Ready state', providerSummary?.setup_status.ready ? 'Ready' : 'Needs action']].map(([label, value]) => (
+                  <div key={String(label)} className="bg-slate-50 border border-slate-100 rounded-lg p-3">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">{label}</span>
+                    <strong className="text-sm font-bold text-slate-900">{value}</strong>
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
+                {[{ eyebrow: 'Connection-scoped', title: 'Primary diagnostics', desc: 'Sync health, sync logs, failed inventory rows, and inventory reconciliation are tied directly to this connection ID.' }, { eyebrow: 'Property-scoped', title: 'Webhook ledger', desc: 'Webhook events are filtered by property, so they describe inbound traffic for this property rather than only this single connection.' }].map((card) => (
+                  <div key={card.title} className="bg-slate-50 border border-slate-100 rounded-xl p-3.5">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">{card.eyebrow}</p>
+                    <h4 className="text-sm font-bold text-slate-900 mb-1">{card.title}</h4>
+                    <p className="text-xs text-slate-500 leading-relaxed">{card.desc}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Operations</p>
+                <h3 className="text-base font-bold text-slate-900">Manual sync runbook</h3>
+              </div>
+              <div className="space-y-3">
+                {[{ eyebrow: 'Inventory', title: workspace.syncGuidance.inventory.title, when: workspace.syncGuidance.inventory.when, warning: workspace.syncGuidance.inventory.warning }, { eyebrow: 'Rates', title: workspace.syncGuidance.rates.title, when: workspace.syncGuidance.rates.when, warning: workspace.syncGuidance.rates.warning }].map((card) => (
+                  <div key={card.title} className="bg-slate-50 border border-slate-100 rounded-xl p-3.5">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">{card.eyebrow}</p>
+                    <h4 className="text-sm font-bold text-slate-900 mb-1">{card.title}</h4>
+                    <p className="text-xs text-slate-500 leading-relaxed">{card.when}</p>
+                    {card.warning && <p className="text-xs text-amber-600 leading-relaxed mt-1">{card.warning}</p>}
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-slate-400 leading-relaxed">{workspace.syncGuidance.queueHint}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.08fr)_minmax(23rem,0.82fr)] gap-5 items-stretch">
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Operations</p>
+                  <h3 className="text-base font-bold text-slate-900">Sync health</h3>
+                </div>
+                <div className="flex gap-2">
+                  <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={workspace.pendingAction === 'inventory-sync'} onClick={() => void workspace.runInventorySync()} type="button">{workspace.pendingAction === 'inventory-sync' ? 'Queueing...' : 'Sync inventory'}</button>
+                  <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={workspace.pendingAction === 'rates-sync'} onClick={() => void workspace.runRatesSync()} type="button">{workspace.pendingAction === 'rates-sync' ? 'Queueing...' : 'Sync rates'}</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3 gap-4">
+                <SyncStateCard label="Inventory" state={syncSummary.inventory} />
+                <SyncStateCard label="Rates" state={syncSummary.rates} />
+                <SyncStateCard label="Reservation import" state={syncSummary.bookings} />
+              </div>
+              <p className="text-xs text-slate-400 leading-relaxed">Automation currently compares or pushes a {workspace.syncWindowDays}-day window from today. Use the detailed logs below for request and provider payloads.</p>
+              {!providerSummary?.setup_status.ready && <p className="text-xs text-amber-600 leading-relaxed">This connection is not yet ready. Manual sync calls can still be queued from HMS, but the provider may reject them until setup and final checks are complete.</p>}
+            </div>
+
+            <InventoryRowAnalytics workspace={workspace} />
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.08fr)_minmax(23rem,0.82fr)] gap-5 items-start">
+            <SyncLogsPanel
+              selectedSyncLog={selectedSyncLog}
+              setSelectedSyncLog={setSelectedSyncLog}
+              sortedSyncLogs={sortedSyncLogs}
+              syncLogPage={syncLogPage}
+              syncLogsPerPage={syncLogsPerPage}
+              totalSyncLogPages={totalSyncLogPages}
+              visibleSyncLogs={visibleSyncLogs}
+              workspace={workspace}
+              setSyncLogPage={setSyncLogPage}
+            />
+            <div className="space-y-5">
+              <InventoryReconciliationPanel workspace={workspace} />
+              <WebhookEventsPanel failedCount={webhookFailedCount} processedCount={webhookProcessedCount} replayCount={webhookReplayCount} workspace={workspace} />
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-8 text-center">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-1">Connection</p>
+          <h3 className="text-base font-bold text-slate-900 mb-2">Choose a workspace</h3>
+          <p className="text-sm text-slate-500">Select a saved OTA connection to load its sync health, row analytics, drift checks, and webhook ledger.</p>
+        </div>
+      )}
     </section>
   );
 }
 
-function DetailStat({ label, value }: { label: string; value: string }) {
+function InventoryRowAnalytics({ workspace }: { workspace: ChannelWorkspace }) {
   return (
-    <div className="diagnostic-kv">
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full">
+      <div>
+        <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Failed inventory rows</p>
+        <h3 className="text-sm font-bold text-slate-900">Persisted row analytics</h3>
+      </div>
+      {workspace.inventoryRowResultsLoading && <LoadingMsg>Loading row-level inventory failures...</LoadingMsg>}
+      {workspace.inventoryRowResultsError && <ErrorMsg>{workspace.inventoryRowResultsError}</ErrorMsg>}
+      {workspace.inventoryRowResults ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            {[{ label: 'Stored row attempts', value: workspace.inventoryRowResults.summary.total_rows }, { label: 'Failed row attempts', value: workspace.inventoryRowResults.summary.failed_rows }, { label: 'Failed rooms', value: workspace.inventoryRowResults.summary.failed_rooms }, { label: 'Succeeded rows', value: workspace.inventoryRowResults.summary.succeeded_rows }].map((s) => (
+              <div key={s.label} className="bg-slate-50 border border-slate-100 rounded-lg p-2.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">{s.label}</span>
+                <strong className="text-sm font-bold text-slate-900">{s.value}</strong>
+              </div>
+            ))}
+          </div>
+          {workspace.inventoryRowResults.recent_failed_rows.length > 0 ? (
+            <div className="overflow-x-auto">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-2">Recent failures</p>
+              <table className="w-full text-xs min-w-[400px]">
+                <thead><tr className="bg-slate-50 border-b border-slate-100"><Th>Date</Th><Th>Provider room</Th><Th>Available</Th><Th>Error</Th></tr></thead>
+                <tbody>
+                  {workspace.inventoryRowResults.recent_failed_rows.slice(0, 8).map((row) => (
+                    <tr key={row.id} className="hover:bg-slate-50/60 border-b border-slate-50 last:border-0">
+                      <Td>{row.sync_date}</Td><Td className="font-mono text-slate-500">{row.external_room_id}</Td><Td>{row.available}</Td><Td className="text-rose-600 max-w-[12rem] truncate">{row.error_message ?? '—'}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <p className="text-xs text-slate-400">No failed inventory rows persisted for this connection yet.</p>}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function PayloadBlock({ label, value }: { label: string; value: unknown }) {
-  return (
-    <div className="diagnostic-json-block">
-      <p className="eyebrow">{label}</p>
-      <pre>{formatPayloadPreview(value)}</pre>
-    </div>
-  );
-}
-
-function summarizeSyncLog(log: ChannelSyncLog) {
-  const requestPayload = asRecord(log.request_payload);
-  const responsePayload = asRecord(log.response_payload);
-  const responseSummary = asRecord(responsePayload?.summary);
-  const parts = [
-    requestWindowLabel(requestPayload),
-    summarizeRowCounts(responseSummary),
-    readString(responsePayload?.message),
-    readString(responsePayload?.status_message),
-  ].filter((value): value is string => Boolean(value && value.trim().length > 0));
-
-  return {
-    inlineSummary: parts[0] ?? 'Expand to inspect request and response payloads.',
-    errorText: log.error_message ?? parts[1] ?? null,
-  };
-}
-
-function formatSyncSnapshotDetail(state: {
-  last_synced_at: string | null;
-  next_due_at: string | null;
-  last_error: string | null;
+function SyncLogsPanel({ selectedSyncLog, setSelectedSyncLog, setSyncLogPage, sortedSyncLogs, syncLogPage, syncLogsPerPage, totalSyncLogPages, visibleSyncLogs, workspace }: {
+  selectedSyncLog: ChannelSyncLog | null;
+  setSelectedSyncLog: (log: ChannelSyncLog | null) => void;
+  setSyncLogPage: (updater: (current: number) => number) => void;
+  sortedSyncLogs: ChannelSyncLog[];
+  syncLogPage: number;
+  syncLogsPerPage: number;
+  totalSyncLogPages: number;
+  visibleSyncLogs: ChannelSyncLog[];
+  workspace: ChannelWorkspace;
 }) {
+  const [drawerLog, setDrawerLog] = useState<ChannelSyncLog | null>(selectedSyncLog);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    if (selectedSyncLog) {
+      setDrawerLog(selectedSyncLog);
+      const frame = window.requestAnimationFrame(() => setDrawerOpen(true));
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    setDrawerOpen(false);
+    const timeout = window.setTimeout(() => setDrawerLog(null), 500);
+    return () => window.clearTimeout(timeout);
+  }, [selectedSyncLog]);
+
+  return (
+    <>
+      <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Sync logs</p>
+            <h3 className="text-sm font-bold text-slate-900">Recent connection attempts</h3>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center px-2 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">{workspace.syncLogs.length}</span>
+            {sortedSyncLogs.length > syncLogsPerPage && <span className="text-xs text-slate-400">p{syncLogPage}/{totalSyncLogPages}</span>}
+          </div>
+        </div>
+        {workspace.syncLogsLoading && <LoadingMsg>Loading sync logs...</LoadingMsg>}
+        {workspace.syncLogsError && <ErrorMsg>{workspace.syncLogsError}</ErrorMsg>}
+        {sortedSyncLogs.length > 0 ? (
+          <div className="space-y-2">
+            {visibleSyncLogs.map((log) => {
+              const syncSummary = summarizeSyncLog(log);
+              const toneClass = logToneClass(mapTone(log.status));
+              return (
+                <button key={log.id} className={`w-full text-left p-3 rounded-xl border transition-colors hover:bg-slate-50 ${selectedSyncLog?.id === log.id ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-slate-200'}`} onClick={() => setSelectedSyncLog(log)} type="button">
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${toneClass}`}>{log.status}</span>
+                      <strong className="text-xs font-bold text-slate-900">{log.sync_type}</strong>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-mono flex-shrink-0">{shortId(log.id)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-slate-500 leading-relaxed">{syncSummary.inlineSummary}</span>
+                    <span className="text-[10px] text-slate-400 flex-shrink-0">{formatDateTime(log.created_at)}</span>
+                  </div>
+                  {syncSummary.errorText && <p className="text-[11px] text-rose-600 leading-relaxed mt-0.5">{syncSummary.errorText}</p>}
+                </button>
+              );
+            })}
+            {sortedSyncLogs.length > syncLogsPerPage && (
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={syncLogPage === 1} onClick={() => setSyncLogPage((c) => Math.max(1, c - 1))} type="button">Newer</button>
+                <span className="text-xs text-slate-400">Showing {(syncLogPage - 1) * syncLogsPerPage + 1}-{Math.min(syncLogPage * syncLogsPerPage, sortedSyncLogs.length)} of {sortedSyncLogs.length}</span>
+                <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={syncLogPage === totalSyncLogPages} onClick={() => setSyncLogPage((c) => Math.min(totalSyncLogPages, c + 1))} type="button">Older</button>
+              </div>
+            )}
+          </div>
+        ) : <p className="text-xs text-slate-400">No sync logs available for this connection yet.</p>}
+      </div>
+
+      <div className={`fixed inset-0 z-50 transition-opacity duration-300 ease-out ${drawerOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`} aria-hidden={!drawerLog}>
+        <button className="absolute inset-0 w-full h-full bg-slate-900/10 cursor-default" onClick={() => setSelectedSyncLog(null)} tabIndex={drawerOpen ? 0 : -1} type="button" aria-label="Close selected sync log" />
+        <aside className={`absolute right-0 top-0 h-full w-full max-w-[34rem] bg-white border-l border-slate-200 shadow-2xl transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform transform-gpu ${drawerOpen ? 'translate-x-0' : 'translate-x-full'}`} role="dialog" aria-modal="true" aria-label="Selected sync log payloads">
+          {drawerLog && (
+            <div className={`h-full overflow-y-auto p-5 space-y-4 transition-opacity duration-200 ease-out ${drawerOpen ? 'opacity-100 delay-100' : 'opacity-0'}`}>
+              <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-100">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Selected log</p>
+                  <h3 className="text-base font-bold text-slate-900">{drawerLog.sync_type}</h3>
+                  <p className="text-xs text-slate-400 mt-1">{formatDateTime(drawerLog.created_at)}</p>
+                </div>
+                <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} onClick={() => setSelectedSyncLog(null)} type="button">Close</button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {[['Status', drawerLog.status], ['Type', drawerLog.sync_type], ['Created', formatDateTime(drawerLog.created_at)], ['ID', drawerLog.id]].map(([label, value]) => (
+                  <div key={String(label)} className="bg-slate-50 border border-slate-100 rounded-lg p-2.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">{label}</span>
+                    <strong className="text-xs font-semibold text-slate-900 break-all">{value}</strong>
+                  </div>
+                ))}
+              </div>
+              {[
+                { label: 'Request payload', value: drawerLog.request_payload },
+                { label: 'Response payload', value: drawerLog.response_payload },
+              ].map(({ label, value }) => (
+                <div key={String(label)}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-1">{label}</p>
+                  <pre className="text-[11px] text-slate-700 bg-slate-50 border border-slate-100 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">{formatPayloadPreview(value)}</pre>
+                </div>
+              ))}
+            </div>
+          )}
+        </aside>
+      </div>
+    </>
+  );
+}
+
+function InventoryReconciliationPanel({ workspace }: { workspace: ChannelWorkspace }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Operations</p>
+          <h3 className="text-base font-bold text-slate-900">Inventory reconciliation</h3>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={workspace.inventoryReconciliationLoading || workspace.pendingAction === 'refresh-reconciliation'} onClick={() => void workspace.refreshInventoryReconciliation()} type="button">{workspace.pendingAction === 'refresh-reconciliation' ? 'Refreshing...' : 'Refresh'}</button>
+          <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={!workspace.inventoryReconciliation?.compared_window || workspace.pendingAction === 'resync-reconciliation' || workspace.inventoryReconciliationLoading} onClick={() => void workspace.resyncInventoryDriftWindow()} type="button">{workspace.pendingAction === 'resync-reconciliation' ? 'Queueing...' : 'Re-sync'}</button>
+          <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={workspace.latestInventorySyncLog?.status !== 'PARTIAL_FAILED' || workspace.pendingAction === 'retry-failed-inventory-rows' || workspace.inventoryReconciliationLoading} onClick={() => void workspace.retryFailedInventoryRows()} type="button">{workspace.pendingAction === 'retry-failed-inventory-rows' ? 'Queueing...' : 'Retry rows'}</button>
+        </div>
+      </div>
+      {workspace.inventoryReconciliationLoading && <LoadingMsg>Calculating current HMS inventory drift...</LoadingMsg>}
+      {workspace.inventoryReconciliationError && <ErrorMsg>{workspace.inventoryReconciliationError}</ErrorMsg>}
+      {workspace.inventoryReconciliation && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            {[{ label: 'Status', value: workspace.inventoryReconciliation.status ?? '—' }, { label: 'Compared window', value: formatComparedWindow(workspace.inventoryReconciliation.compared_window) }, { label: 'Total rows', value: String(workspace.inventoryReconciliation.summary.compared_row_count ?? 0) }, { label: 'Drift rows', value: String(workspace.inventoryReconciliation.drift_rows?.length ?? 0) }].map((s) => (
+              <div key={s.label} className={`border rounded-lg p-3 ${s.label === 'Status' && workspace.inventoryReconciliation?.status === 'DRIFT_DETECTED' ? 'bg-rose-50 border-rose-200' : s.label === 'Status' && workspace.inventoryReconciliation?.status === 'IN_SYNC' ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-100'}`}>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">{s.label}</span>
+                <strong className="text-sm font-bold text-slate-900">{s.value}</strong>
+              </div>
+            ))}
+          </div>
+          {workspace.inventoryReconciliation.drift_rows && workspace.inventoryReconciliation.drift_rows.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs min-w-[600px]">
+                <thead><tr className="bg-slate-50 border-b border-slate-100"><Th>Date</Th><Th>Provider room</Th><Th>HMS room</Th><Th>Status</Th><Th>Last pushed</Th><Th>Current HMS</Th><Th>Delta</Th></tr></thead>
+                <tbody>
+                  {workspace.inventoryReconciliation.drift_rows.slice(0, 12).map((row) => (
+                    <tr key={`${row.date}-${row.external_room_id}`} className="hover:bg-slate-50/60 border-b border-slate-50 last:border-0">
+                      <Td>{row.date}</Td><Td className="font-mono text-slate-500">{row.external_room_id}</Td><Td className="font-mono text-slate-500">{row.room_category_code ?? '—'}</Td><Td>{row.status}</Td><Td>{formatInventorySnapshot(row.last_pushed)}</Td><Td>{formatInventorySnapshot(row.current_expected)}</Td><Td className={row.delta && row.delta.available !== 0 ? 'text-rose-600 font-bold' : ''}>{row.delta ? formatSignedNumber(row.delta.available) : '—'}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <p className="text-xs text-slate-400">No inventory drift is currently detected for the latest successful sync window.</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
+function WebhookEventsPanel({ failedCount, processedCount, replayCount, workspace }: { failedCount: number; processedCount: number; replayCount: number; workspace: ChannelWorkspace }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Webhook events</p>
+          <h3 className="text-base font-bold text-slate-900">Property-scoped inbound ledger</h3>
+        </div>
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">{workspace.webhookEvents.length}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <SummaryTile label="Loaded" value={String(workspace.webhookEvents.length)} detail="Fetched events" />
+        <SummaryTile label="Processed" value={String(processedCount)} detail="Completed events" />
+        <SummaryTile label="Failed" value={String(failedCount)} detail="Failed events" />
+        <SummaryTile label="Replays" value={String(replayCount)} detail="Duplicate events" />
+      </div>
+      {workspace.webhookEventsLoading && <LoadingMsg>Loading webhook events...</LoadingMsg>}
+      {workspace.webhookEventsError && <ErrorMsg>{workspace.webhookEventsError}</ErrorMsg>}
+      {workspace.webhookEvents.length > 0 ? (
+        <div className="space-y-2">
+          {workspace.webhookEvents.slice(0, 8).map((event) => {
+            const toneClass = logToneClass(mapTone(event.status));
+            return (
+              <details key={event.id} className="group bg-white border border-slate-200 rounded-xl overflow-hidden">
+                <summary className="flex items-start justify-between gap-3 px-4 py-3 cursor-pointer list-none hover:bg-slate-50/60">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${toneClass}`}>{event.status}</span>
+                      <strong className="text-xs font-bold text-slate-900">{event.event_type}</strong>
+                      <span className="text-[10px] text-slate-400">{formatDateTime(event.received_at)}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500">{event.provider} · {event.domain} · {event.duplicate ? 'Replay detected' : 'Primary event'}</p>
+                    {event.processing_error && <p className="text-[11px] text-rose-600">{event.processing_error}</p>}
+                  </div>
+                  <span className="text-[10px] font-mono text-slate-400 flex-shrink-0">{shortId(event.id)}</span>
+                </summary>
+                <div className="px-4 pb-4 pt-2 border-t border-slate-100">
+                  <div className="grid grid-cols-2 gap-2">
+                    {[['Provider', event.provider], ['Domain', event.domain], ['Received', formatDateTime(event.received_at)], ['Processed', event.processed_at ? formatDateTime(event.processed_at) : 'Not processed'], ['External event', event.external_event_id ?? 'None'], ['Property', event.property_id ?? 'Global'], ['Duplicate', event.duplicate ? 'Yes' : 'No'], ['Dedupe key', event.dedupe_key]].map(([label, value]) => (
+                      <div key={String(label)} className="bg-slate-50 border border-slate-100 rounded-lg p-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">{label}</span>
+                        <strong className="text-xs font-semibold text-slate-900 break-all">{value}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      ) : <p className="text-xs text-slate-400">No webhook events match this property scope yet.</p>}
+    </div>
+  );
+}
+
+function connectionToneClass(tone: string) {
+  if (tone === 'available') return 'bg-emerald-50 text-emerald-700';
+  if (tone === 'failed') return 'bg-rose-50 text-rose-700';
+  if (tone === 'queued') return 'bg-amber-50 text-amber-700';
+  return 'bg-slate-100 text-slate-600';
+}
+
+function logToneClass(tone: string) {
+  if (tone === 'available') return 'bg-emerald-50 text-emerald-700';
+  if (tone === 'failed') return 'bg-rose-50 text-rose-700';
+  if (tone === 'queued') return 'bg-amber-50 text-amber-700';
+  return 'bg-slate-100 text-slate-600';
+}
+
+const emptySyncState: ChannelSyncState = {
+  last_error: null,
+  last_status: null,
+  last_synced_at: null,
+  next_due_at: null,
+};
+
+const defaultSyncSummary = {
+  bookings: emptySyncState,
+  inventory: emptySyncState,
+  rates: emptySyncState,
+};
+
+function formatSyncSnapshotDetail(state: { last_synced_at: string | null; next_due_at: string | null; last_error: string | null }) {
   if (state.last_error) return state.last_error;
   if (state.last_synced_at) return `Last run: ${formatDateTime(state.last_synced_at)}`;
   if (state.next_due_at) return `Next due: ${formatDateTime(state.next_due_at)}`;
@@ -608,15 +455,9 @@ function formatSyncSnapshotDetail(state: {
 function formatReconciliationValue(reconciliation: InventoryReconciliation | null | undefined, loading: boolean) {
   if (loading) return 'Refreshing';
   if (!reconciliation) return 'No baseline';
-
-  switch (reconciliation.status) {
-    case 'IN_SYNC':
-      return 'In sync';
-    case 'DRIFT_DETECTED':
-      return 'Drift detected';
-    default:
-      return 'No baseline';
-  }
+  if (reconciliation.status === 'IN_SYNC') return 'In sync';
+  if (reconciliation.status === 'DRIFT_DETECTED') return 'Drift detected';
+  return 'No baseline';
 }
 
 function formatReconciliationDetail(reconciliation: InventoryReconciliation | null | undefined, loading: boolean) {
@@ -626,72 +467,34 @@ function formatReconciliationDetail(reconciliation: InventoryReconciliation | nu
   return reconciliation.message ?? 'No successful inventory baseline has been stored yet.';
 }
 
-function requestWindowLabel(payload: Record<string, unknown> | null) {
-  const from = readString(payload?.from);
-  const to = readString(payload?.to);
-  if (from && to) return `${from} to ${to}`;
-  return null;
+function formatComparedWindow(window: InventoryReconciliation['compared_window']) {
+  return window ? `${window.from} to ${window.to}` : '—';
 }
 
-function summarizeRowCounts(summary: Record<string, unknown> | null) {
-  const failedRows = readNumber(summary?.failed_rows);
-  const succeededRows = readNumber(summary?.succeeded_rows);
-  const comparedRows = readNumber(summary?.compared_row_count);
-  const parts = [
-    typeof failedRows === 'number' ? `${failedRows} failed` : null,
-    typeof succeededRows === 'number' ? `${succeededRows} succeeded` : null,
-    typeof comparedRows === 'number' ? `${comparedRows} compared` : null,
-  ].filter((value): value is string => Boolean(value));
-
-  return parts.length > 0 ? parts.join(' · ') : null;
+function summarizeSyncLog(log: ChannelSyncLog) {
+  const requestPayload = asRecord(log.request_payload);
+  const responsePayload = asRecord(log.response_payload);
+  const responseSummary = asRecord(responsePayload?.summary);
+  const parts = [requestWindowLabel(requestPayload), summarizeRowCounts(responseSummary), readString(responsePayload?.message), readString(responsePayload?.status_message)].filter((v): v is string => Boolean(v && v.trim().length > 0));
+  return { inlineSummary: parts[0] ?? 'Expand to inspect request and response payloads.', errorText: log.error_message ?? parts[1] ?? null };
 }
 
-function formatPayloadPreview(value: unknown) {
-  if (value == null) return 'No payload stored.';
+function requestWindowLabel(payload: Record<string, unknown> | null) { const from = readString(payload?.from); const to = readString(payload?.to); if (from && to) return `${from} to ${to}`; return null; }
+function summarizeRowCounts(summary: Record<string, unknown> | null) { const f = readNumber(summary?.failed_rows); const s = readNumber(summary?.succeeded_rows); const c = readNumber(summary?.compared_row_count); const parts = [typeof f === 'number' ? `${f} failed` : null, typeof s === 'number' ? `${s} succeeded` : null, typeof c === 'number' ? `${c} compared` : null].filter((v): v is string => Boolean(v)); return parts.length > 0 ? parts.join(' · ') : null; }
 
-  try {
-    const text = JSON.stringify(value, null, 2);
-    return text.length > 900 ? `${text.slice(0, 900)}\n…` : text;
-  } catch {
-    return String(value);
-  }
-}
+function formatPayloadPreview(value: unknown) { if (value == null) return 'No payload stored.'; try { const t = JSON.stringify(value, null, 2); return t.length > 900 ? `${t.slice(0, 900)}\n...` : t; } catch { return String(value); } }
 
 function mapTone(status: string | null | undefined) {
   switch (status) {
-    case 'ACTIVE':
-    case 'SUCCEEDED':
-    case 'PROCESSED':
-    case 'IN_SYNC':
-      return 'available';
-    case 'FAILED':
-    case 'DEAD_LETTER':
-      return 'failed';
-    case 'PARTIAL_FAILED':
-    case 'PENDING':
-    case 'PROCESSING':
-    case 'PAUSED':
-    case 'RECEIVED':
-    case 'DRIFT_DETECTED':
-      return 'queued';
-    default:
-      return '';
+    case 'ACTIVE': case 'SUCCEEDED': case 'PROCESSED': case 'IN_SYNC': return 'available';
+    case 'FAILED': case 'DEAD_LETTER': return 'failed';
+    case 'PARTIAL_FAILED': case 'PENDING': case 'PROCESSING': case 'PAUSED': case 'RECEIVED': case 'DRIFT_DETECTED': return 'queued';
+    default: return '';
   }
 }
 
-function shortId(value: string) {
-  return value.length > 8 ? value.slice(0, 8) : value;
-}
-
-function asRecord(value: unknown) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-function readString(value: unknown) {
-  return typeof value === 'string' && value.trim().length > 0 ? value : null;
-}
-
-function readNumber(value: unknown) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
+function shortId(value: string) { return value.length > 8 ? value.slice(0, 8) : value; }
+function compareDateDesc(left: string, right: string) { return new Date(right).getTime() - new Date(left).getTime(); }
+function asRecord(value: unknown) { if (!value || typeof value !== 'object' || Array.isArray(value)) return null; return value as Record<string, unknown>; }
+function readString(value: unknown) { return typeof value === 'string' && value.trim().length > 0 ? value : null; }
+function readNumber(value: unknown) { return typeof value === 'number' && Number.isFinite(value) ? value : null; }

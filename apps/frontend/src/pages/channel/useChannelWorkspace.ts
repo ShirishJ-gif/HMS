@@ -5,6 +5,8 @@ import {
   BackgroundJob,
   ChannelConnection,
   ChannelProviderCatalog,
+  ChannelProviderPriceModel,
+  ChannelProviderPriceModels,
   ChannelSyncLog,
   InventoryReconciliation,
   InventoryRowResults,
@@ -26,6 +28,14 @@ type ZodomusOtaKey = (typeof zodomusOtaOptions)[number]['key'];
 const providerReservationEventOptions = ['new', 'modified', 'cancelled'] as const;
 type ProviderReservationEventStatus = (typeof providerReservationEventOptions)[number];
 
+const fallbackZodomusPriceModels: ChannelProviderPriceModel[] = [
+  { id: 1, model: 'Maximum / Single occupancy' },
+  { id: 2, model: 'Derived pricing' },
+  { id: 3, model: 'Occupancy' },
+  { id: 4, model: 'Per day' },
+  { id: 5, model: 'Per Day Length of stay' },
+];
+
 type UseChannelWorkspaceOptions = {
   diagnosticsEnabled?: boolean;
   enabled?: boolean;
@@ -45,6 +55,7 @@ type ChannelWorkspaceCache = {
   externalRateRoomId: string;
   externalRoomId: string;
   hasLoadedData: boolean;
+  fullSyncWindowDays: string;
   inventoryInterval: string;
   inventoryReconciliation: InventoryReconciliation | null;
   inventoryReconciliationError: string | null;
@@ -53,6 +64,8 @@ type ChannelWorkspaceCache = {
   loading: boolean;
   properties: Property[];
   providerCatalog: ChannelProviderCatalog | null;
+  providerPriceModels: ChannelProviderPriceModel[];
+  providerPriceModelsError: string | null;
   providerReservationEventStatus: ProviderReservationEventStatus;
   providerReservationId: string;
   ratePlanId: string;
@@ -68,10 +81,13 @@ type ChannelWorkspaceCache = {
   webhookEvents: WebhookEvent[];
   webhookEventsError: string | null;
   zodomusOtaKey: ZodomusOtaKey;
+  zodomusPriceModelId: string;
   zodomusPropertyId: string;
 };
 
 const channelWorkspaceCacheBySession = new Map<string, ChannelWorkspaceCache>();
+const diagnosticsCacheUpdatedAtByKey = new Map<string, number>();
+const diagnosticsCacheTtlMs = 60_000;
 
 function buildEmptyWorkspaceCache(enabled: boolean): ChannelWorkspaceCache {
   return {
@@ -87,6 +103,7 @@ function buildEmptyWorkspaceCache(enabled: boolean): ChannelWorkspaceCache {
     externalRateRoomId: '',
     externalRoomId: '',
     hasLoadedData: false,
+    fullSyncWindowDays: '365',
     inventoryInterval: '15',
     inventoryReconciliation: null,
     inventoryReconciliationError: null,
@@ -95,6 +112,8 @@ function buildEmptyWorkspaceCache(enabled: boolean): ChannelWorkspaceCache {
     loading: enabled,
     properties: [],
     providerCatalog: null,
+    providerPriceModels: [],
+    providerPriceModelsError: null,
     providerReservationEventStatus: 'new',
     providerReservationId: '',
     ratePlanId: '',
@@ -110,12 +129,17 @@ function buildEmptyWorkspaceCache(enabled: boolean): ChannelWorkspaceCache {
     webhookEvents: [],
     webhookEventsError: null,
     zodomusOtaKey: 'BOOKING_COM',
+    zodomusPriceModelId: '1',
     zodomusPropertyId: '',
   };
 }
 
 function getWorkspaceCache(sessionKey: string, enabled: boolean) {
   return channelWorkspaceCacheBySession.get(sessionKey) ?? buildEmptyWorkspaceCache(enabled);
+}
+
+function getDiagnosticsCacheKey(sessionKey: string, connectionId: string, propertyId: string | null) {
+  return `${sessionKey}:${connectionId}:${propertyId ?? 'all'}`;
 }
 
 export function clearChannelWorkspaceCache(sessionKey?: string | null) {
@@ -146,6 +170,25 @@ function defaultPriceModelId(channelId: string | null | undefined) {
   if (channelId === '2') return 3;
   if (channelId === '3') return 4;
   return 1;
+}
+
+function defaultPriceModelIdForOta(otaKey: ZodomusOtaKey) {
+  if (otaKey === 'BOOKING_COM') return 1;
+  if (otaKey === 'EXPEDIA') return 3;
+  return 4;
+}
+
+function normalizePriceModelId(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function extractPriceModels(payload: ChannelProviderPriceModels) {
+  const candidates = payload.response?.models ?? payload.price_models ?? [];
+  return candidates.filter(
+    (model): model is ChannelProviderPriceModel =>
+      Number.isFinite(model.id) && typeof model.model === 'string' && model.model.trim().length > 0,
+  );
 }
 
 function parseProviderStatusMessage(message: string | null | undefined) {
@@ -188,12 +231,20 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   const [propertyId, setPropertyId] = usePersistedPropertyId();
   const [zodomusPropertyId, setZodomusPropertyId] = useState(() => cachedState.zodomusPropertyId);
   const [zodomusOtaKey, setZodomusOtaKey] = useState<ZodomusOtaKey>(() => cachedState.zodomusOtaKey);
+  const [zodomusPriceModelId, setZodomusPriceModelId] = useState(() => cachedState.zodomusPriceModelId);
   const [roomCategoryId, setRoomCategoryId] = useState(() => cachedState.roomCategoryId);
   const [externalRoomId, setExternalRoomId] = useState(() => cachedState.externalRoomId);
   const [ratePlanId, setRatePlanId] = useState(() => cachedState.ratePlanId);
   const [externalRateId, setExternalRateId] = useState(() => cachedState.externalRateId);
   const [externalRateRoomId, setExternalRateRoomId] = useState(() => cachedState.externalRateRoomId);
   const [providerCatalog, setProviderCatalog] = useState<ChannelProviderCatalog | null>(() => cachedState.providerCatalog);
+  const [providerPriceModels, setProviderPriceModels] = useState<ChannelProviderPriceModel[]>(
+    () => cachedState.providerPriceModels,
+  );
+  const [providerPriceModelsLoading, setProviderPriceModelsLoading] = useState(false);
+  const [providerPriceModelsError, setProviderPriceModelsError] = useState<string | null>(
+    () => cachedState.providerPriceModelsError,
+  );
   const [catalogConnectionId, setCatalogConnectionId] = useState(() => cachedState.catalogConnectionId);
   const [catalogLoaded, setCatalogLoaded] = useState(() => cachedState.catalogLoaded);
   const [status, setStatus] = useState<string | null>(() => cachedState.status);
@@ -232,6 +283,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     useState<ProviderReservationEventStatus>(() => cachedState.providerReservationEventStatus);
   const [providerReservationId, setProviderReservationId] = useState(() => cachedState.providerReservationId);
   const [hasLoadedData, setHasLoadedData] = useState(() => cachedState.hasLoadedData);
+  const [fullSyncWindowDays, setFullSyncWindowDays] = useState(() => cachedState.fullSyncWindowDays);
 
   const zodomusConnections = connections.filter((connection) => connection.provider === 'ZODOMUS');
   const selectedConnection = zodomusConnections.find((connection) => connection.id === selectedConnectionId) ?? null;
@@ -258,6 +310,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   );
   const catalogRooms = providerCatalog?.rooms ?? [];
   const catalogRates = providerCatalog?.rates ?? [];
+  const priceModelOptions = providerPriceModels.length > 0 ? providerPriceModels : fallbackZodomusPriceModels;
   const selectedRoomMappingForRatePlan = useMemo(() => {
     if (!selectedConnection || !selectedRatePlan) return null;
     return (
@@ -436,9 +489,9 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       ? `Provider exposes ${providerCatalogRateCount} products but HMS only has ${scopedRatePlans.length} rate plans to map against them.`
       : null,
   ].filter((warning): warning is string => Boolean(warning));
-  const propertyActivationPriceModelId =
-    persistedSetupStatus?.price_model_id ??
-    defaultPriceModelId(selectedConnection?.provider_config_summary?.channel_id);
+  const propertyActivationPriceModelId = normalizePriceModelId(
+    zodomusPriceModelId || String(defaultPriceModelId(selectedConnection?.provider_config_summary?.channel_id)),
+  );
 
   function applyWorkspaceCache(nextState: ChannelWorkspaceCache) {
     setConnections(nextState.connections);
@@ -448,12 +501,15 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setSelectedConnectionId(nextState.selectedConnectionId);
     setZodomusPropertyId(nextState.zodomusPropertyId);
     setZodomusOtaKey(nextState.zodomusOtaKey);
+    setZodomusPriceModelId(nextState.zodomusPriceModelId);
     setRoomCategoryId(nextState.roomCategoryId);
     setExternalRoomId(nextState.externalRoomId);
     setRatePlanId(nextState.ratePlanId);
     setExternalRateId(nextState.externalRateId);
     setExternalRateRoomId(nextState.externalRateRoomId);
     setProviderCatalog(nextState.providerCatalog);
+    setProviderPriceModels(nextState.providerPriceModels);
+    setProviderPriceModelsError(nextState.providerPriceModelsError);
     setCatalogConnectionId(nextState.catalogConnectionId);
     setCatalogLoaded(nextState.catalogLoaded);
     setStatus(nextState.status);
@@ -464,6 +520,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setRatesInterval(nextState.ratesInterval);
     setReservationImportInterval(nextState.reservationImportInterval);
     setSyncWindowDays(nextState.syncWindowDays);
+    setFullSyncWindowDays(nextState.fullSyncWindowDays);
     setInventoryReconciliation(nextState.inventoryReconciliation);
     setInventoryReconciliationError(nextState.inventoryReconciliationError);
     setInventoryRowResults(nextState.inventoryRowResults);
@@ -477,6 +534,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setProviderReservationEventStatus(nextState.providerReservationEventStatus);
     setProviderReservationId(nextState.providerReservationId);
     setHasLoadedData(nextState.hasLoadedData);
+    setFullSyncWindowDays(nextState.fullSyncWindowDays);
   }
 
   async function loadData(options?: { background?: boolean }) {
@@ -538,6 +596,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       externalRateRoomId,
       externalRoomId,
       hasLoadedData,
+      fullSyncWindowDays,
       inventoryInterval,
       inventoryReconciliation,
       inventoryReconciliationError,
@@ -546,6 +605,8 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       loading,
       properties,
       providerCatalog,
+      providerPriceModels,
+      providerPriceModelsError,
       providerReservationEventStatus,
       providerReservationId,
       ratePlanId,
@@ -561,6 +622,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       webhookEvents,
       webhookEventsError,
       zodomusOtaKey,
+      zodomusPriceModelId,
       zodomusPropertyId,
     });
   }, [
@@ -576,6 +638,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     externalRateRoomId,
     externalRoomId,
     hasLoadedData,
+    fullSyncWindowDays,
     inventoryInterval,
     inventoryReconciliation,
     inventoryReconciliationError,
@@ -584,6 +647,8 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     loading,
     properties,
     providerCatalog,
+    providerPriceModels,
+    providerPriceModelsError,
     providerReservationEventStatus,
     providerReservationId,
     ratePlanId,
@@ -600,6 +665,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     webhookEvents,
     webhookEventsError,
     zodomusOtaKey,
+    zodomusPriceModelId,
     zodomusPropertyId,
   ]);
 
@@ -648,12 +714,33 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setRatesInterval(String(automationSummary?.rates_interval_minutes ?? 60));
     setReservationImportInterval(String(automationSummary?.bookings_interval_minutes ?? 5));
     setSyncWindowDays(String(automationSummary?.sync_window_days ?? 30));
+    setFullSyncWindowDays(String(automationSummary?.full_sync_window_days ?? 365));
   }, [
     automationSummary?.enabled,
     automationSummary?.inventory_interval_minutes,
     automationSummary?.rates_interval_minutes,
     automationSummary?.bookings_interval_minutes,
     automationSummary?.sync_window_days,
+    automationSummary?.full_sync_window_days,
+  ]);
+
+  useEffect(() => {
+    if (selectedConnection) {
+      setZodomusPriceModelId(
+        String(
+          persistedSetupStatus?.price_model_id ??
+            defaultPriceModelId(selectedConnection.provider_config_summary?.channel_id),
+        ),
+      );
+      return;
+    }
+
+    setZodomusPriceModelId(String(defaultPriceModelIdForOta(zodomusOtaKey)));
+  }, [
+    persistedSetupStatus?.price_model_id,
+    selectedConnection?.id,
+    selectedConnection?.provider_config_summary?.channel_id,
+    zodomusOtaKey,
   ]);
 
   async function runAction(actionName: string, action: () => Promise<void>) {
@@ -737,6 +824,21 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     }
   }
 
+  async function loadProviderPriceModels(connectionId: string) {
+    setProviderPriceModelsLoading(true);
+    setProviderPriceModelsError(null);
+    try {
+      const response = await api.get<ChannelProviderPriceModels>(`/channels/${connectionId}/provider-price-models`);
+      const models = extractPriceModels(response.data);
+      setProviderPriceModels(models.length > 0 ? models : fallbackZodomusPriceModels);
+    } catch (loadError) {
+      setProviderPriceModels(fallbackZodomusPriceModels);
+      setProviderPriceModelsError(getApiErrorMessage(loadError));
+    } finally {
+      setProviderPriceModelsLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!enabled || !diagnosticsEnabled) {
       return;
@@ -753,18 +855,45 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       setBackgroundJobs([]);
       return;
     }
-    void loadInventoryReconciliation(selectedConnectionId);
-    void loadInventoryRowResults(selectedConnectionId);
-    void loadSyncLogs(selectedConnectionId);
-    void loadWebhookEvents();
-    void loadBackgroundJobs();
-  }, [connections, diagnosticsEnabled, enabled, selectedConnectionId]);
+
+    const diagnosticsCacheKey = getDiagnosticsCacheKey(
+      resolvedSessionKey,
+      selectedConnectionId,
+      selectedPropertyScopeId,
+    );
+    const cachedAt = diagnosticsCacheUpdatedAtByKey.get(diagnosticsCacheKey) ?? 0;
+    if (Date.now() - cachedAt < diagnosticsCacheTtlMs) {
+      return;
+    }
+
+    void Promise.all([
+      loadInventoryReconciliation(selectedConnectionId),
+      loadInventoryRowResults(selectedConnectionId),
+      loadSyncLogs(selectedConnectionId),
+      loadWebhookEvents(),
+      loadBackgroundJobs(),
+    ]).then(() => {
+      diagnosticsCacheUpdatedAtByKey.set(diagnosticsCacheKey, Date.now());
+    });
+  }, [diagnosticsEnabled, enabled, resolvedSessionKey, selectedConnectionId, selectedPropertyScopeId]);
+
+  useEffect(() => {
+    if (!enabled || !selectedConnectionId) {
+      setProviderPriceModels([]);
+      setProviderPriceModelsError(null);
+      return;
+    }
+
+    void loadProviderPriceModels(selectedConnectionId);
+  }, [enabled, selectedConnectionId]);
 
   function selectConnection(connectionId: string) {
     setSelectedConnectionId(connectionId);
     setCatalogConnectionId('');
     setCatalogLoaded(false);
     setProviderCatalog(null);
+    setProviderPriceModels([]);
+    setProviderPriceModelsError(null);
     setExternalRoomId('');
     setExternalRateId('');
     setExternalRateRoomId('');
@@ -781,6 +910,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         property_id: propertyId,
         external_hotel_id: zodomusPropertyId,
         ota_key: zodomusOtaKey,
+        price_model_id: normalizePriceModelId(zodomusPriceModelId),
       });
       setSelectedConnectionId(response.data.connection.id);
       setProviderCatalog(response.data.catalog);
@@ -844,7 +974,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     if (!selectedConnection) return;
     await runAction('activate-mapped-rooms', async () => {
       await api.post(`/channels/${selectedConnection.id}/rooms-activate`);
-      setStatus('Mapped rooms and rates activated in Zodomus.');
+      setStatus('Mapped rooms and rates activated in Zodomus. Run property check before syncing.');
       await loadData();
       setSelectedConnectionId(selectedConnection.id);
     });
@@ -972,6 +1102,58 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     });
   }
 
+  async function runFullInventorySync() {
+    if (!selectedConnection) return;
+    const syncWindow = buildSyncWindow(Number(fullSyncWindowDays));
+    if (!window.confirm(`Queue full inventory sync for ${syncWindow.from} to ${syncWindow.to}?`)) return;
+    await runAction('full-inventory-sync', async () => {
+      await api.post(`/channels/${selectedConnection.id}/sync`, {
+        sync_type: 'INVENTORY',
+        from: syncWindow.from,
+        to: syncWindow.to,
+      });
+      await loadData();
+      await loadInventoryReconciliation(selectedConnection.id);
+      await loadInventoryRowResults(selectedConnection.id);
+      await loadSyncLogs(selectedConnection.id);
+      setStatus(`Queued full inventory sync for ${syncWindow.from} to ${syncWindow.to}.`);
+    });
+  }
+
+  async function runFullRatesSync() {
+    if (!selectedConnection) return;
+    const syncWindow = buildSyncWindow(Number(fullSyncWindowDays));
+    if (!window.confirm(`Queue full rates sync for ${syncWindow.from} to ${syncWindow.to}?`)) return;
+    await runAction('full-rates-sync', async () => {
+      await api.post(`/channels/${selectedConnection.id}/sync`, {
+        sync_type: 'RATES',
+        from: syncWindow.from,
+        to: syncWindow.to,
+      });
+      await loadData();
+      await loadSyncLogs(selectedConnection.id);
+      setStatus(`Queued full rates sync for ${syncWindow.from} to ${syncWindow.to}.`);
+    });
+  }
+
+  async function backfillExistingReservations() {
+    if (!selectedConnection) return;
+    if (
+      !window.confirm(
+        'Backfill existing future reservations from Zodomus summary? Use this once during production go-live after mappings are ready.',
+      )
+    ) {
+      return;
+    }
+
+    await runAction('reservations-summary-backfill', async () => {
+      await api.post(`/channels/${selectedConnection.id}/reservations-summary-backfill`);
+      await loadData();
+      await loadSyncLogs(selectedConnection.id);
+      setStatus('Queued one-time future reservation backfill from Zodomus summary.');
+    });
+  }
+
   async function refreshInventoryReconciliation() {
     if (!selectedConnection) return;
     await runAction('refresh-reconciliation', async () => {
@@ -1065,6 +1247,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   return {
     automationEnabled,
     activateMappedRooms,
+    backfillExistingReservations,
     backgroundJobs,
     backgroundJobsError,
     backgroundJobsLoading,
@@ -1088,6 +1271,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     externalRateRoomId,
     externalRoomId,
     filteredCatalogRates,
+    fullSyncWindowDays,
     hasCatalogRates,
     hasCatalogRooms,
     inventoryInterval,
@@ -1110,9 +1294,12 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     pendingAction,
     parsedProviderCheckStatuses,
     persistedSetupStatus,
+    priceModelOptions,
     properties,
     propertyActivationPriceModelId,
     propertyId,
+    providerPriceModelsError,
+    providerPriceModelsLoading,
     providerReservationEventOptions,
     providerReservationEventStatus,
     providerReservationId,
@@ -1122,6 +1309,8 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     ratesInterval,
     reactivateProperty,
     runInventorySync,
+    runFullInventorySync,
+    runFullRatesSync,
     runPropertyCheck,
     runRatesSync,
     refreshInventoryReconciliation,
@@ -1156,6 +1345,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setSelectedConnectionId,
     setSyncWindowDays,
     setZodomusOtaKey,
+    setZodomusPriceModelId,
     setZodomusPropertyId,
     status,
     submitProviderReservationEvent,
@@ -1171,6 +1361,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     zodomusConnections,
     zodomusOtaKey,
     zodomusOtaOptions,
+    zodomusPriceModelId,
     zodomusPropertyId,
   };
 }

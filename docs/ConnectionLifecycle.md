@@ -139,19 +139,21 @@ Then it calls:
 POST /rooms-activation
 ```
 
-After that it runs:
-
-```http
-POST /property-check
-```
-
 and persists:
 
 - `rooms_activated`
 - `rooms_activated_at`
 - `activated_room_count`
-- `ready`
-- `ready_at`
+- `ready = false`
+- `ready_at = null`
+
+The operator must then run the final readiness check:
+
+```http
+POST /property-check
+```
+
+Only that post-room-activation property check can move the connection back to `ready = true`.
 
 ## 6. Readiness gate
 
@@ -159,10 +161,11 @@ A connection is operationally live only when HMS has:
 
 - `activated = true`
 - `catalog_loaded = true`
+- `rooms_activated = true`
 - `ready = true`
 - `disconnected = false`
 
-`rooms_activated` should normally also be true after the mapped-room activation step, but webhook-triggered reservation intake now trusts final `ready = true` instead of re-requiring `rooms_activated` from the saved snapshot.
+Property checks before room activation can store provider status, but they cannot mark the connection ready. After room activation, HMS resets `ready` and waits for a separate final property check.
 
 ## 7. Outbound syncs
 
@@ -207,7 +210,8 @@ Important:
 - HMS now builds rate sync as one row per mapped provider room/rate per day
 - active HMS pricing rules are applied before each daily Zodomus `/rates` push
 - Zodomus receives one `/rates` push per room/rate/date row
-- effective Zodomus `sync_window_days` is clamped to a minimum of `365`
+- routine Zodomus `sync_window_days` is the rolling scheduler/manual window
+- explicit full-sync actions use `full_sync_window_days`, which defaults to `365` in production
 - inventory sync status can now be `SUCCEEDED`, `PARTIAL_FAILED`, or `FAILED`
 - provider `returnCode != 200` now counts as a failed row/result, so provider business rejection is no longer shown as a successful sync
 - rate sync outcome now uses provider row/result summaries too, instead of defaulting every completed push to `SUCCEEDED`
@@ -282,14 +286,77 @@ HMS behavior:
    - final readiness state
 5. enqueue `BOOKINGS` sync for that connection
 6. if webhook payload includes `reservation_id`, try targeted `GET /reservations` for that reservation first
-7. if targeted fetch is unavailable, incomplete, or hits the provider download limit, fall back to normal queue/summary reconciliation
+7. if targeted fetch is unavailable, incomplete, or hits the provider download limit, fall back to reservation queue reconciliation
 8. import the resolved reservation payloads
 
 This keeps:
 
 - webhook = fast trigger
 - targeted reservation fetch = fast-path import when the webhook identifies a booking
-- reservation summary/detail APIs = fallback and normalized reconciliation source
+- reservation queue/detail APIs = fallback and normalized reconciliation source
+
+Validated local webhook behavior:
+
+- A signed `POST /webhooks/channel/zodomus` request with `propertyId`, `channelId`, and `reservationId` is accepted as a `WebhookEvent`.
+- The webhook processor queues a webhook-triggered `BOOKINGS` sync for the matching ready Zodomus connection.
+- The sync fetches the targeted reservation from Zodomus when possible.
+- Provider reservation status `3` is imported as `CANCELLED`.
+- Cancellation of an already-imported reservation updates the reservation group and all room lines to `CANCELLED`; the reservation remains visible for history and no longer blocks active inventory.
+
+Current edge behavior:
+
+- If HMS first sees a provider reservation only after it is already cancelled and Zodomus returns no room lines, HMS skips it instead of inventing incomplete local reservation data.
+- Zodomus sandbox test reservations can return duplicate room-line data under different reservation IDs or stale past stays; HMS intentionally skips duplicates and stale stays.
+- The current webhook verification uses one configured `ZODOMUS_WEBHOOK_KEY` or channel webhook secret from env. This is acceptable for a single Zodomus webhook secret setup; per-connection webhook secrets would be a future hardening step for multi-account isolation.
+
+## 9A. One-time future reservation backfill
+
+At production go-live, the operator can manually queue a one-time reservation summary backfill:
+
+```http
+POST /channels/:connectionId/reservations-summary-backfill
+```
+
+HMS requires the Zodomus connection to be ready, then queues a `BOOKINGS` sync with:
+
+```json
+{
+  "reservation_import": {
+    "mode": "summary_backfill"
+  },
+  "trigger": "manual_summary_backfill"
+}
+```
+
+The worker calls:
+
+1. `GET /reservations-summary`
+2. `GET /reservations` for discovered reservation IDs
+
+This is not part of routine polling. Normal ongoing intake remains webhook first, with `GET /reservations-queue` as the fallback.
+
+## 9B. Provider reservation intake records
+
+Zodomus `GET /reservations` can consume a reservation from the provider queue. To avoid losing the fetched payload when local import fails, HMS persists each fetched reservation detail before import.
+
+For every fetched reservation detail in a queued `BOOKINGS` sync, HMS stores a `provider_reservation_intake_records` row with:
+
+- `channel_sync_log_id`
+- `channel_connection_id`
+- `property_id`
+- `external_reservation_id`
+- raw provider payload
+- intake status
+- error message when import fails
+
+Intake statuses:
+
+- `FETCHED`: detail was received from Zodomus and stored before local import
+- `IMPORTED`: local import created, updated, or cancelled the HMS reservation
+- `SKIPPED`: HMS intentionally skipped the payload, for example stale or duplicate provider data
+- `FAILED`: local import failed after the provider detail was already fetched
+
+This gives operators a recoverable HMS-side record even when the provider queue item is no longer available from Zodomus.
 
 ## 10. Inventory fan-out after import
 

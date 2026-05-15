@@ -64,7 +64,9 @@ Result:
 - old sandbox stays such as `2019-05-20` are now counted as `skipped`
 - they no longer fail import with inventory conflicts
 
-### Minimum Zodomus sync horizon
+### Historical minimum Zodomus sync horizon
+
+Note: this section records the May 2026 incident fix. Current production behavior now separates routine rolling sync windows from explicit full-window sync actions, so routine scheduling no longer has to push 365 days every interval.
 
 Code change:
 
@@ -72,8 +74,8 @@ Code change:
 
 Behavior:
 
-- effective `sync_window_days` is normalized to a minimum of `365`
-- applies to defaults, existing saved connection config, and automation updates
+- at the time, effective `sync_window_days` was normalized to a full-year window
+- current full-sync behavior keeps full-year repair/go-live pushes available separately from routine scheduling
 
 Result:
 

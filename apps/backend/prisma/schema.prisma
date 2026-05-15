@@ -95,6 +95,13 @@ enum InventorySyncRowStatus {
   FAILED
 }
 
+enum ProviderReservationIntakeStatus {
+  FETCHED
+  IMPORTED
+  FAILED
+  SKIPPED
+}
+
 enum WebhookDomain {
   PAYMENT
   CHANNEL
@@ -178,6 +185,7 @@ model Property {
   inventoryBlocks InventoryBlock[]
   webhookEvents  WebhookEvent[]
   backgroundJobs BackgroundJob[]
+  providerReservationIntakeRecords ProviderReservationIntakeRecord[]
   images         PropertyImage[]
   createdAt      DateTime       @default(now()) @map("created_at")
   updatedAt      DateTime       @updatedAt @map("updated_at")
@@ -613,6 +621,7 @@ model ChannelConnection {
   reservationGroups ReservationGroup[]
   syncLogs    ChannelSyncLog[]
   inventorySyncRows InventorySyncRow[]
+  providerReservationIntakeRecords ProviderReservationIntakeRecord[]
   createdAt   DateTime                @default(now()) @map("created_at")
   updatedAt   DateTime                @updatedAt @map("updated_at")
 
@@ -669,6 +678,7 @@ model ChannelSyncLog {
   errorMessage        String?           @map("error_message") @db.Text
   channelConnection   ChannelConnection @relation(fields: [channelConnectionId], references: [id], onDelete: Cascade)
   inventoryRows       InventorySyncRow[]
+  providerReservationIntakeRecords ProviderReservationIntakeRecord[]
   createdAt           DateTime          @default(now()) @map("created_at")
   updatedAt           DateTime          @updatedAt @map("updated_at")
 
@@ -697,6 +707,31 @@ model InventorySyncRow {
   @@index([channelSyncLogId])
   @@index([externalRoomId])
   @@map("inventory_sync_rows")
+}
+
+model ProviderReservationIntakeRecord {
+  id                    String                          @id @default(uuid()) @db.Uuid
+  channelSyncLogId      String                          @map("channel_sync_log_id") @db.Uuid
+  channelConnectionId   String                          @map("channel_connection_id") @db.Uuid
+  propertyId            String                          @map("property_id") @db.Uuid
+  externalReservationId String                          @map("external_reservation_id") @db.VarChar(160)
+  status                ProviderReservationIntakeStatus @default(FETCHED)
+  rawPayload            Json                            @map("raw_payload")
+  errorMessage          String?                         @map("error_message") @db.Text
+  importedAt            DateTime?                       @map("imported_at")
+  failedAt              DateTime?                       @map("failed_at")
+  skippedAt             DateTime?                       @map("skipped_at")
+  channelSyncLog        ChannelSyncLog                  @relation(fields: [channelSyncLogId], references: [id], onDelete: Cascade)
+  channelConnection     ChannelConnection               @relation(fields: [channelConnectionId], references: [id], onDelete: Cascade)
+  property              Property                        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt             DateTime                        @default(now()) @map("created_at")
+  updatedAt             DateTime                        @updatedAt @map("updated_at")
+
+  @@unique([channelSyncLogId, externalReservationId])
+  @@index([channelConnectionId, status])
+  @@index([propertyId, status])
+  @@index([externalReservationId])
+  @@map("provider_reservation_intake_records")
 }
 
 model WebhookEvent {

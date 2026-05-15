@@ -153,6 +153,7 @@ describe('BookingService', () => {
           propertyId: string | null,
           search: string,
           status?: BookingStatus,
+          includeCancelled?: boolean,
         ) => Record<string, unknown>;
       }
     ).reservationFeedImportedWhere('property-1', 'ops', BookingStatus.CHECKED_IN);
@@ -162,5 +163,41 @@ describe('BookingService', () => {
       status: BookingStatus.CHECKED_IN,
     });
     expect(where).not.toHaveProperty('reservationStatus');
+  });
+
+  it('excludes cancelled reservations from the default reservation feed', () => {
+    const where = (
+      service as unknown as {
+        reservationFeedImportedWhere: (
+          propertyId: string | null,
+          search: string,
+          status?: BookingStatus,
+          includeCancelled?: boolean,
+        ) => Record<string, unknown>;
+      }
+    ).reservationFeedImportedWhere('property-1', '');
+
+    expect(where).toMatchObject({
+      propertyId: 'property-1',
+      status: { not: BookingStatus.CANCELLED },
+    });
+  });
+
+  it('can include cancelled reservations when explicitly requested', () => {
+    const where = (
+      service as unknown as {
+        reservationFeedImportedWhere: (
+          propertyId: string | null,
+          search: string,
+          status?: BookingStatus,
+          includeCancelled?: boolean,
+        ) => Record<string, unknown>;
+      }
+    ).reservationFeedImportedWhere('property-1', '', undefined, true);
+
+    expect(where).toMatchObject({
+      propertyId: 'property-1',
+    });
+    expect(where).not.toHaveProperty('status');
   });
 });

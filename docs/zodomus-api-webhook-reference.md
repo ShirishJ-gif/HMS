@@ -182,6 +182,29 @@ Verification supports:
 8. HMS imports the resolved reservation payloads
 9. HMS fans out inventory updates if inventory changed
 
+## Validated Local Behavior
+
+Local ngrok testing confirmed the webhook path for cancellation:
+
+- `POST /webhooks/channel/zodomus` accepted the signed webhook and stored a `WebhookEvent`.
+- HMS queued a webhook-triggered `BOOKINGS` sync with `reservation_import.mode = webhook_trigger`.
+- The sync fetched the targeted Zodomus reservation by `reservationId`.
+- Provider status `3` was normalized to HMS `CANCELLED`.
+- The existing HMS reservation group and its reservation-room lines were updated to `CANCELLED`.
+
+This validates the intended fast-trigger model:
+
+```text
+Zodomus webhook -> HMS webhook event -> background job -> targeted booking sync -> reservation import/update
+```
+
+Known test caveats:
+
+- Do not invent reservation IDs for Zodomus tests. For `status = new`, omit the reservation ID and use the provider-returned `ReservationId`.
+- For `modified` and `cancelled`, use a valid existing provider reservation ID.
+- Zodomus sandbox may return duplicate room-line data under different reservation IDs or stale stays. HMS skips those intentionally.
+- A roomless cancelled reservation can update an existing HMS reservation, but HMS skips it if no matching HMS reservation exists yet.
+
 For inventory pushes:
 
 - HMS sends batched `/availability` calls for contiguous room/date ranges with the same availability

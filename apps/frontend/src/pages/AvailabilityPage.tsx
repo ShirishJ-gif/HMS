@@ -1,4 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { DayPicker } from '@daypicker/react';
+import '@daypicker/react/style.css';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { AvailabilitySummary, InventoryCalendarSummary, Property, RoomCategory } from '../api/types';
@@ -6,21 +8,13 @@ import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
 import { usePersistedPropertyId } from '../hooks/usePersistedPropertyId';
 import { formatCurrency } from '../utils/format';
+import { labelCls, primaryBtn, TableCard, Th, Td, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
 
 const AVAILABILITY_STORAGE_KEY = 'hms_availability_state';
 const INVENTORY_CALENDAR_PREVIEW_DAYS = 7;
 
-type PersistedAvailabilityQuery = {
-  propertyId: string;
-  from: string;
-  to: string;
-};
-
-type PersistedAvailabilityState = {
-  lastLoadedQuery: PersistedAvailabilityQuery;
-  availability: AvailabilitySummary;
-  inventoryCalendar: InventoryCalendarSummary;
-};
+type PersistedAvailabilityQuery = { propertyId: string; from: string; to: string };
+type PersistedAvailabilityState = { lastLoadedQuery: PersistedAvailabilityQuery; availability: AvailabilitySummary; inventoryCalendar: InventoryCalendarSummary };
 
 export function AvailabilityPage() {
   const today = new Date().toISOString().slice(0, 10);
@@ -31,588 +25,207 @@ export function AvailabilityPage() {
   const shouldRestorePersistedResults = restoredQuery != null && (!propertyId || restoredQuery.propertyId === propertyId);
   const [from, setFrom] = useState(shouldRestorePersistedResults ? restoredQuery.from : today);
   const [to, setTo] = useState(shouldRestorePersistedResults ? restoredQuery.to : tomorrow);
-  const [availability, setAvailability] = useState<AvailabilitySummary | null>(
-    shouldRestorePersistedResults ? persistedAvailabilityState?.availability ?? null : null,
-  );
-  const [inventoryCalendar, setInventoryCalendar] = useState<InventoryCalendarSummary | null>(
-    shouldRestorePersistedResults ? persistedAvailabilityState?.inventoryCalendar ?? null : null,
-  );
+  const [availability, setAvailability] = useState<AvailabilitySummary | null>(shouldRestorePersistedResults ? persistedAvailabilityState?.availability ?? null : null);
+  const [inventoryCalendar, setInventoryCalendar] = useState<InventoryCalendarSummary | null>(shouldRestorePersistedResults ? persistedAvailabilityState?.inventoryCalendar ?? null : null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
-  const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [lastLoadedQuery, setLastLoadedQuery] = useState<PersistedAvailabilityQuery | null>(
-    shouldRestorePersistedResults ? restoredQuery : null,
-  );
-  const [restrictionForm, setRestrictionForm] = useState({
-    room_category_id: '',
-    from_date: today,
-    to_date: today,
-    stop_sell: false,
-    min_stay: '',
-    max_stay: '',
-  });
+  const [lastLoadedQuery, setLastLoadedQuery] = useState<PersistedAvailabilityQuery | null>(shouldRestorePersistedResults ? restoredQuery : null);
+  const [openDatePicker, setOpenDatePicker] = useState<'from' | 'to' | null>(null);
   const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), []);
   const categoriesState = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), []);
   const properties = propertiesState.data ?? [];
   const roomCategories = categoriesState.data ?? [];
   const hasLoadedProperties = propertiesState.data != null;
-  const selectedPropertyExists = Boolean(propertyId && properties.some((property) => property.id === propertyId));
+  const selectedPropertyExists = Boolean(propertyId && properties.some((p) => p.id === propertyId));
 
+  useEffect(() => { if (!propertyId && restoredQuery?.propertyId) setPropertyId(restoredQuery.propertyId); }, [propertyId, restoredQuery, setPropertyId]);
   useEffect(() => {
-    if (!propertyId && restoredQuery?.propertyId) {
-      setPropertyId(restoredQuery.propertyId);
-    }
-  }, [propertyId, restoredQuery, setPropertyId]);
-
-  useEffect(() => {
-    if (!propertiesState.data) {
-      return;
-    }
-
-    if (properties.length === 0) {
-      if (propertyId) setPropertyId('');
-      setAvailability(null);
-      setInventoryCalendar(null);
-      setLastLoadedQuery(null);
-      clearPersistedAvailabilityState();
-      return;
-    }
-
-    if (!propertyId || !properties.some((property) => property.id === propertyId)) {
-      setPropertyId(properties[0].id);
-      setAvailability(null);
-      setInventoryCalendar(null);
-      setLastLoadedQuery(null);
-      clearPersistedAvailabilityState();
-    }
+    if (!propertiesState.data) return;
+    if (properties.length === 0) { if (propertyId) setPropertyId(''); setAvailability(null); setInventoryCalendar(null); setLastLoadedQuery(null); clearPersistedAvailabilityState(); return; }
+    if (!propertyId || !properties.some((p) => p.id === propertyId)) { setPropertyId(properties[0].id); setAvailability(null); setInventoryCalendar(null); setLastLoadedQuery(null); clearPersistedAvailabilityState(); }
   }, [properties, propertyId, setPropertyId]);
 
-  const propertyCategories = useMemo(
-    () => roomCategories.filter((category) => category.property_id === propertyId),
-    [roomCategories, propertyId],
-  );
-  const displayedAvailability =
-    hasLoadedProperties && selectedPropertyExists && lastLoadedQuery?.propertyId === propertyId ? availability : null;
+  const displayedAvailability = hasLoadedProperties && selectedPropertyExists && lastLoadedQuery?.propertyId === propertyId ? availability : null;
   const displayedInventoryCalendar = displayedAvailability ? inventoryCalendar : null;
-  const totalInventory = displayedAvailability?.categories.reduce((sum, category) => sum + category.total_inventory, 0) ?? 0;
-  const totalReservedRoomStays = displayedAvailability?.categories.reduce((sum, category) => sum + category.reserved_room_stays, 0) ?? 0;
-  const totalOutOfService = displayedAvailability?.categories.reduce((sum, category) => sum + category.out_of_service, 0) ?? 0;
-  const totalAvailable = displayedAvailability?.categories.reduce((sum, category) => sum + category.available, 0) ?? 0;
+  const totalInventory = displayedAvailability?.categories.reduce((s, c) => s + c.total_inventory, 0) ?? 0;
+  const totalReservedRoomStays = displayedAvailability?.categories.reduce((s, c) => s + c.reserved_room_stays, 0) ?? 0;
+  const totalOutOfService = displayedAvailability?.categories.reduce((s, c) => s + c.out_of_service, 0) ?? 0;
+  const totalAvailable = displayedAvailability?.categories.reduce((s, c) => s + c.available, 0) ?? 0;
   const sellThroughRate = totalInventory === 0 ? 0 : Math.round((totalReservedRoomStays / totalInventory) * 100);
-  const queryDays = buildDateRange(from, to).map((date) => ({
-    date,
-    dayLabel: new Date(`${date}T00:00:00.000Z`).toLocaleDateString(undefined, { weekday: 'short' }),
-    shortDate: new Date(`${date}T00:00:00.000Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-  }));
-  const stopSellCount =
-    displayedInventoryCalendar?.categories.reduce(
-      (sum, category) => sum + category.rows.filter((row) => row.stop_sell).length,
-      0,
-    ) ?? 0;
-  const restrictedNightCount =
-    displayedInventoryCalendar?.categories.reduce(
-      (sum, category) =>
-        sum + category.rows.filter((row) => row.stop_sell || row.min_stay != null || row.max_stay != null).length,
-      0,
-    ) ?? 0;
-  const topAvailableCategory = displayedAvailability?.categories.reduce<AvailabilitySummary['categories'][number] | null>(
-    (currentTop, category) => (!currentTop || category.available > currentTop.available ? category : currentTop),
-    null,
-  );
-  const previewInventoryCalendar = displayedInventoryCalendar
-    ? {
-        ...displayedInventoryCalendar,
-        categories: displayedInventoryCalendar.categories.map((category) => ({
-          ...category,
-          rows: category.rows.slice(0, INVENTORY_CALENDAR_PREVIEW_DAYS),
-        })),
-      }
-    : null;
-  const inventoryCalendarRowCount =
-    displayedInventoryCalendar?.categories.reduce((sum, category) => sum + category.rows.length, 0) ?? 0;
-  const previewInventoryCalendarRowCount =
-    previewInventoryCalendar?.categories.reduce((sum, category) => sum + category.rows.length, 0) ?? 0;
-  const hiddenInventoryCalendarRowCount = Math.max(0, inventoryCalendarRowCount - previewInventoryCalendarRowCount);
-  const inventoryCategorySummaries =
-    displayedInventoryCalendar?.categories.map((category) => {
-      const totalAvailable = category.rows.reduce((sum, row) => sum + row.available_rooms, 0);
-      const totalBlocked = category.rows.reduce((sum, row) => sum + row.blocked_rooms, 0);
-      const totalReserved = category.rows.reduce((sum, row) => sum + row.reserved_rooms, 0);
-      const restrictedRows = category.rows.filter((row) => row.stop_sell || row.min_stay != null || row.max_stay != null).length;
-      const minAvailable = category.rows.reduce<number | null>(
-        (minimum, row) => (minimum == null || row.available_rooms < minimum ? row.available_rooms : minimum),
-        null,
-      );
-
-      return {
-        roomCategoryId: category.room_category_id,
-        name: category.name,
-        code: category.code,
-        nights: category.rows.length,
-        averageAvailable: category.rows.length === 0 ? 0 : Math.round(totalAvailable / category.rows.length),
-        minAvailable: minAvailable ?? 0,
-        totalBlocked,
-        totalReserved,
-        restrictedRows,
-      };
-    }) ?? [];
-  const inventoryExceptionRows =
-    displayedInventoryCalendar?.categories.flatMap((category) =>
-      category.rows
-        .filter((row) => row.stop_sell || row.min_stay != null || row.max_stay != null || row.blocked_rooms > 0 || row.available_rooms <= 0)
-        .map((row) => ({
-          ...row,
-          roomCategoryId: category.room_category_id,
-          roomCategoryName: category.name,
-        })),
-    ) ?? [];
+  const sellableRate = totalInventory === 0 ? 0 : Math.round((totalAvailable / totalInventory) * 100);
+  const outOfServiceRate = totalInventory === 0 ? 0 : Math.round((totalOutOfService / totalInventory) * 100);
+  const categoryCount = displayedAvailability?.categories.length ?? roomCategories.length;
+  const stopSellCount = displayedInventoryCalendar?.categories.reduce((s, c) => s + c.rows.filter((r) => r.stop_sell).length, 0) ?? 0;
+  const restrictedNightCount = displayedInventoryCalendar?.categories.reduce((s, c) => s + c.rows.filter((r) => r.stop_sell || r.min_stay != null || r.max_stay != null).length, 0) ?? 0;
+  const topAvailableCategory = displayedAvailability?.categories.reduce<AvailabilitySummary['categories'][number] | null>((top, c) => (!top || c.available > top.available ? c : top), null);
+  const inventoryCalendarRowCount = displayedInventoryCalendar?.categories.reduce((s, c) => s + c.rows.length, 0) ?? 0;
+  const inventoryCategorySummaries = displayedInventoryCalendar?.categories.map((cat) => {
+    const totalAv = cat.rows.reduce((s, r) => s + r.available_rooms, 0);
+    const minAvailable = cat.rows.reduce<number | null>((m, r) => (m == null || r.available_rooms < m ? r.available_rooms : m), null);
+    const restrictedRows = cat.rows.filter((r) => r.stop_sell || r.min_stay != null || r.max_stay != null).length;
+    return { roomCategoryId: cat.room_category_id, name: cat.name, averageAvailable: cat.rows.length === 0 ? 0 : Math.round(totalAv / cat.rows.length), minAvailable: minAvailable ?? 0, restrictedRows };
+  }) ?? [];
+  const inventoryExceptionRows = displayedInventoryCalendar?.categories.flatMap((cat) => cat.rows.filter((r) => r.stop_sell || r.min_stay != null || r.max_stay != null || r.blocked_rooms > 0 || r.available_rooms <= 0).map((r) => ({ ...r, roomCategoryId: cat.room_category_id, roomCategoryName: cat.name }))) ?? [];
   const visibleInventoryExceptionRows = inventoryExceptionRows.slice(0, 12);
   const hiddenInventoryExceptionRows = Math.max(0, inventoryExceptionRows.length - visibleInventoryExceptionRows.length);
-  const inventoryCalendarDates = displayedInventoryCalendar
-    ? Array.from(new Set(displayedInventoryCalendar.categories.flatMap((category) => category.rows.map((row) => row.date)))).sort()
-    : [];
+  const inventoryCalendarDates = displayedInventoryCalendar ? Array.from(new Set(displayedInventoryCalendar.categories.flatMap((c) => c.rows.map((r) => r.date)))).sort() : [];
   const inventoryCalendarGridTemplate = `13rem repeat(${Math.max(inventoryCalendarDates.length, 1)}, minmax(4.4rem, 1fr))`;
 
-  async function fetchAvailabilitySnapshot(query: PersistedAvailabilityQuery) {
-    const [availabilityResponse, inventoryResponse] = await Promise.all([
-      api.get<AvailabilitySummary>('/availability', {
-        params: {
-          property_id: query.propertyId,
-          from: query.from,
-          to: query.to,
-        },
-      }),
-      api.get<InventoryCalendarSummary>('/inventory-calendar', {
-        params: {
-          property_id: query.propertyId,
-          from: query.from,
-          to: previousDate(query.to),
-        },
-      }),
-    ]);
-
-    return {
-      availability: availabilityResponse.data,
-      inventoryCalendar: inventoryResponse.data,
-    };
-  }
-
   async function loadAvailability(event: FormEvent) {
-    event.preventDefault();
-    setError(null);
-
+    event.preventDefault(); setError(null);
     try {
       const query = { propertyId, from, to };
-      if (!query.propertyId) {
-        setError('Select a property before checking availability.');
-        return;
-      }
-      const snapshot = await fetchAvailabilitySnapshot(query);
-      setAvailability(snapshot.availability);
-      setInventoryCalendar(snapshot.inventoryCalendar);
-      setLastLoadedQuery(query);
-      writePersistedAvailabilityState({
-        lastLoadedQuery: query,
-        availability: snapshot.availability,
-        inventoryCalendar: snapshot.inventoryCalendar,
-      });
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Failed to load availability');
-    }
-  }
-
-  async function submitRestrictions(event: FormEvent) {
-    event.preventDefault();
-    if (!propertyId) {
-      setActionError('Select a property before saving restrictions.');
-      return;
-    }
-
-    setActionError(null);
-    setActionStatus(null);
-    setPendingAction('save-restrictions');
-
-    try {
-      await api.post('/inventory/restrictions', {
-        property_id: propertyId,
-        room_category_id: restrictionForm.room_category_id,
-        from_date: restrictionForm.from_date,
-        to_date: restrictionForm.to_date,
-        stop_sell: restrictionForm.stop_sell,
-        min_stay: restrictionForm.min_stay ? Number(restrictionForm.min_stay) : undefined,
-        max_stay: restrictionForm.max_stay ? Number(restrictionForm.max_stay) : undefined,
-      });
-      setActionStatus('Restrictions saved. Reload availability to review the updated calendar.');
-      if (lastLoadedQuery) {
-        const inventoryResponse = await api.get<InventoryCalendarSummary>('/inventory-calendar', {
-          params: {
-            property_id: lastLoadedQuery.propertyId,
-            from: lastLoadedQuery.from,
-            to: previousDate(lastLoadedQuery.to),
-          },
-        });
-        setInventoryCalendar(inventoryResponse.data);
-        if (availability) {
-          writePersistedAvailabilityState({
-            lastLoadedQuery,
-            availability,
-            inventoryCalendar: inventoryResponse.data,
-          });
-        }
-      }
-    } catch (saveError) {
-      setActionError(getApiErrorMessage(saveError));
-    } finally {
-      setPendingAction(null);
-    }
+      if (!query.propertyId) { setError('Select a property before checking availability.'); return; }
+      const [availabilityResponse, inventoryResponse] = await Promise.all([
+        api.get<AvailabilitySummary>('/availability', { params: { property_id: query.propertyId, from: query.from, to: query.to } }),
+        api.get<InventoryCalendarSummary>('/inventory-calendar', { params: { property_id: query.propertyId, from: query.from, to: previousDate(query.to) } }),
+      ]);
+      setAvailability(availabilityResponse.data); setInventoryCalendar(inventoryResponse.data); setLastLoadedQuery(query);
+      writePersistedAvailabilityState({ lastLoadedQuery: query, availability: availabilityResponse.data, inventoryCalendar: inventoryResponse.data });
+    } catch (loadError) { setError(loadError instanceof Error ? loadError.message : 'Failed to load availability'); }
   }
 
   return (
-    <section>
-      <div className="page-header">
-        <div>
-          <p className="eyebrow">Commercial</p>
-          <h2>Availability &amp; Rates</h2>
-          <p className="page-subtitle">
-            Control OTA-facing sellable inventory, review rate posture, and manage internal restriction rules from one commercial workspace.
-          </p>
+    <section className="space-y-5">
+      <div>
+        <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-amber-500 mb-1">Commercial</p>
+        <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Availability &amp; Rates</h2>
+        <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-2xl">Control OTA-facing sellable inventory, review rate posture, and manage internal restriction rules from one commercial workspace.</p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[25rem_minmax(0,1fr)] xl:grid-cols-[27rem_minmax(0,1fr)] gap-5 items-stretch">
+        <form className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 min-h-[17.5rem] flex flex-col gap-4" onSubmit={loadAvailability}>
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Commercial window</p>
+            <h3 className="text-base font-bold text-slate-900">Availability query</h3>
+          </div>
+          <div className="grid grid-cols-2 gap-4 flex-1 content-start">
+            <label className={`${labelCls} col-span-2`}><span>Property</span><CustomSelect onChange={setPropertyId} options={properties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={propertyId} /></label>
+            <DatePickerField label="From" onChange={setFrom} open={openDatePicker === 'from'} setOpen={(open) => setOpenDatePicker(open ? 'from' : null)} value={from} />
+            <DatePickerField align="right" label="To" onChange={setTo} open={openDatePicker === 'to'} setOpen={(open) => setOpenDatePicker(open ? 'to' : null)} value={to} />
+          </div>
+          <button className={primaryBtn + ' w-full justify-center'} type="submit">Check availability</button>
+        </form>
+
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 min-h-[17.5rem] flex flex-col gap-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Window posture</p>
+              <h3 className="text-base font-bold text-slate-900">Availability snapshot</h3>
+            </div>
+            <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">{totalAvailable} sellable</span>
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_18rem] gap-4 flex-1">
+            <div className="rounded-lg border border-slate-100 bg-slate-50 p-4 flex flex-col justify-between gap-4">
+              <div className="flex items-end justify-between gap-4">
+                <div>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Sellable inventory</span>
+                  <strong className="mt-1 block text-3xl font-extrabold leading-none text-slate-900">{totalAvailable}</strong>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs font-bold text-emerald-700">{sellableRate}% open</span>
+                  <span className="block text-[11px] font-semibold text-slate-400">{totalInventory} total keys</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="flex h-2.5 overflow-hidden rounded-full bg-white">
+                  <span className="bg-emerald-500" style={{ width: `${sellableRate}%` }} />
+                  <span className="bg-sky-400" style={{ width: `${sellThroughRate}%` }} />
+                  <span className="bg-amber-400" style={{ width: `${outOfServiceRate}%` }} />
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-[11px] font-semibold text-slate-500">
+                  <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-500 not-italic" />Open {totalAvailable}</span>
+                  <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-sky-400 not-italic" />Booked {totalReservedRoomStays}</span>
+                  <span><i className="mr-1.5 inline-block h-2 w-2 rounded-full bg-amber-400 not-italic" />Out {totalOutOfService}</span>
+                </div>
+              </div>
+            </div>
+            <dl className="grid grid-cols-2 gap-2">
+              {[
+                ['Room types', categoryCount.toString()],
+                ['Committed', `${sellThroughRate}%`],
+                ['Restricted', restrictedNightCount.toString()],
+                ['Stop sell', stopSellCount.toString()],
+                ['Property', displayedAvailability?.property_name ?? 'Not loaded'],
+                ['Window', displayedAvailability ? `${displayedAvailability.from} to ${displayedAvailability.to}` : `${from} to ${to}`],
+              ].map(([dt, dd]) => (
+                <div key={String(dt)} className="rounded-lg border border-slate-100 bg-white px-3 py-2">
+                  <dt className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{dt}</dt>
+                  <dd className="mt-0.5 truncate text-xs font-semibold text-slate-700" title={String(dd)}>{dd}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
         </div>
       </div>
 
-      <div className="booking-layout availability-workspace">
-        <form className="card booking-form-card availability-query-card" onSubmit={loadAvailability}>
-          <div className="section-heading">
-              <div>
-                <p className="eyebrow">Commercial window</p>
-                <h3>Availability query</h3>
-              </div>
-            </div>
-          <div className="booking-form-grid">
-            <label>
-              Property
-              <CustomSelect
-                onChange={setPropertyId}
-                options={properties.map((property) => ({
-                  label: property.name,
-                  value: property.id,
-                }))}
-                placeholder="Select property"
-                value={propertyId}
-              />
-            </label>
-            <label>
-              From
-              <input
-                onChange={(event) => setFrom(event.target.value)}
-                placeholder="2026-05-01"
-                required
-                type="date"
-                value={from}
-              />
-            </label>
-            <label>
-              To
-              <input onChange={(event) => setTo(event.target.value)} placeholder="2026-05-03" required type="date" value={to} />
-            </label>
-          </div>
-          <div className="booking-form-footer">
-            <button className="primary-button" type="submit">
-              Check availability
-            </button>
-          </div>
-        </form>
-
-        <aside className="booking-sidepanel availability-sidepanel">
-          <div className="insight-panel availability-sidepanel-card">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Window posture</p>
-                <h3>Availability snapshot</h3>
-              </div>
-            </div>
-            <div className="compact-signal-grid availability-window-row">
-              <SignalStat label="Total keys" value={totalInventory} />
-              <SignalStat label="Reserved stays" value={totalReservedRoomStays} />
-              <SignalStat label="Sellable" value={totalAvailable} />
-            </div>
-            <dl className="detail-list">
-              <div>
-                <dt>Out of service</dt>
-                <dd>{totalOutOfService}</dd>
-              </div>
-              <div>
-                <dt>Property</dt>
-                <dd>{displayedAvailability?.property_name ?? 'Not loaded'}</dd>
-              </div>
-              <div>
-                <dt>Date window</dt>
-                <dd>
-                  {displayedAvailability ? `${displayedAvailability.from} to ${displayedAvailability.to}` : `${from} to ${to}`}
-                </dd>
-              </div>
-              <div>
-                <dt>Restricted nights</dt>
-                <dd>{restrictedNightCount}</dd>
-              </div>
-            </dl>
-          </div>
-
-          {/* <div className="insight-panel availability-sidepanel-card">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Commercial rules</p>
-                <h3>What this workspace controls</h3>
-              </div>
-            </div>
-            <ul className="attention-list">
-              <li>
-                <strong>Inventory depth</strong>
-                <span>Physical room counts, maintenance holds, and reserved room-stay depletion are calculated in HMS.</span>
-              </li>
-              <li>
-                <strong>Rate posture</strong>
-                <span>Starting rates are shown by room category so revenue teams can see which categories still have sellable depth.</span>
-              </li>
-              <li>
-                <strong>Channel reflection</strong>
-                <span>Zodomus and OTAs should reflect the sellable inventory that HMS computes here after outbound sync catches up.</span>
-              </li>
-            </ul>
-          </div> */}
-        </aside>
-      </div>
-
-      {propertiesState.loading && <p className="muted">Loading properties...</p>}
-      {categoriesState.loading && <p className="muted">Loading room types...</p>}
-      {(propertiesState.error || categoriesState.error || error) && <p className="error">{propertiesState.error ?? categoriesState.error ?? error}</p>}
-      {actionStatus && <p className="success">{actionStatus}</p>}
-      {actionError && <p className="error">{actionError}</p>}
-      {/* Restriction management is hidden for now until the commercial flow is ready again.
-      <div className="info-strip availability-restriction-strip">
-        <strong>Restriction scope</strong>
-        <span>
-          Stop-sell, minimum stay, and maximum stay are enforced inside HMS now, but they are <strong>not synced to Zodomus yet</strong>. Treat them as internal-only controls until provider-side restriction sync is confirmed.
-        </span>
-      </div>
-      */}
+      {(propertiesState.loading || categoriesState.loading) && <LoadingMsg>Loading properties and room types…</LoadingMsg>}
+      {(propertiesState.error || categoriesState.error || error) && <ErrorMsg>{propertiesState.error ?? categoriesState.error ?? error}</ErrorMsg>}
+      {actionStatus && <SuccessMsg>{actionStatus}</SuccessMsg>}
+      {actionError && <ErrorMsg>{actionError}</ErrorMsg>}
 
       {displayedAvailability && (
         <>
-          <div className="info-strip availability-commercial-strip">
-            <strong>Commercial view</strong>
-            <span>
-              {sellThroughRate}% of inventory is already committed by imported room stays in this window. Use the category board below to see which room groups still have clean sellable depth.
-            </span>
+          <div className="flex gap-3 items-start bg-indigo-50 border border-indigo-200 rounded-xl p-4 text-sm">
+            <strong className="text-indigo-800 flex-shrink-0">Commercial view</strong>
+            <span className="text-indigo-700 leading-relaxed">{sellThroughRate}% of inventory is already committed by imported room stays in this window. Use the category board below to see which room groups still have clean sellable depth.</span>
           </div>
 
-          <div className="info-strip">
-            <strong>System ownership</strong>
-            <span>
-              Availability on this screen is HMS truth. OTAs and the channel manager should receive the reduced sellable count after reservation import and maintenance changes.
-            </span>
-          </div>
-
-          {/* Stay window is hidden for now until this page shows true per-night availability detail.
-          <div className="availability-calendar-strip">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Stay window</p>
-                <h3>Queried nights</h3>
-              </div>
-              <span className="cell-note">Current API returns category totals for the selected window, not per-night availability.</span>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Best remaining depth</p>
+              <h3 className="text-sm font-bold text-slate-900 mb-1">{topAvailableCategory?.name ?? 'No category loaded'}</h3>
+              <strong className="text-2xl font-extrabold text-slate-900 block">{topAvailableCategory?.available ?? 0}</strong>
+              <span className="text-xs text-slate-500">Starting rate {topAvailableCategory?.lowest_rate == null ? '—' : formatCurrency(topAvailableCategory.lowest_rate)}</span>
             </div>
-            <div className="availability-calendar-grid" style={{ gridTemplateColumns: `repeat(${Math.max(queryDays.length, 1)}, minmax(4.25rem, 1fr))` }}>
-              {queryDays.map((day) => (
-                <div className="availability-calendar-day" key={day.date}>
-                  <strong>{day.dayLabel}</strong>
-                  <span>{day.shortDate}</span>
-                </div>
-              ))}
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Committed inventory</p>
+              <h3 className="text-sm font-bold text-slate-900 mb-1">{sellThroughRate}% sold</h3>
+              <strong className="text-2xl font-extrabold text-slate-900 block">{totalReservedRoomStays}</strong>
+              <span className="text-xs text-slate-500">reserved room stays · {totalAvailable} still sellable</span>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Restriction posture</p>
+              <h3 className="text-sm font-bold text-slate-900 mb-1">{stopSellCount} stop-sell nights</h3>
+              <strong className="text-2xl font-extrabold text-slate-900 block">{restrictedNightCount}</strong>
+              <span className="text-xs text-slate-500">restricted room nights including min/max-stay rules</span>
             </div>
           </div>
-          */}
 
-          <div className="availability-summary-grid availability-posture-grid">
-            <article className="availability-highlight-card">
-              <p className="eyebrow">Best remaining depth</p>
-              <h3>{topAvailableCategory?.name ?? 'No category loaded'}</h3>
-              <strong>{topAvailableCategory?.available ?? 0} sellable rooms</strong>
-              <span>
-                Starting rate {topAvailableCategory?.lowest_rate == null ? '-' : formatCurrency(topAvailableCategory.lowest_rate)}
-              </span>
-            </article>
-            <article className="availability-highlight-card">
-              <p className="eyebrow">Committed inventory</p>
-              <h3>{sellThroughRate}% sold</h3>
-              <strong>{totalReservedRoomStays} reserved room stays</strong>
-              <span>{totalAvailable} still sellable in this search window</span>
-            </article>
-            <article className="availability-highlight-card">
-              <p className="eyebrow">Restriction posture</p>
-              <h3>{stopSellCount} stop-sell nights</h3>
-              <strong>{restrictedNightCount} restricted room nights</strong>
-              <span>Includes stop-sell plus min/max-stay rules stored in the inventory calendar.</span>
-            </article>
-          </div>
-
-          {/* Restriction management is hidden for now until this workflow is reintroduced cleanly.
-          <div className="booking-layout restriction-layout availability-restriction-layout">
-            <form className="card booking-form-card availability-restriction-card" onSubmit={submitRestrictions}>
-              <div className="section-heading">
-                <div>
-                  <p className="eyebrow">Selling rules</p>
-                  <h3>Restriction management</h3>
-                </div>
-                <span className="cell-note">Internal only. Not synced to Zodomus yet.</span>
-              </div>
-              <div className="booking-form-grid availability-restriction-grid">
-                <label>
-                  Room type
-                  <select
-                    required
-                    value={restrictionForm.room_category_id}
-                    onChange={(event) => setRestrictionForm((current) => ({ ...current, room_category_id: event.target.value }))}
-                  >
-                    <option value="">Select room type</option>
-                    {propertyCategories.map((category) => (
-                      <option key={category.id} value={category.id}>
-                        {category.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  From
-                  <input
-                    type="date"
-                    required
-                    value={restrictionForm.from_date}
-                    onChange={(event) => setRestrictionForm((current) => ({ ...current, from_date: event.target.value }))}
-                  />
-                </label>
-                <label>
-                  To
-                  <input
-                    type="date"
-                    required
-                    value={restrictionForm.to_date}
-                    onChange={(event) => setRestrictionForm((current) => ({ ...current, to_date: event.target.value }))}
-                  />
-                </label>
-                <label>
-                  Min stay
-                  <input
-                    type="number"
-                    min={1}
-                    placeholder="Optional"
-                    value={restrictionForm.min_stay}
-                    onChange={(event) => setRestrictionForm((current) => ({ ...current, min_stay: event.target.value }))}
-                  />
-                </label>
-                <label>
-                  Max stay
-                  <input
-                    type="number"
-                    min={1}
-                    placeholder="Optional"
-                    value={restrictionForm.max_stay}
-                    onChange={(event) => setRestrictionForm((current) => ({ ...current, max_stay: event.target.value }))}
-                  />
-                </label>
-                <label className="toggle-field">
-                  <span>Stop sell</span>
-                  <input
-                    type="checkbox"
-                    checked={restrictionForm.stop_sell}
-                    onChange={(event) => setRestrictionForm((current) => ({ ...current, stop_sell: event.target.checked }))}
-                  />
-                </label>
-              </div>
-              <div className="booking-form-footer">
-                <button className="primary-button" disabled={pendingAction === 'save-restrictions'} type="submit">
-                  {pendingAction === 'save-restrictions' ? 'Saving...' : 'Save restrictions'}
-                </button>
-              </div>
-              <p className="cell-note" style={{ marginTop: '0.75rem' }}>
-                These rules affect HMS allocation decisions immediately for direct bookings and imported OTA reservations, but OTA selling rules remain unchanged until outbound restriction sync is implemented.
-              </p>
-            </form>
-
-            <aside className="booking-sidepanel availability-sidepanel">
-              <div className="insight-panel availability-sidepanel-card">
-                <div className="section-heading">
-                  <div>
-                    <p className="eyebrow">How rules work</p>
-                    <h3>Commercial effect</h3>
-                  </div>
-                </div>
-                <ul className="attention-list">
-                  <li>
-                    <strong>Stop sell</strong>
-                    <span>Closes the room type for new selling even if physical inventory exists.</span>
-                  </li>
-                  <li>
-                    <strong>Min / max stay</strong>
-                    <span>Direct booking and OTA intake now use these values when allocating inventory inside HMS, but Zodomus does not receive them yet.</span>
-                  </li>
-                  <li>
-                    <strong>CTA / CTD</strong>
-                    <span>Closed-to-arrival and closed-to-departure rules are part of the target commercial model, but this frontend does not expose them yet.</span>
-                  </li>
-                </ul>
-              </div>
-            </aside>
-          </div>
-          */}
-
-          <div className="availability-category-grid">
-            {displayedAvailability.categories.map((category) => {
-              const committedPercent =
-                category.total_inventory === 0 ? 0 : Math.min(100, Math.round((category.reserved_room_stays / category.total_inventory) * 100));
-              const maintenancePercent =
-                category.total_inventory === 0
-                  ? 0
-                  : Math.min(100, Math.round((category.out_of_service / category.total_inventory) * 100));
-
+          <div className={roomCategoryGridClass(displayedAvailability.categories.length)}>
+            {displayedAvailability.categories.map((cat) => {
+              const committedPercent = cat.total_inventory === 0 ? 0 : Math.min(100, Math.round((cat.reserved_room_stays / cat.total_inventory) * 100));
+              const maintenancePercent = cat.total_inventory === 0 ? 0 : Math.min(100, Math.round((cat.out_of_service / cat.total_inventory) * 100));
+              const expandedCard = displayedAvailability.categories.length === 2;
               return (
-                <article className="availability-category-card" key={category.room_category_id}>
-                  <div className="section-heading">
+                <article key={cat.room_category_id} className={`bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-3 ${expandedCard ? 'lg:min-h-[18rem]' : ''}`}>
+                  <div className="flex items-start justify-between gap-2">
                     <div>
-                      <p className="eyebrow">Room category</p>
-                      <h3>{category.name}</h3>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Room category</p>
+                      <h3 className="text-sm font-bold text-slate-900">{cat.name}</h3>
                     </div>
-                    <span className={category.available > 0 ? 'status-pill available' : 'status-pill occupied'}>
-                      {category.available} left
-                    </span>
+                    <span className={`inline-flex items-center px-2 py-1 rounded-full text-[11px] font-bold ${cat.available > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{cat.available} left</span>
                   </div>
-                  <div className="availability-meter">
-                    <div className="availability-meter-bar">
-                      <span className="availability-meter-booked" style={{ width: `${committedPercent}%` }} />
-                      <span className="availability-meter-maintenance" style={{ width: `${maintenancePercent}%` }} />
+                  <div className="space-y-1">
+                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-full flex">
+                        <span className="bg-sky-400 h-full transition-all" style={{ width: `${committedPercent}%` }} />
+                        <span className="bg-amber-400 h-full transition-all" style={{ width: `${maintenancePercent}%` }} />
+                      </div>
                     </div>
-                    <div className="availability-meter-labels">
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
                       <span>{committedPercent}% committed</span>
                       <span>{maintenancePercent}% out</span>
                     </div>
                   </div>
-                  <dl className="detail-list">
-                    <div>
-                      <dt>Total</dt>
-                      <dd>{category.total_inventory}</dd>
-                    </div>
-                    <div>
-                      <dt>Reserved stays</dt>
-                      <dd>{category.reserved_room_stays}</dd>
-                    </div>
-                    <div>
-                      <dt>Out of service</dt>
-                      <dd>{category.out_of_service}</dd>
-                    </div>
-                    <div>
-                      <dt>Starting rate</dt>
-                      <dd>{category.lowest_rate == null ? '-' : formatCurrency(category.lowest_rate)}</dd>
-                    </div>
+                  <dl className="space-y-1">
+                    {[['Total', cat.total_inventory.toString()], ['Reserved stays', cat.reserved_room_stays.toString()], ['Out of service', cat.out_of_service.toString()], ['Starting rate', cat.lowest_rate == null ? '—' : formatCurrency(cat.lowest_rate)]].map(([dt, dd]) => (
+                      <div key={String(dt)} className="flex items-center justify-between text-xs">
+                        <dt className="text-slate-400">{dt}</dt>
+                        <dd className="text-slate-700 font-semibold">{dd}</dd>
+                      </div>
+                    ))}
                   </dl>
                 </article>
               );
@@ -620,217 +233,159 @@ export function AvailabilityPage() {
           </div>
 
           {displayedInventoryCalendar && (
-            <div className="availability-calendar-dashboard">
-              <div className="table-heading">
-                <div>
-                  <p className="eyebrow">Inventory calendar</p>
-                  <h3>Room-type availability board</h3>
+            <>
+              <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+                <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-slate-100">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Inventory calendar</p>
+                    <h3 className="text-sm font-bold text-slate-900">Room-type availability board</h3>
+                  </div>
+                  <span className="text-xs text-slate-400">{inventoryCalendarRowCount} room-night rows in this query</span>
                 </div>
-                <span className="cell-note">{inventoryCalendarRowCount} room-night rows in this query</span>
-              </div>
-
-              <div className="availability-board-scroll">
-                <div className="availability-board-grid" style={{ gridTemplateColumns: inventoryCalendarGridTemplate }}>
-                  <div className="availability-board-corner">Room type</div>
-                  {inventoryCalendarDates.map((date) => (
-                    <div className="availability-board-date" key={date}>
-                      <strong>{formatShortDate(date)}</strong>
-                      <span>{formatWeekday(date)}</span>
-                    </div>
-                  ))}
-
-                  {displayedInventoryCalendar.categories.map((category) => {
-                    const rowByDate = new Map(category.rows.map((row) => [row.date, row]));
-                    const summary = inventoryCategorySummaries.find((item) => item.roomCategoryId === category.room_category_id);
-
-                    return (
-                      <div className="availability-board-row" key={category.room_category_id} style={{ display: 'contents' }}>
-                        <div className="availability-board-room">
-                          <strong>{category.name}</strong>
-                          <span>
-                            Avg {summary?.averageAvailable ?? 0} · Low {summary?.minAvailable ?? 0} · {summary?.restrictedRows ?? 0} restricted
-                          </span>
-                        </div>
-                        {inventoryCalendarDates.map((date) => {
-                          const row = rowByDate.get(date);
-
-                          if (!row) {
+                <div className="overflow-x-auto">
+                  <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: inventoryCalendarGridTemplate }}>
+                    <div className="px-4 py-2.5 bg-slate-50 border-b border-r border-slate-100 text-xs font-bold text-slate-600">Room type</div>
+                    {inventoryCalendarDates.map((date) => (
+                      <div key={date} className="px-2 py-2.5 bg-slate-50 border-b border-r border-slate-100 last:border-r-0 text-center">
+                        <strong className="block text-[10px] font-bold text-slate-500">{formatShortDate(date)}</strong>
+                        <span className="text-[10px] text-slate-400">{formatWeekday(date)}</span>
+                      </div>
+                    ))}
+                    {displayedInventoryCalendar.categories.map((cat) => {
+                      const rowByDate = new Map(cat.rows.map((r) => [r.date, r]));
+                      const summary = inventoryCategorySummaries.find((s) => s.roomCategoryId === cat.room_category_id);
+                      return (
+                        <div key={cat.room_category_id} style={{ display: 'contents' }}>
+                          <div className="px-4 py-3 border-b border-r border-slate-100 bg-white">
+                            <strong className="text-xs font-bold text-slate-900 block">{cat.name}</strong>
+                            <span className="text-[11px] text-slate-400">Avg {summary?.averageAvailable ?? 0} · Low {summary?.minAvailable ?? 0} · {summary?.restrictedRows ?? 0} restricted</span>
+                          </div>
+                          {inventoryCalendarDates.map((date) => {
+                            const row = rowByDate.get(date);
+                            if (!row) return <div key={date} className="border-b border-r border-slate-50 last:border-r-0 p-2 bg-white flex items-center justify-center"><strong className="text-xs text-slate-300">—</strong></div>;
+                            const tone = availabilityCellTone(row);
+                            const toneMap: Record<string, string> = { healthy: 'bg-emerald-50', limited: 'bg-amber-50', closed: 'bg-rose-50', restricted: 'bg-indigo-50' };
                             return (
-                              <div className="availability-board-cell missing" key={date}>
-                                <strong>-</strong>
+                              <div key={date} className={`border-b border-r border-slate-50 last:border-r-0 p-2 ${toneMap[tone] ?? 'bg-white'}`}>
+                                <strong className="text-xs font-bold text-slate-900 block text-center">{row.available_rooms}</strong>
+                                <span className="text-[10px] text-slate-500 block text-center">{row.reserved_rooms} bkd</span>
+                                {row.blocked_rooms > 0 && <em className="text-[10px] text-amber-600 block text-center not-italic">{row.blocked_rooms} blk</em>}
+                                {(row.stop_sell || row.min_stay != null || row.max_stay != null) && <small className="text-[10px] text-rose-500 block text-center">{formatRestrictionSummary(row)}</small>}
                               </div>
                             );
-                          }
-
-                          return (
-                            <div className={`availability-board-cell ${availabilityCellTone(row)}`} key={date}>
-                              <strong>{row.available_rooms}</strong>
-                              <span>{row.reserved_rooms} booked</span>
-                              {row.blocked_rooms > 0 && <em>{row.blocked_rooms} blocked</em>}
-                              {(row.stop_sell || row.min_stay != null || row.max_stay != null) && (
-                                <small>{formatRestrictionSummary(row)}</small>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="availability-board-legend">
-                <span><i className="available" /> Healthy</span>
-                <span><i className="limited" /> Low inventory</span>
-                <span><i className="closed" /> Sold out or stop sell</span>
-                <span><i className="restricted" /> Restricted</span>
-              </div>
-
-              <details className="availability-exception-card">
-                <summary>
-                  Attention list
-                  {hiddenInventoryExceptionRows > 0 ? ` · ${hiddenInventoryExceptionRows} more hidden` : ''}
-                </summary>
-                <div className="table-heading">
-                  <div>
-                    <p className="eyebrow">Attention needed</p>
-                    <h3>Blocked, restricted, or sold-out nights</h3>
+                          })}
+                        </div>
+                      );
+                    })}
                   </div>
-                  {hiddenInventoryExceptionRows > 0 && <span className="cell-note">{hiddenInventoryExceptionRows} more hidden</span>}
                 </div>
-                {visibleInventoryExceptionRows.length > 0 ? (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Room type</th>
-                        <th>Date</th>
-                        <th>Available</th>
-                        <th>Blocked</th>
-                        <th>Reserved</th>
-                        <th>Rule</th>
-                      </tr>
-                    </thead>
+                <div className="flex items-center gap-4 px-5 py-3 border-t border-slate-100 bg-slate-50">
+                  {[{ tone: 'bg-emerald-400', label: 'Healthy' }, { tone: 'bg-amber-400', label: 'Low inventory' }, { tone: 'bg-rose-400', label: 'Sold out or stop sell' }, { tone: 'bg-indigo-400', label: 'Restricted' }].map((item) => (
+                    <span key={item.label} className="flex items-center gap-1.5 text-xs text-slate-500">
+                      <i className={`w-2.5 h-2.5 rounded-full ${item.tone} not-italic inline-block`} />
+                      {item.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {inventoryExceptionRows.length > 0 && (
+                <TableCard title={`${inventoryExceptionRows.length} attention rows`} eyebrow="Attention needed — blocked, restricted, or sold-out nights">
+                  <table className="w-full min-w-[500px]">
+                    <thead><tr className="bg-slate-50 border-b border-slate-100"><Th>Room type</Th><Th>Date</Th><Th>Available</Th><Th>Blocked</Th><Th>Reserved</Th><Th>Rule</Th></tr></thead>
                     <tbody>
                       {visibleInventoryExceptionRows.map((row) => (
-                        <tr key={`${row.roomCategoryId}:${row.date}`}>
-                          <td>{row.roomCategoryName}</td>
-                          <td>{row.date}</td>
-                          <td>{row.available_rooms}</td>
-                          <td>{row.blocked_rooms}</td>
-                          <td>{row.reserved_rooms}</td>
-                          <td>
-                            {row.stop_sell ? 'Stop sell' : null}
-                            {row.min_stay != null ? `${row.stop_sell ? ' · ' : ''}Min ${row.min_stay}` : null}
-                            {row.max_stay != null ? `${row.stop_sell || row.min_stay != null ? ' · ' : ''}Max ${row.max_stay}` : null}
-                            {!row.stop_sell && row.min_stay == null && row.max_stay == null ? '-' : null}
-                          </td>
+                        <tr key={`${row.roomCategoryId}:${row.date}`} className="hover:bg-slate-50/60 border-b border-slate-50 last:border-0">
+                          <Td>{row.roomCategoryName}</Td><Td>{row.date}</Td><Td>{row.available_rooms}</Td><Td>{row.blocked_rooms}</Td><Td>{row.reserved_rooms}</Td>
+                          <Td className="text-xs text-rose-600">
+                            {[row.stop_sell ? 'Stop sell' : null, row.min_stay != null ? `Min ${row.min_stay}` : null, row.max_stay != null ? `Max ${row.max_stay}` : null].filter(Boolean).join(' · ') || '—'}
+                          </Td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
-                ) : (
-                  <p className="muted">No blocked, restricted, or sold-out nights in this window.</p>
-                )}
-              </details>
-
-              {/* {previewInventoryCalendar && <details className="availability-raw-calendar">
-                <summary>
-                  Raw per-night preview
-                  {hiddenInventoryCalendarRowCount > 0
-                    ? ` · first ${INVENTORY_CALENDAR_PREVIEW_DAYS} nights shown, ${hiddenInventoryCalendarRowCount} rows hidden`
-                    : ''}
-                </summary>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Room type</th>
-                      <th>Date</th>
-                      <th>Total</th>
-                      <th>Blocked</th>
-                      <th>Reserved</th>
-                      <th>Available</th>
-                      <th>Stop sell</th>
-                      <th>Min stay</th>
-                      <th>Max stay</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {previewInventoryCalendar.categories.flatMap((category) =>
-                      category.rows.map((row) => (
-                        <tr key={`${category.room_category_id}:${row.date}`}>
-                          <td>{category.name}</td>
-                          <td>{row.date}</td>
-                          <td>{row.total_rooms}</td>
-                          <td>{row.blocked_rooms}</td>
-                          <td>{row.reserved_rooms}</td>
-                          <td>{row.available_rooms}</td>
-                          <td>
-                            <span className={row.stop_sell ? 'status-pill error' : 'status-pill available'}>
-                              {row.stop_sell ? 'Closed (internal only)' : 'Open'}
-                            </span>
-                          </td>
-                          <td>{row.min_stay ?? '-'}</td>
-                          <td>{row.max_stay ?? '-'}</td>
-                        </tr>
-                      )),
-                    )}
-                  </tbody>
-                </table>
-              </details>} */}
-            </div>
+                  {hiddenInventoryExceptionRows > 0 && <p className="text-xs text-slate-400 px-4 py-2 border-t border-slate-100">{hiddenInventoryExceptionRows} more hidden</p>}
+                </TableCard>
+              )}
+            </>
           )}
 
-          <div className="table-card availability-rate-posture-card">
-            <div className="table-heading">
-              <div>
-                <p className="eyebrow">Rate posture</p>
-                <h3>
-                  {displayedAvailability.property_name}: {displayedAvailability.from} to {displayedAvailability.to}
-                </h3>
-              </div>
-            </div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Category</th>
-                  <th>Total</th>
-                  <th>Booked</th>
-                  <th>Out of service</th>
-                  <th>Available</th>
-                  <th>Starting rate</th>
-                </tr>
-              </thead>
+          <TableCard title={`${displayedAvailability.property_name}: ${displayedAvailability.from} to ${displayedAvailability.to}`} eyebrow="Rate posture">
+            <table className="w-full min-w-[500px]">
+              <thead><tr className="bg-slate-50 border-b border-slate-100"><Th>Category</Th><Th>Total</Th><Th>Booked</Th><Th>Out of service</Th><Th>Available</Th><Th>Starting rate</Th></tr></thead>
               <tbody>
-                {displayedAvailability.categories.map((category) => (
-                  <tr key={category.room_category_id}>
-                    <td>{category.name}</td>
-                    <td>{category.total_inventory}</td>
-                    <td>{category.reserved_room_stays}</td>
-                    <td>{category.out_of_service}</td>
-                    <td>
-                      <span className={category.available > 0 ? 'status-pill available' : 'status-pill occupied'}>
-                        {category.available}
-                      </span>
-                    </td>
-                    <td>{category.lowest_rate == null ? '-' : formatCurrency(category.lowest_rate)}</td>
+                {displayedAvailability.categories.map((cat) => (
+                  <tr key={cat.room_category_id} className="hover:bg-slate-50/60 border-b border-slate-50 last:border-0">
+                    <Td className="font-medium text-slate-900">{cat.name}</Td>
+                    <Td>{cat.total_inventory}</Td>
+                    <Td>{cat.reserved_room_stays}</Td>
+                    <Td>{cat.out_of_service}</Td>
+                    <Td><span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold ${cat.available > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{cat.available}</span></Td>
+                    <Td>{cat.lowest_rate == null ? '—' : formatCurrency(cat.lowest_rate)}</Td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableCard>
         </>
       )}
     </section>
   );
 }
 
-function previousDate(value: string) {
-  const date = new Date(`${value}T00:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() - 1);
-  return date.toISOString().slice(0, 10);
+type InventoryCalendarRow = InventoryCalendarSummary['categories'][number]['rows'][number];
+
+function DatePickerField({ align = 'left', label, onChange, open, setOpen, value }: {
+  align?: 'left' | 'right';
+  label: string;
+  onChange: (value: string) => void;
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  value: string;
+}) {
+  const selectedDate = parseDateValue(value);
+  return (
+    <div className={labelCls}>
+      <span>{label}</span>
+      <div className="relative">
+        <button
+          className="flex min-h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-left text-sm font-semibold text-slate-800 shadow-sm transition hover:border-slate-300 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          onClick={() => setOpen(!open)}
+          type="button"
+        >
+          <span>{value ? formatDatePickerLabel(value) : 'Pick a date'}</span>
+          <CalendarIcon className="h-4 w-4 text-slate-400" />
+        </button>
+        {open && (
+          <div className={`absolute top-[3rem] z-30 rounded-2xl border border-slate-200 bg-white p-3 shadow-xl ${align === 'right' ? 'right-0' : 'left-0'}`}>
+            <DayPicker
+              animate
+              className="hms-day-picker"
+              defaultMonth={selectedDate ?? new Date()}
+              fixedWeeks
+              mode="single"
+              onSelect={(date) => {
+                if (!date) return;
+                onChange(dateToInputValue(date));
+                setOpen(false);
+              }}
+              selected={selectedDate}
+              showOutsideDays
+              weekStartsOn={1}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
-type InventoryCalendarRow = InventoryCalendarSummary['categories'][number]['rows'][number];
+function roomCategoryGridClass(count: number) {
+  if (count <= 1) return 'grid grid-cols-1 gap-4';
+  if (count === 2) return 'grid grid-cols-1 lg:grid-cols-2 gap-4';
+  if (count === 3) return 'grid grid-cols-1 lg:grid-cols-3 gap-4';
+  return 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4';
+}
 
 function availabilityCellTone(row: InventoryCalendarRow) {
   if (row.stop_sell || row.available_rooms <= 0) return 'closed';
@@ -840,67 +395,34 @@ function availabilityCellTone(row: InventoryCalendarRow) {
 }
 
 function formatRestrictionSummary(row: InventoryCalendarRow) {
-  const parts = [
-    row.stop_sell ? 'Stop sell' : null,
-    row.min_stay != null ? `Min ${row.min_stay}` : null,
-    row.max_stay != null ? `Max ${row.max_stay}` : null,
-  ].filter((part): part is string => Boolean(part));
-
-  return parts.join(' · ');
+  return [row.stop_sell ? 'SS' : null, row.min_stay != null ? `Min${row.min_stay}` : null, row.max_stay != null ? `Max${row.max_stay}` : null].filter((p): p is string => Boolean(p)).join(' · ');
 }
 
-function formatShortDate(value: string) {
-  return new Date(`${value}T00:00:00.000Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
+function formatDatePickerLabel(value: string) { return new Date(`${value}T00:00:00.000Z`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); }
+function parseDateValue(value: string) { if (!value) return undefined; return new Date(`${value}T00:00:00.000Z`); }
+function dateToInputValue(value: Date) { return value.toISOString().slice(0, 10); }
+function formatShortDate(value: string) { return new Date(`${value}T00:00:00.000Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); }
+function formatWeekday(value: string) { return new Date(`${value}T00:00:00.000Z`).toLocaleDateString(undefined, { weekday: 'short' }); }
+function previousDate(value: string) { const d = new Date(`${value}T00:00:00.000Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); }
 
-function formatWeekday(value: string) {
-  return new Date(`${value}T00:00:00.000Z`).toLocaleDateString(undefined, { weekday: 'short' });
-}
-
-function readPersistedAvailabilityState(): PersistedAvailabilityState | null {
-  try {
-    const rawState = localStorage.getItem(AVAILABILITY_STORAGE_KEY);
-    if (!rawState) {
-      return null;
-    }
-
-    return JSON.parse(rawState) as PersistedAvailabilityState;
-  } catch {
-    localStorage.removeItem(AVAILABILITY_STORAGE_KEY);
-    return null;
-  }
-}
-
-function writePersistedAvailabilityState(state: PersistedAvailabilityState) {
-  localStorage.setItem(AVAILABILITY_STORAGE_KEY, JSON.stringify(state));
-}
-
-function clearPersistedAvailabilityState() {
-  localStorage.removeItem(AVAILABILITY_STORAGE_KEY);
-}
-
-function SignalStat({ label, value }: { label: string; value: number }) {
+function CalendarIcon({ className = '' }: { className?: string }) {
   return (
-    <article className="signal-card">
-      <p>{label}</p>
-      <strong>{value}</strong>
-    </article>
+    <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 24 24">
+      <path d="M7 3v3M17 3v3M4.5 9.5h15M6.5 5h11A2.5 2.5 0 0 1 20 7.5v10A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5v-10A2.5 2.5 0 0 1 6.5 5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
   );
 }
 
 function buildDateRange(startDate: string, endDateExclusive: string) {
-  if (!startDate || !endDateExclusive || startDate >= endDateExclusive) {
-    return [];
-  }
-
-  const dates: string[] = [];
-  const current = new Date(`${startDate}T00:00:00.000Z`);
-  const end = new Date(`${endDateExclusive}T00:00:00.000Z`);
-
-  while (current < end) {
-    dates.push(current.toISOString().slice(0, 10));
-    current.setUTCDate(current.getUTCDate() + 1);
-  }
-
+  if (!startDate || !endDateExclusive || startDate >= endDateExclusive) return [];
+  const dates: string[] = []; const current = new Date(`${startDate}T00:00:00.000Z`); const end = new Date(`${endDateExclusive}T00:00:00.000Z`);
+  while (current < end) { dates.push(current.toISOString().slice(0, 10)); current.setUTCDate(current.getUTCDate() + 1); }
   return dates;
 }
+
+function readPersistedAvailabilityState(): PersistedAvailabilityState | null {
+  try { const raw = localStorage.getItem(AVAILABILITY_STORAGE_KEY); if (!raw) return null; return JSON.parse(raw) as PersistedAvailabilityState; }
+  catch { localStorage.removeItem(AVAILABILITY_STORAGE_KEY); return null; }
+}
+function writePersistedAvailabilityState(state: PersistedAvailabilityState) { localStorage.setItem(AVAILABILITY_STORAGE_KEY, JSON.stringify(state)); }
+function clearPersistedAvailabilityState() { localStorage.removeItem(AVAILABILITY_STORAGE_KEY); }

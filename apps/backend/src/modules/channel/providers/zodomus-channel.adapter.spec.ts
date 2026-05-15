@@ -301,10 +301,9 @@ describe('ZodomusChannelAdapter', () => {
     ]);
   });
 
-  it('imports booking details discovered in reservation summary without using the queue', async () => {
+  it('imports booking details discovered in the reservation queue', async () => {
     const adapter = new ZodomusChannelAdapter();
-    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue');
-    const getReservationsSummary = jest.spyOn(ZodomusClient.prototype, 'getReservationsSummary').mockResolvedValue(
+    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue').mockResolvedValue(
       {
         reservations: [
           {
@@ -320,6 +319,7 @@ describe('ZodomusChannelAdapter', () => {
         ],
       } as never,
     );
+    const getReservationsSummary = jest.spyOn(ZodomusClient.prototype, 'getReservationsSummary');
     const getReservation = jest
       .spyOn(ZodomusClient.prototype, 'getReservation')
       .mockImplementation(async (query?: Record<string, string>) => ({ reservationId: query?.reservationId }) as never);
@@ -334,8 +334,8 @@ describe('ZodomusChannelAdapter', () => {
       },
     });
 
-    expect(pullReservationQueue).not.toHaveBeenCalled();
-    expect(getReservationsSummary).toHaveBeenCalledTimes(1);
+    expect(pullReservationQueue).toHaveBeenCalledTimes(1);
+    expect(getReservationsSummary).not.toHaveBeenCalled();
     expect(getReservation).toHaveBeenCalledTimes(2);
     expect(getReservation).toHaveBeenNthCalledWith(
       1,
@@ -352,18 +352,18 @@ describe('ZodomusChannelAdapter', () => {
       }),
     );
     expect(response.reservations).toEqual([{ reservationId: '1006880' }, { reservationId: '1007295' }]);
-    expect(response.reservation_summary).toEqual({
+    expect(response.reservation_queue).toEqual({
       reservations: [
         { reservation: { id: '1006880' } },
         { reservation: { id: '1007295' } },
       ],
     });
+    expect(response.reservation_summary).toBeNull();
   });
 
-  it('deduplicates booking detail fetches discovered in reservation summary', async () => {
+  it('deduplicates booking detail fetches discovered in the reservation queue', async () => {
     const adapter = new ZodomusChannelAdapter();
-    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue');
-    jest.spyOn(ZodomusClient.prototype, 'getReservationsSummary').mockResolvedValue(
+    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue').mockResolvedValue(
       {
         reservations: [
           { reservation: { id: '1006880' } },
@@ -371,6 +371,7 @@ describe('ZodomusChannelAdapter', () => {
         ],
       } as never,
     );
+    const getReservationsSummary = jest.spyOn(ZodomusClient.prototype, 'getReservationsSummary');
     const getReservation = jest
       .spyOn(ZodomusClient.prototype, 'getReservation')
       .mockImplementation(async (query?: Record<string, string>) => ({ reservationId: query?.reservationId }) as never);
@@ -385,7 +386,8 @@ describe('ZodomusChannelAdapter', () => {
       },
     });
 
-    expect(pullReservationQueue).not.toHaveBeenCalled();
+    expect(pullReservationQueue).toHaveBeenCalledTimes(1);
+    expect(getReservationsSummary).not.toHaveBeenCalled();
     expect(getReservation).toHaveBeenCalledTimes(2);
     expect(response.reservations).toEqual([
       { reservationId: '1006880' },
@@ -393,15 +395,15 @@ describe('ZodomusChannelAdapter', () => {
     ]);
   });
 
-  it('filters booking detail responses that only report the provider download limit from summary references', async () => {
+  it('filters booking detail responses that only report the provider download limit from queue references', async () => {
     const adapter = new ZodomusChannelAdapter();
-    jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue');
-    jest.spyOn(ZodomusClient.prototype, 'getReservationsSummary').mockResolvedValue({
+    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue').mockResolvedValue({
       reservations: [
         { reservation: { id: '1006880' } },
         { reservation: { id: '1007295' } },
       ],
     } as never);
+    const getReservationsSummary = jest.spyOn(ZodomusClient.prototype, 'getReservationsSummary');
     const getReservation = jest.spyOn(ZodomusClient.prototype, 'getReservation').mockImplementation(
       async (query?: Record<string, string>) =>
         query?.reservationId === '1007295'
@@ -424,6 +426,8 @@ describe('ZodomusChannelAdapter', () => {
       },
     });
 
+    expect(pullReservationQueue).toHaveBeenCalledTimes(1);
+    expect(getReservationsSummary).not.toHaveBeenCalled();
     expect(getReservation).toHaveBeenCalledTimes(2);
     expect(response.reservations).toEqual([{ reservationId: '1006880' }]);
   });
@@ -473,7 +477,7 @@ describe('ZodomusChannelAdapter', () => {
     ]);
   });
 
-  it('falls back to summary reconciliation when targeted webhook fetch is not usable', async () => {
+  it('falls back to reservation queue reconciliation when targeted webhook fetch is not usable', async () => {
     const adapter = new ZodomusChannelAdapter();
     const getReservation = jest
       .spyOn(ZodomusClient.prototype, 'getReservation')
@@ -487,7 +491,9 @@ describe('ZodomusChannelAdapter', () => {
         status: { returnCode: 200, returnMessage: 'OK' },
         reservation: { reservation_id: 'res-101' },
       } as never);
-    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue');
+    const pullReservationQueue = jest
+      .spyOn(ZodomusClient.prototype, 'pullReservationQueue')
+      .mockResolvedValue({ reservations: [{ reservation: { id: 'res-101' } }] } as never);
     const getReservationsSummary = jest
       .spyOn(ZodomusClient.prototype, 'getReservationsSummary')
       .mockResolvedValue({ reservations: [{ reservation: { id: 'res-101' } }] } as never);
@@ -507,11 +513,11 @@ describe('ZodomusChannelAdapter', () => {
     });
 
     expect(getReservation).toHaveBeenCalledTimes(2);
-    expect(pullReservationQueue).not.toHaveBeenCalled();
-    expect(getReservationsSummary).toHaveBeenCalledTimes(1);
+    expect(pullReservationQueue).toHaveBeenCalledTimes(1);
+    expect(getReservationsSummary).not.toHaveBeenCalled();
     expect(response.reservation_import).toEqual({
       mode: 'webhook_trigger',
-      strategy: 'summary_reconciliation',
+      strategy: 'reservation_queue_reconciliation',
       reservation_id: 'res-101',
     });
     expect(response.reservations).toEqual([
@@ -520,5 +526,46 @@ describe('ZodomusChannelAdapter', () => {
         reservation: { reservation_id: 'res-101' },
       },
     ]);
+  });
+
+  it('uses reservation summary only for explicit one-time backfill imports', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue');
+    const getReservationsSummary = jest
+      .spyOn(ZodomusClient.prototype, 'getReservationsSummary')
+      .mockResolvedValue({ reservations: [{ reservation: { id: 'future-101' } }] } as never);
+    const getReservation = jest
+      .spyOn(ZodomusClient.prototype, 'getReservation')
+      .mockResolvedValue({ reservationId: 'future-101' } as never);
+
+    const response = await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.BOOKINGS,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: {
+        ota_key: 'BOOKING_COM',
+      },
+      reservation_import: {
+        mode: 'summary_backfill',
+      },
+    });
+
+    expect(pullReservationQueue).not.toHaveBeenCalled();
+    expect(getReservationsSummary).toHaveBeenCalledTimes(1);
+    expect(getReservation).toHaveBeenCalledWith({
+      channelId: '1',
+      propertyId: '100',
+      reservationId: 'future-101',
+    });
+    expect(response.reservation_import).toEqual({
+      mode: 'summary_backfill',
+      strategy: 'summary_backfill_reconciliation',
+      reservation_id: null,
+    });
+    expect(response.reservation_summary).toEqual({
+      reservations: [{ reservation: { id: 'future-101' } }],
+    });
+    expect(response.reservation_queue).toBeNull();
   });
 });

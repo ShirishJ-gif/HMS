@@ -134,7 +134,7 @@ describe('BackgroundJobService Zodomus sync window defaults', () => {
     expect(syncWindowDays).toBe(7);
   });
 
-  it('keeps the production minimum sync window when automation config is missing', () => {
+  it('uses the production routine sync window when automation config is missing', () => {
     process.env.ZODOMUS_ENVIRONMENT = 'production';
     process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS = '30';
     const service = Object.create(BackgroundJobService.prototype) as BackgroundJobService;
@@ -142,7 +142,7 @@ describe('BackgroundJobService Zodomus sync window defaults', () => {
       readSyncWindowDays: (credentials: Record<string, unknown> | null) => number;
     }).readSyncWindowDays(null);
 
-    expect(syncWindowDays).toBe(365);
+    expect(syncWindowDays).toBe(30);
   });
 });
 

@@ -66,6 +66,7 @@ export class ZodomusReservationImportService {
 
   async importFromSync(input: {
     channelConnectionId: string;
+    channelSyncLogId?: string;
     propertyId: string;
     responsePayload: Prisma.JsonValue;
   }) {
@@ -89,6 +90,13 @@ export class ZodomusReservationImportService {
     };
 
     for (const reservation of reservations) {
+      await this.recordFetchedReservationDetail({
+        channelConnectionId: input.channelConnectionId,
+        channelSyncLogId: input.channelSyncLogId,
+        propertyId: input.propertyId,
+        reservation,
+      });
+
       try {
         const outcome = await this.importReservation({
           channelConnectionId: input.channelConnectionId,
@@ -116,6 +124,12 @@ export class ZodomusReservationImportService {
           summary.skipped += 1;
         }
 
+        await this.markReservationIntakeRecord({
+          channelSyncLogId: input.channelSyncLogId,
+          externalReservationId: reservation.external_reservation_id,
+          status: outcome.action === 'skipped' ? 'SKIPPED' : 'IMPORTED',
+        });
+
         if (outcome.reservationGroupId) {
           summary.imported_reservation_group_ids.push(outcome.reservationGroupId);
         }
@@ -129,12 +143,103 @@ export class ZodomusReservationImportService {
           error instanceof Error
             ? `${reservation.external_reservation_id}: ${error.message}`
             : `${reservation.external_reservation_id}: reservation import failed`;
+        await this.markReservationIntakeRecord({
+          channelSyncLogId: input.channelSyncLogId,
+          externalReservationId: reservation.external_reservation_id,
+          status: 'FAILED',
+          errorMessage: message,
+        });
         summary.errors.push(message);
         this.logger.warn(message);
       }
     }
 
     return summary satisfies Prisma.InputJsonObject;
+  }
+
+  private async recordFetchedReservationDetail(input: {
+    channelConnectionId: string;
+    channelSyncLogId?: string;
+    propertyId: string;
+    reservation: NormalizedReservationGroup;
+  }) {
+    if (!input.channelSyncLogId) {
+      return;
+    }
+
+    const delegate = this.providerReservationIntakeRecordDelegate();
+    if (!delegate) {
+      return;
+    }
+
+    await delegate.upsert({
+      where: {
+        channelSyncLogId_externalReservationId: {
+          channelSyncLogId: input.channelSyncLogId,
+          externalReservationId: input.reservation.external_reservation_id,
+        },
+      },
+      create: {
+        channelSyncLogId: input.channelSyncLogId,
+        channelConnectionId: input.channelConnectionId,
+        propertyId: input.propertyId,
+        externalReservationId: input.reservation.external_reservation_id,
+        status: 'FETCHED',
+        rawPayload: input.reservation.raw_payload,
+      },
+      update: {
+        channelConnectionId: input.channelConnectionId,
+        propertyId: input.propertyId,
+        status: 'FETCHED',
+        rawPayload: input.reservation.raw_payload,
+        errorMessage: null,
+        importedAt: null,
+        failedAt: null,
+        skippedAt: null,
+      },
+    });
+  }
+
+  private async markReservationIntakeRecord(input: {
+    channelSyncLogId?: string;
+    externalReservationId: string;
+    status: 'IMPORTED' | 'FAILED' | 'SKIPPED';
+    errorMessage?: string;
+  }) {
+    if (!input.channelSyncLogId) {
+      return;
+    }
+
+    const delegate = this.providerReservationIntakeRecordDelegate();
+    if (!delegate) {
+      return;
+    }
+
+    const now = new Date();
+    await delegate.update({
+      where: {
+        channelSyncLogId_externalReservationId: {
+          channelSyncLogId: input.channelSyncLogId,
+          externalReservationId: input.externalReservationId,
+        },
+      },
+      data: {
+        status: input.status,
+        errorMessage: input.errorMessage ?? null,
+        importedAt: input.status === 'IMPORTED' ? now : null,
+        failedAt: input.status === 'FAILED' ? now : null,
+        skippedAt: input.status === 'SKIPPED' ? now : null,
+      },
+    });
+  }
+
+  private providerReservationIntakeRecordDelegate() {
+    return (this.prisma as unknown as {
+      providerReservationIntakeRecord?: {
+        upsert: (args: unknown) => Promise<unknown>;
+        update: (args: unknown) => Promise<unknown>;
+      };
+    }).providerReservationIntakeRecord;
   }
 
   private async persistProviderGuestRecord(

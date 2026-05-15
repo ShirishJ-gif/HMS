@@ -235,7 +235,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
   async setupZodomusConnection(dto: SetupZodomusChannelDto, user?: AuthenticatedUser) {
     const connectionConfig = readZodomusConnectionConfig({ ota_key: dto.ota_key });
-    const priceModelId = this.defaultZodomusPriceModel(dto.ota_key);
+    const priceModelId = dto.price_model_id ?? this.defaultZodomusPriceModel(dto.ota_key);
 
     const createdConnection = await this.createConnection(
       {
@@ -482,7 +482,13 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (connection.provider === ChannelProvider.ZODOMUS) {
-      const ready = this.isZodomusReadyCheckResponse(response);
+      const credentialsRecord =
+        connection.credentials && typeof connection.credentials === 'object' && !Array.isArray(connection.credentials)
+          ? (connection.credentials as Record<string, Prisma.JsonValue>)
+          : {};
+      const setupStatus = this.readZodomusSetupStatus(credentialsRecord);
+      const providerReady = this.isZodomusReadyCheckResponse(response);
+      const ready = providerReady && setupStatus.rooms_activated;
       await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
         setup_status: {
           checked: true,
@@ -586,12 +592,6 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       user,
     });
 
-    const propertyCheck = await this.providerService.checkProperty({
-      provider: connection.provider,
-      external_hotel_id: connection.externalHotelId,
-      credentials: connection.credentials,
-    });
-
     await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
       setup_status: {
         rooms_activated: true,
@@ -599,18 +599,13 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         activated_room_count: rooms.length,
         last_rooms_activation_message: this.readProviderReturnMessage(activation),
         last_rooms_activation_code: this.readProviderReturnCode(activation),
-        checked: true,
-        checked_at: new Date().toISOString(),
-        last_check_message: this.readProviderReturnMessage(propertyCheck),
-        last_check_code: this.readProviderReturnCode(propertyCheck),
-        ready: this.isZodomusReadyCheckResponse(propertyCheck),
-        ready_at: this.isZodomusReadyCheckResponse(propertyCheck) ? new Date().toISOString() : null,
+        ready: false,
+        ready_at: null,
       },
     });
 
     return {
       activation,
-      property_check: propertyCheck,
       connection: await this.getConnectionResponse(connection.id),
     };
   }
@@ -685,13 +680,14 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     reservationId: string | undefined,
     user?: AuthenticatedUser,
   ) {
+    const normalizedReservationId = this.normalizeProviderReservationId(status, reservationId);
     const connection = await this.findAccessibleConnection(connectionId, user);
     const providerResponse = await this.providerService.createTestReservation({
       provider: connection.provider,
       external_hotel_id: connection.externalHotelId,
       credentials: connection.credentials,
       status,
-      reservation_id: reservationId,
+      reservation_id: normalizedReservationId,
     });
 
     if (connection.provider !== ChannelProvider.ZODOMUS || !this.isSuccessfulZodomusReservationCreate(providerResponse)) {
@@ -699,7 +695,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     }
 
     const createdReservationId =
-      this.extractCreatedReservationId(providerResponse) ?? reservationId?.trim() ?? null;
+      this.extractCreatedReservationId(providerResponse) ?? normalizedReservationId ?? null;
 
     if (!createdReservationId) {
       return {
@@ -739,6 +735,26 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       reservation_id: createdReservationId,
       import_summary: importSummary,
     };
+  }
+
+  private normalizeProviderReservationId(status: string, reservationId: string | undefined) {
+    const normalizedStatus = status.trim().toLowerCase();
+    const trimmedReservationId = reservationId?.trim();
+
+    if (normalizedStatus !== 'new' && !trimmedReservationId) {
+      throw new BadRequestException('reservation_id is required for modified or cancelled provider reservation events.');
+    }
+
+    if (!trimmedReservationId) {
+      return undefined;
+    }
+
+    const placeholderValues = new Set(['reservation_id', '{{reservation_id}}', 'paste_returned_real_reservation_id_here']);
+    if (placeholderValues.has(trimmedReservationId.toLowerCase())) {
+      throw new BadRequestException('Replace reservation_id with the real Zodomus reservation id before submitting.');
+    }
+
+    return trimmedReservationId;
   }
 
   async createRoomMapping(connectionId: string, dto: CreateChannelRoomMappingDto, user?: AuthenticatedUser) {
@@ -1002,6 +1018,62 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       user,
       () => this.syncOnce(connectionId, dto, user),
     );
+  }
+
+  async backfillReservationsSummary(connectionId: string, user?: AuthenticatedUser) {
+    const connection = await this.prisma.channelConnection.findUnique({
+      where: { id: connectionId },
+    });
+
+    if (!connection) {
+      throw new NotFoundException('Channel connection not found');
+    }
+
+    assertCanAccessProperty(user, connection.propertyId);
+
+    if (connection.provider !== ChannelProvider.ZODOMUS) {
+      throw new BadRequestException('Reservation summary backfill is currently supported only for Zodomus connections.');
+    }
+
+    const setupStatus = this.readZodomusSetupStatus(
+      connection.credentials && typeof connection.credentials === 'object' && !Array.isArray(connection.credentials)
+        ? (connection.credentials as Record<string, Prisma.JsonValue>)
+        : {},
+    );
+
+    if (!setupStatus.ready || !setupStatus.rooms_activated || setupStatus.disconnected) {
+      throw new BadRequestException('Reservation summary backfill requires a ready Zodomus connection.');
+    }
+
+    const queuedLog = await this.prisma.channelSyncLog.create({
+      data: {
+        channelConnectionId: connection.id,
+        syncType: ChannelSyncType.BOOKINGS,
+        status: ChannelSyncStatus.QUEUED,
+        requestPayload: {
+          reservation_import: {
+            mode: 'summary_backfill',
+          },
+          trigger: 'manual_summary_backfill',
+        } satisfies Prisma.InputJsonObject,
+      },
+    });
+
+    await this.backgroundJobService.enqueue({
+      type: 'CHANNEL_SYNC',
+      propertyId: connection.propertyId,
+      dedupeKey: `channel-sync:${queuedLog.id}`,
+      entityType: 'channel_sync_log',
+      entityId: queuedLog.id,
+      payload: {
+        channel_sync_log_id: queuedLog.id,
+      },
+      maxAttempts: 3,
+    });
+
+    this.metricsService.recordChannelSyncQueued(ChannelSyncType.BOOKINGS, connection.provider);
+
+    return this.toSyncLogResponse(queuedLog);
   }
 
   private async syncOnce(connectionId: string, dto: SyncChannelDto, user?: AuthenticatedUser) {
@@ -1544,7 +1616,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     if (dto.sync_type === ChannelSyncType.BOOKINGS) {
       return {
         reservation_import: {
-          mode: 'summary_poll',
+          mode: 'reservation_queue_poll',
           from: dto.from ?? null,
           to: dto.to ?? null,
         },
@@ -1761,11 +1833,16 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         environment,
       ),
       sync_window_days: this.defaultZodomusSyncWindowDays(environment),
+      full_sync_window_days: this.defaultZodomusFullSyncWindowDays(environment),
     };
   }
 
   private productionMinimumZodomusSyncWindowDays() {
-    return this.readPositiveInteger(process.env.ZODOMUS_PRODUCTION_MIN_SYNC_WINDOW_DAYS, 365);
+    return this.readPositiveInteger(process.env.ZODOMUS_PRODUCTION_ROUTINE_SYNC_WINDOW_DAYS, 90);
+  }
+
+  private productionFullZodomusSyncWindowDays() {
+    return this.readPositiveInteger(process.env.ZODOMUS_PRODUCTION_FULL_SYNC_WINDOW_DAYS, 365);
   }
 
   private sandboxMaximumZodomusSyncWindowDays() {
@@ -1779,6 +1856,18 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         environment === 'sandbox'
           ? this.sandboxMaximumZodomusSyncWindowDays()
           : this.productionMinimumZodomusSyncWindowDays(),
+      ),
+      environment,
+    );
+  }
+
+  private defaultZodomusFullSyncWindowDays(environment?: string | null) {
+    return this.normalizeZodomusFullSyncWindowDays(
+      this.readPositiveInteger(
+        process.env.ZODOMUS_FULL_SYNC_WINDOW_DAYS,
+        environment === 'sandbox'
+          ? this.sandboxMaximumZodomusSyncWindowDays()
+          : this.productionFullZodomusSyncWindowDays(),
       ),
       environment,
     );
@@ -1906,6 +1995,10 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       this.readNumber(automation.sync_window_days, defaults.sync_window_days),
       environment,
     );
+    const fullSyncWindowDays = this.normalizeZodomusFullSyncWindowDays(
+      this.readNumber(automation.full_sync_window_days, defaults.full_sync_window_days),
+      environment,
+    );
 
     return {
       enabled: this.readBoolean(automation.enabled, defaults.enabled),
@@ -1925,6 +2018,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         environment,
       ),
       sync_window_days: syncWindowDays,
+      full_sync_window_days: fullSyncWindowDays,
     };
   }
 
@@ -1955,7 +2049,16 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       return Math.min(normalized, this.sandboxMaximumZodomusSyncWindowDays());
     }
 
-    return Math.max(normalized, this.productionMinimumZodomusSyncWindowDays());
+    return normalized;
+  }
+
+  private normalizeZodomusFullSyncWindowDays(value: number, environment?: string | null) {
+    const normalized = Math.max(value, 1);
+    if (environment === 'sandbox') {
+      return Math.min(normalized, this.sandboxMaximumZodomusSyncWindowDays());
+    }
+
+    return Math.max(normalized, this.productionFullZodomusSyncWindowDays());
   }
 
   private isZodomusSyncInCooldown(

@@ -25,6 +25,7 @@ These describe the current reservation-centric system and should be treated as t
 - [zodomus-env-profiles.md](/Users/cronberry/Hms/docs/zodomus-env-profiles.md)
 - [zodomus-safe-testing-runbook.md](/Users/cronberry/Hms/docs/zodomus-safe-testing-runbook.md)
 - [zodomus-api-webhook-reference.md](/Users/cronberry/Hms/docs/zodomus-api-webhook-reference.md)
+- [zodomus-test-production-flow-comparison.md](/Users/cronberry/Hms/docs/zodomus-test-production-flow-comparison.md)
 - [zodomus-inventory-import-issue.md](/Users/cronberry/Hms/docs/zodomus-inventory-import-issue.md)
 
 ## 2. Historical Reference Docs

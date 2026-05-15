@@ -190,7 +190,9 @@ This document lists the features currently implemented in the Hotel Management S
 - Create room-category mappings to external room IDs.
 - Create rate-plan mappings to external rate IDs.
 - Trigger syncs for `INVENTORY`, `RATES`, and `BOOKINGS`.
-- Zodomus booking import is now webhook-first and summary/detail-based, avoiding provider `reservations-queue` for normal reservation retrieval.
+- Zodomus booking import is webhook-first, with scheduled/manual fallback polling through provider `reservations-queue` followed by reservation detail fetches.
+- Zodomus webhook-triggered booking sync has been locally validated through ngrok: signed webhook intake stores the event, queues a webhook-triggered `BOOKINGS` sync, fetches the targeted reservation, and reconciles cancellation into HMS.
+- Fetched Zodomus reservation details are persisted to provider reservation intake records before local import, so consumed provider queue payloads remain visible and recoverable if HMS import fails.
 - Zodomus booking import can fall back from legacy provider room IDs such as `90002` / `90003` to canonical mapped room IDs when the provider payload uses older aliases.
 - Zodomus booking import can fall back to a mapped rate plan for the resolved room category when the provider payload does not match a room-scoped rate mapping directly.
 - Zodomus booking import skips new provider reservations whose latest departure date is already before the current local date, instead of treating stale sandbox history as an inventory failure.
@@ -199,13 +201,16 @@ This document lists the features currently implemented in the Hotel Management S
 - Admin-facing provider reservation test events now support `new`, `modified`, and `cancelled` flows from the Channel Manager workspace.
 - Roomless Zodomus reservation detail payloads can now update or cancel an already-imported HMS reservation group by `external_reservation_id`.
 - Roomless provider cancellation now cancels existing HMS reservation-room lines and releases their allocated inventory.
+- HMS intentionally skips roomless cancelled provider reservations when no matching HMS reservation exists yet, because the payload lacks room/date/rate context needed to create reliable local inventory records.
 - Numeric provider reservation status `3` is now treated as `CANCELLED` during Zodomus import.
+- The default reservation feed and Reservations page now exclude cancelled reservations; operators can still select the Cancelled status or All including cancelled view for history/reconciliation.
+- Provider reservation test events now reject placeholder IDs such as `RESERVATION_ID`; `new` events may omit the ID, while `modified` and `cancelled` events require a real provider reservation ID.
 - Zodomus reservation detail entries that only report `Reservation already downloaded 5 times. The limit was reached.` are filtered out of HMS booking-sync payloads as provider queue noise.
 - Imported reservation-group totals now fall back to summed room-line totals when the provider reservation-level total is missing or zero.
 - Provider reservation import can still fail intentionally when HMS inventory is already sold out for the mapped room category/date range.
 - Inventory sync builds daily provider room/date rows from the centralized inventory calendar instead of one window-level aggregate payload.
 - Inventory sync excludes both permanent maintenance rooms and dated out-of-service periods on the affected dates.
-- Zodomus connection automation now enforces an effective minimum inventory sync horizon of `365` days so future sold-out dates are pushed to the provider even when a shorter window is configured.
+- Zodomus connection automation now separates routine rolling sync windows from explicit full-window syncs, so production can use a shorter scheduler window while keeping 365-day go-live/repair actions available.
 - Channel sync supports `Idempotency-Key`.
 - Idempotent channel sync requests are serialized per idempotency key so concurrent replays do not create duplicate sync-side effects or duplicate sync logs.
 - Store channel sync request/response payloads and errors in sync logs.

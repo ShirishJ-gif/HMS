@@ -1,4 +1,5 @@
 import { ChannelProvider, ChannelSyncStatus, ChannelSyncType, Prisma } from '@prisma/client';
+import { BadRequestException } from '@nestjs/common';
 import { ChannelService } from './channel.service';
 
 describe('ChannelService sync outcome resolution', () => {
@@ -161,17 +162,19 @@ describe('ChannelService Zodomus automation defaults', () => {
     expect(automation.bookings_interval_minutes).toBe(15);
   });
 
-  it('keeps the production minimum forward sync window', () => {
+  it('uses a shorter production routine sync window by default', () => {
     process.env.ZODOMUS_ENVIRONMENT = 'production';
     process.env.ZODOMUS_AUTO_SYNC_WINDOW_DAYS = '30';
     const service = Object.create(ChannelService.prototype) as ChannelService;
     const automation = (service as unknown as {
       defaultZodomusAutomationConfig: () => {
         sync_window_days: number;
+        full_sync_window_days: number;
       };
     }).defaultZodomusAutomationConfig();
 
-    expect(automation.sync_window_days).toBe(365);
+    expect(automation.sync_window_days).toBe(30);
+    expect(automation.full_sync_window_days).toBe(365);
   });
 
   it('skips automated scheduling while sandbox auth failures are still in cooldown', () => {
@@ -328,6 +331,325 @@ describe('ChannelService provider reservation creation', () => {
         created_reservation_group_ids: ['group-1'],
       },
     });
+  });
+
+  it('rejects placeholder reservation ids before sending provider cancellation events', async () => {
+    const providerService = {
+      createTestReservation: jest.fn(),
+    };
+    const service = new ChannelService(
+      {} as never,
+      providerService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.createProviderTestReservation('connection-1', 'cancelled', 'RESERVATION_ID'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(providerService.createTestReservation).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChannelService Zodomus readiness gate', () => {
+  const readyCheckResponse = {
+    response: {
+      status: {
+        returnCode: 200,
+        returnMessage: {
+          'Property status': 'Active',
+          'Channel status': 'OK',
+          'Product status': 'OK',
+          'Room status': 'OK',
+        },
+      },
+    },
+  };
+
+  function createService(input: {
+    connection: {
+      id: string;
+      propertyId: string;
+      provider: ChannelProvider;
+      externalHotelId: string;
+      credentials: Prisma.InputJsonObject;
+    };
+    providerService?: Record<string, jest.Mock>;
+  }) {
+    const prisma = {
+      channelConnection: {
+        findUnique: jest.fn().mockResolvedValue(input.connection),
+        update: jest.fn().mockResolvedValue(input.connection),
+      },
+    };
+    const providerService = {
+      checkProperty: jest.fn().mockResolvedValue(readyCheckResponse),
+      activateRooms: jest.fn().mockResolvedValue({
+        response: {
+          status: {
+            returnCode: 200,
+            returnMessage: 'OK',
+          },
+        },
+      }),
+      ...(input.providerService ?? {}),
+    };
+    const auditLogService = {
+      record: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ChannelService(
+      prisma as never,
+      providerService as never,
+      auditLogService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    return { service, prisma, providerService };
+  }
+
+  it('does not mark Zodomus ready when property check passes before rooms are activated', async () => {
+    const { service, prisma } = createService({
+      connection: {
+        id: 'connection-1',
+        propertyId: 'property-1',
+        provider: ChannelProvider.ZODOMUS,
+        externalHotelId: 'hotel-1',
+        credentials: {
+          setup_status: {
+            activated: true,
+            rooms_activated: false,
+          },
+        },
+      },
+    });
+
+    await service.checkProviderProperty('connection-1');
+
+    expect(prisma.channelConnection.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'connection-1' },
+        data: {
+          credentials: expect.objectContaining({
+            setup_status: expect.objectContaining({
+              checked: true,
+              rooms_activated: false,
+              ready: false,
+              ready_at: null,
+            }),
+          }),
+        },
+      }),
+    );
+  });
+
+  it('resets ready after room activation and waits for a separate final property check', async () => {
+    const connection = {
+      id: 'connection-1',
+      propertyId: 'property-1',
+      provider: ChannelProvider.ZODOMUS,
+      externalHotelId: 'hotel-1',
+      credentials: {
+        setup_status: {
+          activated: true,
+          rooms_activated: false,
+          ready: true,
+        },
+      },
+    };
+    const { service, prisma, providerService } = createService({ connection });
+    jest
+      .spyOn(service as unknown as { buildZodomusRoomsActivationPayload: () => Promise<unknown[]> }, 'buildZodomusRoomsActivationPayload')
+      .mockResolvedValue([{ roomId: '10001', rates: ['100991'] }]);
+    jest
+      .spyOn(service as unknown as { getConnectionResponse: () => Promise<typeof connection> }, 'getConnectionResponse')
+      .mockResolvedValue(connection);
+
+    await service.activateProviderRooms('connection-1');
+
+    expect(providerService.checkProperty).not.toHaveBeenCalled();
+    expect(prisma.channelConnection.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'connection-1' },
+        data: {
+          credentials: expect.objectContaining({
+            setup_status: expect.objectContaining({
+              rooms_activated: true,
+              activated_room_count: 1,
+              ready: false,
+              ready_at: null,
+            }),
+          }),
+        },
+      }),
+    );
+  });
+
+  it('marks Zodomus ready when final property check passes after rooms are activated', async () => {
+    const { service, prisma } = createService({
+      connection: {
+        id: 'connection-1',
+        propertyId: 'property-1',
+        provider: ChannelProvider.ZODOMUS,
+        externalHotelId: 'hotel-1',
+        credentials: {
+          setup_status: {
+            activated: true,
+            rooms_activated: true,
+          },
+        },
+      },
+    });
+
+    await service.checkProviderProperty('connection-1');
+
+    expect(prisma.channelConnection.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'connection-1' },
+        data: {
+          credentials: expect.objectContaining({
+            setup_status: expect.objectContaining({
+              checked: true,
+              rooms_activated: true,
+              ready: true,
+              ready_at: expect.any(String),
+            }),
+          }),
+        },
+      }),
+    );
+  });
+});
+
+describe('ChannelService reservation summary backfill', () => {
+  it('queues a one-time summary backfill booking sync for ready Zodomus connections', async () => {
+    const connection = {
+      id: 'connection-1',
+      propertyId: 'property-1',
+      provider: ChannelProvider.ZODOMUS,
+      credentials: {
+        setup_status: {
+          activated: true,
+          rooms_activated: true,
+          ready: true,
+          disconnected: false,
+        },
+      },
+    };
+    const queuedLog = {
+      id: 'sync-log-1',
+      channelConnectionId: connection.id,
+      syncType: ChannelSyncType.BOOKINGS,
+      status: ChannelSyncStatus.QUEUED,
+      requestPayload: {
+        reservation_import: {
+          mode: 'summary_backfill',
+        },
+        trigger: 'manual_summary_backfill',
+      },
+      responsePayload: null,
+      errorMessage: null,
+      createdAt: new Date('2026-05-15T00:00:00.000Z'),
+    };
+    const prisma = {
+      channelConnection: {
+        findUnique: jest.fn().mockResolvedValue(connection),
+      },
+      channelSyncLog: {
+        create: jest.fn().mockResolvedValue(queuedLog),
+      },
+    };
+    const backgroundJobService = {
+      enqueue: jest.fn().mockResolvedValue(undefined),
+    };
+    const metricsService = {
+      recordChannelSyncQueued: jest.fn(),
+    };
+    const service = new ChannelService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      backgroundJobService as never,
+      {} as never,
+      {} as never,
+      metricsService as never,
+      {} as never,
+    );
+
+    const response = await service.backfillReservationsSummary(connection.id);
+
+    expect(prisma.channelSyncLog.create).toHaveBeenCalledWith({
+      data: {
+        channelConnectionId: connection.id,
+        syncType: ChannelSyncType.BOOKINGS,
+        status: ChannelSyncStatus.QUEUED,
+        requestPayload: {
+          reservation_import: {
+            mode: 'summary_backfill',
+          },
+          trigger: 'manual_summary_backfill',
+        },
+      },
+    });
+    expect(backgroundJobService.enqueue).toHaveBeenCalledWith({
+      type: 'CHANNEL_SYNC',
+      propertyId: connection.propertyId,
+      dedupeKey: `channel-sync:${queuedLog.id}`,
+      entityType: 'channel_sync_log',
+      entityId: queuedLog.id,
+      payload: {
+        channel_sync_log_id: queuedLog.id,
+      },
+      maxAttempts: 3,
+    });
+    expect(metricsService.recordChannelSyncQueued).toHaveBeenCalledWith(ChannelSyncType.BOOKINGS, connection.provider);
+    expect(response.request_payload).toEqual({
+      reservation_import: {
+        mode: 'summary_backfill',
+      },
+      trigger: 'manual_summary_backfill',
+    });
+  });
+
+  it('rejects summary backfill until the Zodomus connection is ready', async () => {
+    const prisma = {
+      channelConnection: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'connection-1',
+          propertyId: 'property-1',
+          provider: ChannelProvider.ZODOMUS,
+          credentials: {
+            setup_status: {
+              rooms_activated: true,
+              ready: false,
+            },
+          },
+        }),
+      },
+    };
+    const service = new ChannelService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(service.backfillReservationsSummary('connection-1')).rejects.toBeInstanceOf(BadRequestException);
   });
 });
 

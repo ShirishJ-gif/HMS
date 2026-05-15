@@ -1,166 +1,121 @@
 import { ReactNode } from 'react';
 import { ChannelConnection } from '../../api/types';
+import { StatusBadge, Th, Td } from '../ui';
 
 const istDateTimeFormatter = new Intl.DateTimeFormat('en-IN', {
-  timeZone: 'Asia/Kolkata',
-  day: '2-digit',
-  month: '2-digit',
-  year: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hour12: false,
+  timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
 });
 
 export function SummaryTile({ detail, label, value }: { detail: string; label: string; value: string }) {
   return (
-    <article className="channel-summary-card">
-      <p>{label}</p>
-      <strong>{value}</strong>
-      <span>{detail}</span>
-    </article>
+    <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-1 shadow-sm">
+      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">{label}</p>
+      <strong className="text-2xl font-extrabold text-slate-900 block tracking-tight">{value}</strong>
+      <span className="text-xs text-slate-500 leading-relaxed">{detail}</span>
+    </div>
   );
 }
 
 export function SetupBadge({ done, label }: { done: boolean; label: string }) {
-  return <span className={`status-pill ${done ? 'active' : 'pending'}`}>{done ? label : `${label}: pending`}</span>;
+  return <StatusBadge label={done ? label : `${label}: pending`} tone={done ? 'green' : 'gold'} />;
 }
 
-export function SyncStateCard({
-  label,
-  state,
-}: {
+export function SyncStateCard({ label, state }: {
   label: string;
-  state: {
-    last_status: string | null;
-    last_synced_at: string | null;
-    last_error: string | null;
-    next_due_at: string | null;
-  };
+  state: { last_status: string | null; last_synced_at: string | null; last_error: string | null; next_due_at: string | null };
 }) {
   return (
-    <article className="channel-summary-card">
-      <p>{label}</p>
-      <strong>{state.last_status ?? 'Never run'}</strong>
-      <span>{state.last_synced_at ? `Last: ${formatDateTime(state.last_synced_at)}` : 'No sync yet'}</span>
-      <span>{state.next_due_at ? `Next: ${formatDateTime(state.next_due_at)}` : 'No next schedule'}</span>
-      {state.last_error ? <span>{state.last_error}</span> : null}
-    </article>
+    <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-1.5 shadow-sm">
+      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">{label}</p>
+      <strong className={`text-base font-bold block ${state.last_status === 'SUCCEEDED' ? 'text-emerald-700' : state.last_status ? 'text-rose-600' : 'text-slate-500'}`}>{state.last_status ?? 'Never run'}</strong>
+      <span className="text-xs text-slate-500 block">{state.last_synced_at ? `Last: ${formatDateTime(state.last_synced_at)}` : 'No sync yet'}</span>
+      <span className="text-xs text-slate-400 block">{state.next_due_at ? `Next: ${formatDateTime(state.next_due_at)}` : 'No next schedule'}</span>
+      {state.last_error && <span className="text-xs text-rose-500 block truncate">{state.last_error}</span>}
+    </div>
   );
 }
 
-export function CatalogList<
-  T extends {
-    external_room_id?: string | null;
-    external_rate_id?: string | null;
-    external_room_name?: string | null;
-    external_rate_name?: string | null;
-  },
->({
-  emptyText,
-  items,
-  title,
-  valueKey,
+export function CatalogList<T extends {
+  external_room_id?: string | null; external_rate_id?: string | null;
+  external_room_name?: string | null; external_rate_name?: string | null;
+}>({
+  emptyText, items, title, valueKey,
 }: {
-  emptyText: string;
-  items: T[];
-  title: string;
-  valueKey: 'external_room_id' | 'external_rate_id';
+  emptyText: string; items: T[]; title: string; valueKey: 'external_room_id' | 'external_rate_id';
 }) {
   return (
-    <div>
-      <h4>{title}</h4>
+    <div className="flex-1 min-w-0">
+      <h4 className="text-sm font-bold text-slate-800 mb-2">{title}</h4>
       {items.length === 0 ? (
-        <p className="muted">{emptyText}</p>
+        <p className="text-xs text-slate-400">{emptyText}</p>
       ) : (
-        <table className="data-table compact-table">
-          <thead>
-            <tr>
-              {valueKey === 'external_rate_id' ? (
-                <>
-                  <th>Room ID</th>
-                  <th>Rate ID</th>
-                  <th>Rate name</th>
-                </>
-              ) : (
-                <>
-                  <th>ID</th>
-                  <th>Name</th>
-                </>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => {
-              const id = item[valueKey] ?? '';
-              const name = item.external_room_name ?? item.external_rate_name ?? '-';
-              const roomId = item.external_room_id ?? '-';
-              const rowKey =
-                valueKey === 'external_rate_id'
-                  ? `${roomId}::${id}`
-                  : item.external_room_id ?? id;
-
-              return (
-                <tr key={rowKey}>
-                  {valueKey === 'external_rate_id' ? (
-                    <>
-                      <td>{roomId}</td>
-                      <td>{id}</td>
-                      <td>{name}</td>
-                    </>
-                  ) : (
-                    <>
-                      <td>{id}</td>
-                      <td>{name}</td>
-                    </>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto border border-slate-200 rounded-lg">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-100">
+                {valueKey === 'external_rate_id' ? (
+                  <><Th className="!text-[10px] !py-2">Room ID</Th><Th className="!text-[10px] !py-2">Rate ID</Th><Th className="!text-[10px] !py-2">Rate name</Th></>
+                ) : (
+                  <><Th className="!text-[10px] !py-2">ID</Th><Th className="!text-[10px] !py-2">Name</Th></>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => {
+                const id = item[valueKey] ?? '';
+                const name = item.external_room_name ?? item.external_rate_name ?? '—';
+                const roomId = item.external_room_id ?? '—';
+                const rowKey = valueKey === 'external_rate_id' ? `${roomId}::${id}` : item.external_room_id ?? id;
+                return (
+                  <tr key={rowKey} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
+                    {valueKey === 'external_rate_id' ? (
+                      <><Td className="!py-2 font-mono !text-[11px]">{roomId}</Td><Td className="!py-2 font-mono !text-[11px]">{id}</Td><Td className="!py-2">{name}</Td></>
+                    ) : (
+                      <><Td className="!py-2 font-mono !text-[11px]">{id}</Td><Td className="!py-2">{name}</Td></>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
 }
 
-export function MappingTable({
-  emptyText,
-  rows,
-  title,
-}: {
+export function MappingTable({ emptyText, rows, title }: {
   emptyText: string;
   rows: Array<{ id: string; internal: string; external: string }>;
   title: string;
 }) {
   return (
-    <div className="mapping-card">
-      <div className="section-heading">
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
         <div>
-          <p className="eyebrow">Saved mappings</p>
-          <h3>{title}</h3>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Saved mappings</p>
+          <h3 className="text-sm font-bold text-slate-900">{title}</h3>
         </div>
       </div>
-      <div className="mapping-scroll">
-        <table>
+      <div className="overflow-x-auto max-h-64 overflow-y-auto scrollbar-none">
+        <table className="w-full">
           <thead>
-            <tr>
-              <th>HMS item</th>
-              <th>Provider ID</th>
+            <tr className="bg-slate-50 border-b border-slate-100">
+              <Th>HMS item</Th>
+              <Th>Provider ID</Th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => (
-              <tr key={row.id}>
-                <td>{row.internal}</td>
-                <td>{row.external}</td>
+              <tr key={row.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
+                <Td className="font-medium text-slate-800">{row.internal}</Td>
+                <Td className="font-mono text-xs text-slate-500">{row.external}</Td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td className="empty-cell" colSpan={2}>
-                  {emptyText}
-                </td>
+                <td colSpan={2} className="px-4 py-4 text-center text-xs text-slate-400">{emptyText}</td>
               </tr>
             )}
           </tbody>
@@ -181,18 +136,8 @@ export function formatSignedNumber(value: number) {
   return String(value);
 }
 
-export function formatInventorySnapshot(
-  value:
-    | {
-        total_inventory: number;
-        out_of_service: number;
-        booked: number;
-        available: number;
-      }
-    | null
-    | undefined,
-) {
-  if (!value) return '-';
+export function formatInventorySnapshot(value: { total_inventory: number; out_of_service: number; booked: number; available: number } | null | undefined) {
+  if (!value) return '—';
   return `avail ${value.available} | booked ${value.booked} | ooo ${value.out_of_service} | total ${value.total_inventory}`;
 }
 

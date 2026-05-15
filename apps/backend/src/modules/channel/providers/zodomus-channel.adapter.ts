@@ -197,6 +197,7 @@ export class ZodomusChannelAdapter {
     if (payload.sync_type === ChannelSyncType.BOOKINGS) {
       const propertyId = this.requiredPropertyId(payload.external_hotel_id, 'reservation sync');
       const targetedReservationImport = this.readWebhookTriggeredReservationImport(payload.reservation_import);
+      const reservationImportMode = this.readReservationImportMode(payload.reservation_import);
       if (targetedReservationImport) {
         const targetedReservation = await this.tryFetchReservationDetailById(
           client,
@@ -224,13 +225,42 @@ export class ZodomusChannelAdapter {
         }
       }
 
-      const reservationSummary = await client.getReservationsSummary({
+      if (reservationImportMode === 'summary_backfill') {
+        const reservationSummary = await client.getReservationsSummary({
+          channelId: connectionConfig.channel_code,
+          propertyId,
+        });
+        const reservations = await this.fetchReservationDetails(
+          client,
+          reservationSummary,
+          connectionConfig.channel_code,
+          propertyId,
+        );
+
+        return {
+          provider: payload.provider,
+          sync_type: payload.sync_type,
+          environment: appCredentials.environment,
+          ota_name: connectionConfig.ota_name,
+          reservation_queue: null,
+          reservation_summary: this.asJsonValue(reservationSummary),
+          reservations: this.asJsonValue(reservations),
+          reservation_import: this.asJsonValue({
+            mode: 'summary_backfill',
+            strategy: 'summary_backfill_reconciliation',
+            reservation_id: null,
+          }),
+          message: 'Zodomus reservation summary fetched for one-time future reservation backfill.',
+        };
+      }
+
+      const reservationQueue = await client.pullReservationQueue({
         channelId: connectionConfig.channel_code,
         propertyId,
       });
       const reservations = await this.fetchReservationDetails(
         client,
-        reservationSummary,
+        reservationQueue,
         connectionConfig.channel_code,
         propertyId,
       );
@@ -240,15 +270,15 @@ export class ZodomusChannelAdapter {
         sync_type: payload.sync_type,
         environment: appCredentials.environment,
         ota_name: connectionConfig.ota_name,
-        reservation_queue: null,
-        reservation_summary: this.asJsonValue(reservationSummary),
+        reservation_queue: this.asJsonValue(reservationQueue),
+        reservation_summary: null,
         reservations: this.asJsonValue(reservations),
         reservation_import: this.asJsonValue({
-          mode: targetedReservationImport?.mode ?? 'summary_poll',
-          strategy: 'summary_reconciliation',
+          mode: targetedReservationImport?.mode ?? 'reservation_queue_poll',
+          strategy: 'reservation_queue_reconciliation',
           reservation_id: targetedReservationImport?.reservationId ?? null,
         }),
-        message: 'Zodomus reservation summary fetched and prepared for local booking import.',
+        message: 'Zodomus reservation queue fetched and prepared for local booking import.',
       };
     }
 
@@ -982,6 +1012,11 @@ export class ZodomusChannelAdapter {
       mode,
       reservationId,
     };
+  }
+
+  private readReservationImportMode(value: unknown) {
+    const record = this.readObject(value);
+    return this.firstString(record, 'mode');
   }
 
   private isDownloadedReservationLimitResponse(response: unknown) {

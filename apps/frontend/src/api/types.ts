@@ -405,6 +405,7 @@ export type ChannelConnection = {
       rates_interval_minutes: number;
       bookings_interval_minutes: number;
       sync_window_days: number;
+      full_sync_window_days: number;
     };
   } | null;
   property: Pick<Property, 'id' | 'name' | 'code'>;
@@ -534,6 +535,19 @@ export type ChannelProviderCatalog = {
     external_room_id: string | null;
   }>;
   raw_payload: unknown;
+};
+
+export type ChannelProviderPriceModel = {
+  id: number;
+  model: string;
+};
+
+export type ChannelProviderPriceModels = {
+  provider: ChannelProvider;
+  response?: {
+    models?: ChannelProviderPriceModel[];
+  };
+  price_models?: ChannelProviderPriceModel[];
 };
 
 export type ChannelProviderActionResponse = {

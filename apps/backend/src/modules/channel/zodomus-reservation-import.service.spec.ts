@@ -283,6 +283,130 @@ describe('ZodomusReservationImportService roomless provider details', () => {
   });
 });
 
+describe('ZodomusReservationImportService provider intake records', () => {
+  function buildIntakeService() {
+    const prisma = {
+      property: {
+        findUnique: jest.fn().mockResolvedValue({ timezone: 'Asia/Kolkata' }),
+      },
+      providerReservationIntakeRecord: {
+        upsert: jest.fn().mockResolvedValue({ id: 'intake-1' }),
+        update: jest.fn().mockResolvedValue({ id: 'intake-1' }),
+      },
+    };
+    const service = new ZodomusReservationImportService(
+      prisma as never,
+      { record: jest.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    return { service, prisma };
+  }
+
+  const reservationPayload = {
+    reservations: [
+      {
+        reservations: {
+          reservation: {
+            id: '1005532',
+            status: 1,
+          },
+          customer: {
+            firstName: 'Jorge',
+            lastName: 'Mendes',
+          },
+          rooms: [
+            {
+              id: '10001',
+              arrivalDate: '2026-08-11',
+              departureDate: '2026-08-12',
+              totalPrice: 2000,
+            },
+          ],
+        },
+      },
+    ],
+  };
+
+  it('stores fetched provider reservation details before marking them imported', async () => {
+    const { service, prisma } = buildIntakeService();
+    jest
+      .spyOn(service as any, 'importReservation')
+      .mockResolvedValue({ action: 'created', reservationGroupId: 'group-1', reservationRoomIds: ['room-1'] });
+
+    const summary = await service.importFromSync({
+      channelConnectionId: 'connection-1',
+      channelSyncLogId: 'sync-log-1',
+      propertyId: 'property-1',
+      responsePayload: reservationPayload,
+    });
+
+    expect(summary.created).toBe(1);
+    expect(prisma.providerReservationIntakeRecord.upsert).toHaveBeenCalledWith({
+      where: {
+        channelSyncLogId_externalReservationId: {
+          channelSyncLogId: 'sync-log-1',
+          externalReservationId: '1005532',
+        },
+      },
+      create: expect.objectContaining({
+        channelSyncLogId: 'sync-log-1',
+        channelConnectionId: 'connection-1',
+        propertyId: 'property-1',
+        externalReservationId: '1005532',
+        status: 'FETCHED',
+      }),
+      update: expect.objectContaining({
+        status: 'FETCHED',
+        errorMessage: null,
+      }),
+    });
+    expect(prisma.providerReservationIntakeRecord.update).toHaveBeenCalledWith({
+      where: {
+        channelSyncLogId_externalReservationId: {
+          channelSyncLogId: 'sync-log-1',
+          externalReservationId: '1005532',
+        },
+      },
+      data: expect.objectContaining({
+        status: 'IMPORTED',
+        errorMessage: null,
+        importedAt: expect.any(Date),
+      }),
+    });
+  });
+
+  it('keeps fetched provider reservation details when import fails', async () => {
+    const { service, prisma } = buildIntakeService();
+    jest.spyOn(service as any, 'importReservation').mockRejectedValue(new Error('inventory sold out'));
+
+    const summary = await service.importFromSync({
+      channelConnectionId: 'connection-1',
+      channelSyncLogId: 'sync-log-1',
+      propertyId: 'property-1',
+      responsePayload: reservationPayload,
+    });
+
+    expect(summary.failed).toBe(1);
+    expect(prisma.providerReservationIntakeRecord.upsert).toHaveBeenCalled();
+    expect(prisma.providerReservationIntakeRecord.update).toHaveBeenCalledWith({
+      where: {
+        channelSyncLogId_externalReservationId: {
+          channelSyncLogId: 'sync-log-1',
+          externalReservationId: '1005532',
+        },
+      },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        errorMessage: '1005532: inventory sold out',
+        failedAt: expect.any(Date),
+      }),
+    });
+  });
+});
+
 describe('ZodomusReservationImportService stale provider stays', () => {
   afterEach(() => {
     jest.useRealTimers();

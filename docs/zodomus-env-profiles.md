@@ -61,8 +61,10 @@ ZODOMUS_AUTO_SYNC_ENABLED="true"
 ZODOMUS_AUTO_SYNC_INVENTORY_MINUTES="30"
 ZODOMUS_AUTO_SYNC_RATES_MINUTES="60"
 ZODOMUS_AUTO_SYNC_BOOKINGS_MINUTES="5"
-ZODOMUS_AUTO_SYNC_WINDOW_DAYS="365"
-ZODOMUS_PRODUCTION_MIN_SYNC_WINDOW_DAYS="365"
+ZODOMUS_AUTO_SYNC_WINDOW_DAYS="90"
+ZODOMUS_PRODUCTION_ROUTINE_SYNC_WINDOW_DAYS="90"
+ZODOMUS_PRODUCTION_FULL_SYNC_WINDOW_DAYS="365"
+ZODOMUS_FULL_SYNC_WINDOW_DAYS="365"
 ZODOMUS_AUTH_BACKOFF_MINUTES="60"
 ZODOMUS_RATE_LIMIT_BACKOFF_MINUTES="30"
 ```
@@ -72,6 +74,7 @@ Recommended usage:
 - start with concurrency `2`
 - move to `3` only after provider stability is proven
 - keep inventory and rate intervals moderate unless Zodomus explicitly approves a tighter cadence
+- use the 365-day full sync action for go-live or repair instead of routine scheduling
 - monitor sync failures before increasing throughput
 
 ## When To Tune Production Upward
