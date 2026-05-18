@@ -236,6 +236,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   async setupZodomusConnection(dto: SetupZodomusChannelDto, user?: AuthenticatedUser) {
     const connectionConfig = readZodomusConnectionConfig({ ota_key: dto.ota_key });
     const priceModelId = dto.price_model_id ?? this.defaultZodomusPriceModel(dto.ota_key);
+    this.assertValidZodomusPriceModel(connectionConfig.ota_key, priceModelId);
 
     const createdConnection = await this.createConnection(
       {
@@ -516,6 +517,11 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     assertCanAccessProperty(user, connection.propertyId);
 
+    if (connection.provider === ChannelProvider.ZODOMUS) {
+      const connectionConfig = readZodomusConnectionConfig(connection.credentials);
+      this.assertValidZodomusPriceModel(connectionConfig.ota_key, priceModelId);
+    }
+
     const response = await this.providerService.activateProperty({
       provider: connection.provider,
       external_hotel_id: connection.externalHotelId,
@@ -674,6 +680,16 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  async getProviderReservationCC(connectionId: string, reservationId: string, user?: AuthenticatedUser) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.providerService.getReservationCC({
+      provider: connection.provider,
+      external_hotel_id: connection.externalHotelId,
+      credentials: connection.credentials,
+      reservation_id: reservationId,
+    });
+  }
+
   async createProviderTestReservation(
     connectionId: string,
     status: string,
@@ -808,6 +824,99 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     return result.rate_mappings[0];
   }
 
+  async updateRateMappingPricingConfig(
+    connectionId: string,
+    mappingId: string,
+    pricingConfig: Record<string, unknown>,
+    user?: AuthenticatedUser,
+  ) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    const existing = await this.prisma.channelRateMapping.findUnique({
+      where: { id: mappingId },
+    });
+    if (!existing || existing.channelConnectionId !== connection.id) {
+      throw new NotFoundException('Channel rate mapping not found');
+    }
+
+    const updated = await this.prisma.channelRateMapping.update({
+      where: {
+        id: mappingId,
+      },
+      data: {
+        pricingConfig: this.normalizePricingConfig(pricingConfig) ?? Prisma.JsonNull,
+      },
+      include: { ratePlan: true },
+    });
+
+    return this.toRateMappingResponse(updated);
+  }
+
+  async updateRoomMappingActivation(
+    connectionId: string,
+    mappingId: string,
+    isActivationEnabled: boolean,
+    user?: AuthenticatedUser,
+  ) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    const existing = await this.prisma.channelRoomMapping.findUnique({
+      where: { id: mappingId },
+    });
+    if (!existing || existing.channelConnectionId !== connection.id) {
+      throw new NotFoundException('Channel room mapping not found');
+    }
+
+    const updated = await this.prisma.channelRoomMapping.update({
+      where: { id: mappingId },
+      data: { isActivationEnabled },
+      include: { roomCategory: true },
+    });
+
+    if (connection.provider === ChannelProvider.ZODOMUS) {
+      await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
+        setup_status: {
+          rooms_activated: false,
+          ready: false,
+          ready_at: null,
+        },
+      });
+    }
+
+    return this.toRoomMappingResponse(updated);
+  }
+
+  async updateRateMappingActivation(
+    connectionId: string,
+    mappingId: string,
+    isActivationEnabled: boolean,
+    user?: AuthenticatedUser,
+  ) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    const existing = await this.prisma.channelRateMapping.findUnique({
+      where: { id: mappingId },
+    });
+    if (!existing || existing.channelConnectionId !== connection.id) {
+      throw new NotFoundException('Channel rate mapping not found');
+    }
+
+    const updated = await this.prisma.channelRateMapping.update({
+      where: { id: mappingId },
+      data: { isActivationEnabled },
+      include: { ratePlan: true },
+    });
+
+    if (connection.provider === ChannelProvider.ZODOMUS) {
+      await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
+        setup_status: {
+          rooms_activated: false,
+          ready: false,
+          ready_at: null,
+        },
+      });
+    }
+
+    return this.toRateMappingResponse(updated);
+  }
+
   async saveMappingsBatch(connectionId: string, dto: SaveChannelMappingsBatchDto, user?: AuthenticatedUser) {
     const connection = await this.findConnectionForValidation(connectionId);
     assertCanAccessProperty(user, connection.propertyId);
@@ -821,6 +930,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       external_room_id: mapping.external_room_id?.trim() || undefined,
       external_rate_id: mapping.external_rate_id.trim(),
       external_rate_name: mapping.external_rate_name?.trim() || undefined,
+      pricing_config: this.normalizePricingConfig(mapping.pricing_config),
     }));
 
     if (roomInputs.length === 0 && rateInputs.length === 0) {
@@ -955,6 +1065,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
                 externalRoomId,
                 externalRateId: mapping.external_rate_id,
                 externalRateName: mapping.external_rate_name,
+                pricingConfig: mapping.pricing_config,
               },
               include: { ratePlan: true },
             }),
@@ -1482,10 +1593,12 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     }
 
     const syncWindow = this.currentSyncWindow(providerSummary.automation.sync_window_days);
+    const activeRoomMappingCount = connection.roomMappings.filter((mapping) => mapping.isActivationEnabled).length;
+    const activeRateMappingCount = connection.rateMappings.filter((mapping) => mapping.isActivationEnabled).length;
     let scheduled = 0;
 
     if (
-      connection.roomMappings.length > 0 &&
+      activeRoomMappingCount > 0 &&
       this.isScheduledSyncDue(
         connection.syncLogs,
         ChannelSyncType.INVENTORY,
@@ -1501,8 +1614,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (
-      connection.roomMappings.length > 0 &&
-      connection.rateMappings.length > 0 &&
+      activeRoomMappingCount > 0 &&
+      activeRateMappingCount > 0 &&
       this.isScheduledSyncDue(
         connection.syncLogs,
         ChannelSyncType.RATES,
@@ -1628,12 +1741,20 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         throw new BadRequestException('Zodomus rate sync requires both from and to dates.');
       }
 
+      const providerSummary = this.readProviderConfigSummary(connection.provider, connection.credentials);
+      const zodomusConnectionConfig =
+        connection.provider === ChannelProvider.ZODOMUS ? readZodomusConnectionConfig(connection.credentials) : null;
+      const priceModelId =
+        providerSummary?.setup_status?.price_model_id ??
+        (zodomusConnectionConfig ? this.defaultZodomusPriceModel(zodomusConnectionConfig.ota_key) : null);
+      const activeRoomMappings = connection.roomMappings.filter((mapping) => mapping.isActivationEnabled);
+      const activeRateMappings = connection.rateMappings.filter((mapping) => mapping.isActivationEnabled);
       const roomMappingByCategoryId = new Map(
-        connection.roomMappings.map((mapping) => [mapping.roomCategoryId, mapping] as const),
+        activeRoomMappings.map((mapping) => [mapping.roomCategoryId, mapping] as const),
       );
       const rates = await this.rateSyncPayloadService.buildDailyRateRows(
         connection.propertyId,
-        connection.rateMappings.map((mapping) => ({
+        activeRateMappings.map((mapping) => ({
           externalRoomId:
             mapping.externalRoomId ??
             roomMappingByCategoryId.get(mapping.ratePlan.roomCategoryId)?.externalRoomId ??
@@ -1643,6 +1764,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
           ratePlanCode: mapping.ratePlan.code,
           roomCategoryId: mapping.ratePlan.roomCategoryId,
           roomCategoryCode: mapping.ratePlan.roomCategory.code,
+          roomCategoryMaxOccupancy: mapping.ratePlan.roomCategory.maxOccupancy,
+          pricingConfig: mapping.pricingConfig,
           ratePlan: {
             id: mapping.ratePlan.id,
             baseRate: mapping.ratePlan.baseRate,
@@ -1658,6 +1781,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       return {
         from: dto.from,
         to: dto.to,
+        ...(priceModelId ? { price_model_id: priceModelId } : {}),
         rates,
       };
     }
@@ -1668,7 +1792,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     const inventory = await this.inventorySyncPayloadService.buildDailyInventoryRows(
       connection.propertyId,
-      connection.roomMappings,
+      connection.roomMappings.filter((mapping) => mapping.isActivationEnabled),
       {
         from: dto.from,
         to: dto.to,
@@ -1810,6 +1934,29 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     if (otaKey === 'BOOKING_COM') return 1;
     if (otaKey === 'EXPEDIA') return 3;
     return 4;
+  }
+
+  private allowedZodomusPriceModels(otaKey: ZodomusOtaKey) {
+    if (otaKey === 'BOOKING_COM') return [1, 2, 4, 5];
+    if (otaKey === 'EXPEDIA') return [3, 4, 5];
+    return [4];
+  }
+
+  private zodomusOtaLabel(otaKey: ZodomusOtaKey) {
+    if (otaKey === 'BOOKING_COM') return 'Booking.com';
+    if (otaKey === 'EXPEDIA') return 'Expedia';
+    return 'Airbnb';
+  }
+
+  private assertValidZodomusPriceModel(otaKey: ZodomusOtaKey, priceModelId: number) {
+    const allowedPriceModels = this.allowedZodomusPriceModels(otaKey);
+
+    if (!allowedPriceModels.includes(priceModelId)) {
+      throw new BadRequestException(
+        `Price model ${priceModelId} is not supported for ${this.zodomusOtaLabel(otaKey)}. ` +
+          `Allowed price models: ${allowedPriceModels.join(', ')}.`,
+      );
+    }
   }
 
   private defaultZodomusAutomationConfig() {
@@ -2197,7 +2344,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     }
 
     const rateIdsByExternalRoomId = new Map<string, string[]>();
-    for (const mapping of connection.rateMappings) {
+    for (const mapping of connection.rateMappings.filter((rateMapping) => rateMapping.isActivationEnabled)) {
       const key = mapping.externalRoomId;
       if (!key) {
         continue;
@@ -2210,8 +2357,17 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       rateIdsByExternalRoomId.set(key, existing);
     }
 
-    return Promise.all(
-      connection.roomMappings.map(async (mapping) => {
+    if (rateIdsByExternalRoomId.size === 0) {
+      throw new BadRequestException('Enable at least one mapped rate before Zodomus room activation.');
+    }
+
+    const activeRoomMappings = connection.roomMappings.filter((mapping) => mapping.isActivationEnabled);
+    if (activeRoomMappings.length === 0) {
+      throw new BadRequestException('Enable at least one mapped room before Zodomus room activation.');
+    }
+
+    const rooms = await Promise.all(
+      activeRoomMappings.map(async (mapping) => {
         const quantity = await this.prisma.room.count({
           where: {
             propertyId: connection.propertyId,
@@ -2241,6 +2397,12 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         };
       }),
     );
+
+    if (rooms.length === 0) {
+      throw new BadRequestException('Enable at least one room/rate pair before Zodomus room activation.');
+    }
+
+    return rooms;
   }
 
   private isZodomusReadyCheckResponse(response: unknown) {
@@ -2348,6 +2510,18 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private normalizePricingConfig(value: unknown): Prisma.InputJsonValue | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadRequestException('pricing_config must be a JSON object');
+    }
+
+    return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  }
+
   private assertDistinctRateMappingInputs(
     rateMappings: Array<{
       rate_plan_id: string;
@@ -2380,6 +2554,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       room_category_id: mapping.roomCategoryId,
       external_room_id: mapping.externalRoomId,
       external_room_name: mapping.externalRoomName,
+      is_activation_enabled: mapping.isActivationEnabled,
       room_category: {
         id: mapping.roomCategory.id,
         name: mapping.roomCategory.name,
@@ -2398,6 +2573,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       external_room_id: mapping.externalRoomId,
       external_rate_id: mapping.externalRateId,
       external_rate_name: mapping.externalRateName,
+      is_activation_enabled: mapping.isActivationEnabled,
+      pricing_config: mapping.pricingConfig,
       rate_plan: {
         id: mapping.ratePlan.id,
         name: mapping.ratePlan.name,

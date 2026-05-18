@@ -59,6 +59,10 @@ export class ZodomusClient {
     return this.request({ method: 'POST', path: '/rates', body });
   }
 
+  async pushDerivedRates(body: unknown) {
+    return this.request({ method: 'POST', path: '/rates-derived', body });
+  }
+
   async pullReservationQueue(query?: Record<string, string>) {
     const search = new URLSearchParams(query).toString();
     return this.request({
@@ -70,6 +74,13 @@ export class ZodomusClient {
     const search = new URLSearchParams(query).toString();
     return this.request({
       path: search ? `/reservations?${search}` : '/reservations',
+    });
+  }
+
+  async getReservationCC(query?: Record<string, string>) {
+    const search = new URLSearchParams(query).toString();
+    return this.request({
+      path: search ? `/reservationCC?${search}` : '/reservationCC',
     });
   }
 

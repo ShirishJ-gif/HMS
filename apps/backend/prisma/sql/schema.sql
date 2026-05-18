@@ -74,6 +74,7 @@ CREATE TABLE "properties" (
     "email" VARCHAR(160),
     "address" TEXT NOT NULL,
     "timezone" VARCHAR(80) NOT NULL DEFAULT 'Asia/Kolkata',
+    "is_active" BOOLEAN NOT NULL DEFAULT true,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
@@ -344,6 +345,7 @@ CREATE TABLE "channel_room_mappings" (
     "room_category_id" UUID NOT NULL,
     "external_room_id" VARCHAR(120) NOT NULL,
     "external_room_name" VARCHAR(160),
+    "is_activation_enabled" BOOLEAN NOT NULL DEFAULT true,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
@@ -358,6 +360,7 @@ CREATE TABLE "channel_rate_mappings" (
     "external_room_id" VARCHAR(120),
     "external_rate_id" VARCHAR(120) NOT NULL,
     "external_rate_name" VARCHAR(160),
+    "is_activation_enabled" BOOLEAN NOT NULL DEFAULT true,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
@@ -453,6 +456,9 @@ CREATE INDEX "guests_email_idx" ON "guests"("email");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "properties_code_key" ON "properties"("code");
+
+-- CreateIndex
+CREATE INDEX "properties_is_active_idx" ON "properties"("is_active");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "users_email_key" ON "users"("email");

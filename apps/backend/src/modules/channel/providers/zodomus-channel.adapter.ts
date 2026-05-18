@@ -51,6 +51,9 @@ export class ZodomusChannelAdapter {
               dateFrom: segment.date_from,
               dateTo: segment.date_to,
               availability: segment.available,
+              stopSell: segment.stop_sell ? 1 : 0,
+              closedToArrival: segment.closed_to_arrival ? 1 : 0,
+              closedToDeparture: segment.closed_to_departure ? 1 : 0,
             })
             .then((providerResponse) => {
               const providerError = this.readProviderFailure(providerResponse);
@@ -114,25 +117,21 @@ export class ZodomusChannelAdapter {
 
     if (payload.sync_type === ChannelSyncType.RATES) {
       this.requireExternalHotelId(payload.external_hotel_id, payload.sync_type);
+      const propertyId = payload.external_hotel_id!;
       const rateRows = this.readPayloadArray(payload.rates, 'rate sync');
       const rateSegments = this.batchRateRows(rateRows);
+      const priceModelId = this.readPriceModelId(payload.price_model_id);
       const rowResults = await this.mapWithConcurrency(
         rateSegments,
         this.readSyncConcurrency(),
         async (segment) => {
-          return client
-            .pushRates({
-              channelId: Number(connectionConfig.channel_code),
-              propertyId: payload.external_hotel_id,
-              roomId: segment.external_room_id,
-              rateId: segment.external_rate_id,
-              dateFrom: segment.date_from,
-              dateTo: segment.date_to,
-              currencyCode: segment.currency,
-              prices: {
-                price: segment.base_rate.toFixed(2),
-              },
-            })
+          const endpoint = this.rateEndpointForPriceModel(priceModelId);
+          return this.pushRateSegment(client, {
+            endpoint,
+            channelId: Number(connectionConfig.channel_code),
+            propertyId,
+            segment,
+          })
             .then((providerResponse) => {
               const providerError = this.readProviderFailure(providerResponse);
 
@@ -143,6 +142,7 @@ export class ZodomusChannelAdapter {
                       external_room_id: segment.external_room_id,
                       external_rate_id: segment.external_rate_id,
                       base_rate: segment.base_rate,
+                      endpoint,
                       status: 'FAILED' as const,
                       error_message: providerError,
                       provider_response: providerResponse,
@@ -152,6 +152,7 @@ export class ZodomusChannelAdapter {
                       external_room_id: segment.external_room_id,
                       external_rate_id: segment.external_rate_id,
                       base_rate: segment.base_rate,
+                      endpoint,
                       status: 'SUCCEEDED' as const,
                       provider_response: providerResponse,
                     },
@@ -163,6 +164,7 @@ export class ZodomusChannelAdapter {
                 external_room_id: segment.external_room_id,
                 external_rate_id: segment.external_rate_id,
                 base_rate: segment.base_rate,
+                endpoint,
                 status: 'FAILED' as const,
                 error_message: this.readErrorMessage(error),
               })),
@@ -179,6 +181,7 @@ export class ZodomusChannelAdapter {
         environment: appCredentials.environment,
         external_hotel_id: payload.external_hotel_id,
         ota_name: connectionConfig.ota_name,
+        price_model_id: priceModelId,
         date_from: payload.from ?? null,
         date_to: payload.to ?? null,
         rate_count: rateRows.length,
@@ -199,14 +202,21 @@ export class ZodomusChannelAdapter {
       const targetedReservationImport = this.readWebhookTriggeredReservationImport(payload.reservation_import);
       const reservationImportMode = this.readReservationImportMode(payload.reservation_import);
       if (targetedReservationImport) {
-        const targetedReservation = await this.tryFetchReservationDetailById(
-          client,
-          connectionConfig.channel_code,
-          propertyId,
-          targetedReservationImport.reservationId,
+        const targetedReservations = await Promise.all(
+          targetedReservationImport.reservationIds.map((reservationId) =>
+            this.tryFetchReservationDetailById(
+              client,
+              connectionConfig.channel_code,
+              propertyId,
+              reservationId,
+            ),
+          ),
         );
+        const usableTargetedReservations = targetedReservations
+          .map((result) => result.reservation)
+          .filter((reservation): reservation is unknown => reservation !== null);
 
-        if (targetedReservation.reservation) {
+        if (usableTargetedReservations.length > 0) {
           return {
             provider: payload.provider,
             sync_type: payload.sync_type,
@@ -214,11 +224,12 @@ export class ZodomusChannelAdapter {
             ota_name: connectionConfig.ota_name,
             reservation_queue: null,
             reservation_summary: null,
-            reservations: this.asJsonValue([targetedReservation.reservation]),
+            reservations: this.asJsonValue(usableTargetedReservations),
             reservation_import: this.asJsonValue({
               mode: targetedReservationImport.mode,
               strategy: 'targeted_reservation_fetch',
-              reservation_id: targetedReservationImport.reservationId,
+              reservation_id: targetedReservationImport.reservationIds[0] ?? null,
+              reservation_ids: targetedReservationImport.reservationIds,
             }),
             message: 'Zodomus webhook-triggered reservation import fetched the targeted reservation directly.',
           };
@@ -276,7 +287,8 @@ export class ZodomusChannelAdapter {
         reservation_import: this.asJsonValue({
           mode: targetedReservationImport?.mode ?? 'reservation_queue_poll',
           strategy: 'reservation_queue_reconciliation',
-          reservation_id: targetedReservationImport?.reservationId ?? null,
+          reservation_id: targetedReservationImport?.reservationIds[0] ?? null,
+          reservation_ids: targetedReservationImport?.reservationIds ?? [],
         }),
         message: 'Zodomus reservation queue fetched and prepared for local booking import.',
       };
@@ -341,7 +353,22 @@ export class ZodomusChannelAdapter {
     };
   }
 
-  private readProviderFailure(response: unknown) {
+  private readProviderFailure(response: unknown): string | null {
+    const wrapper = this.readObject(response);
+    if ('default_rate' in wrapper || 'derived_rate' in wrapper) {
+      const defaultRateFailure: string | null = this.readProviderFailure(wrapper.default_rate);
+      if (defaultRateFailure) {
+        return `Default rate update failed: ${defaultRateFailure}`;
+      }
+
+      const derivedRateFailure: string | null = this.readProviderFailure(wrapper.derived_rate);
+      if (derivedRateFailure) {
+        return `Derived rate update failed: ${derivedRateFailure}`;
+      }
+
+      return null;
+    }
+
     const returnCode = this.readProviderReturnCode(response);
     if (returnCode === '200') {
       return null;
@@ -582,6 +609,30 @@ export class ZodomusChannelAdapter {
       reservation_id: payload.reservation_id,
       response: this.asJsonValue(
         await client.getReservation({
+          channelId: connectionConfig.channel_code,
+          propertyId,
+          reservationId: payload.reservation_id,
+        }),
+      ),
+    };
+  }
+
+  async getReservationCC(payload: ChannelReservationActionPayload): Promise<Prisma.InputJsonObject> {
+    const appCredentials = readZodomusAppCredentials();
+    const connectionConfig = readZodomusConnectionConfig(payload.credentials);
+    const propertyId = this.requiredPropertyId(payload.external_hotel_id, 'reservation card detail');
+    if (!payload.reservation_id) {
+      throw new BadRequestException('Reservation card detail lookup requires reservation_id.');
+    }
+    const client = new ZodomusClient(appCredentials);
+    return {
+      provider: payload.provider,
+      channel_id: Number(connectionConfig.channel_code),
+      ota_name: connectionConfig.ota_name,
+      external_hotel_id: propertyId,
+      reservation_id: payload.reservation_id,
+      response: this.asJsonValue(
+        await client.getReservationCC({
           channelId: connectionConfig.channel_code,
           propertyId,
           reservationId: payload.reservation_id,
@@ -868,6 +919,9 @@ export class ZodomusChannelAdapter {
         date: this.requiredString(row.date, 'inventory.date'),
         external_room_id: this.requiredString(row.external_room_id, 'inventory.external_room_id'),
         available: this.requiredInteger(row.available, 'inventory.available'),
+        stop_sell: this.optionalBoolean(row.stop_sell),
+        closed_to_arrival: this.optionalBoolean(row.closed_to_arrival),
+        closed_to_departure: this.optionalBoolean(row.closed_to_departure),
       }))
       .sort((left, right) => {
         if (left.external_room_id !== right.external_room_id) {
@@ -880,6 +934,9 @@ export class ZodomusChannelAdapter {
     const segments: Array<{
       external_room_id: string;
       available: number;
+      stop_sell: boolean;
+      closed_to_arrival: boolean;
+      closed_to_departure: boolean;
       date_from: string;
       date_to: string;
       rows: Array<{ date: string }>;
@@ -891,6 +948,9 @@ export class ZodomusChannelAdapter {
         previous &&
         previous.external_room_id === row.external_room_id &&
         previous.available === row.available &&
+        previous.stop_sell === row.stop_sell &&
+        previous.closed_to_arrival === row.closed_to_arrival &&
+        previous.closed_to_departure === row.closed_to_departure &&
         previous.date_to === row.date
       ) {
         previous.rows.push({ date: row.date });
@@ -901,6 +961,9 @@ export class ZodomusChannelAdapter {
       segments.push({
         external_room_id: row.external_room_id,
         available: row.available,
+        stop_sell: row.stop_sell,
+        closed_to_arrival: row.closed_to_arrival,
+        closed_to_departure: row.closed_to_departure,
         date_from: row.date,
         date_to: this.nextDate(row.date),
         rows: [{ date: row.date }],
@@ -919,6 +982,14 @@ export class ZodomusChannelAdapter {
         external_rate_id: this.requiredString(row.external_rate_id, 'rates.external_rate_id'),
         currency: this.requiredString(row.currency, 'rates.currency'),
         base_rate: this.requiredNumber(row.base_rate, 'rates.base_rate'),
+        room_category_max_occupancy: this.optionalPositiveInteger(row.room_category_max_occupancy),
+        pricing_config: this.readObject(row.pricing_config),
+        pricing_config_key: JSON.stringify(this.readObject(row.pricing_config)),
+        closed: this.optionalBoolean(row.closed),
+        closed_to_arrival: this.optionalBoolean(row.closed_to_arrival),
+        closed_to_departure: this.optionalBoolean(row.closed_to_departure),
+        min_stay: this.optionalPositiveInteger(row.min_stay),
+        max_stay: this.optionalPositiveInteger(row.max_stay),
       }))
       .sort((left, right) => {
         const roomCompare = left.external_room_id.localeCompare(right.external_room_id);
@@ -939,6 +1010,14 @@ export class ZodomusChannelAdapter {
       external_rate_id: string;
       currency: string;
       base_rate: number;
+      room_category_max_occupancy: number | null;
+      pricing_config: Record<string, unknown>;
+      pricing_config_key: string;
+      closed: boolean;
+      closed_to_arrival: boolean;
+      closed_to_departure: boolean;
+      min_stay: number | null;
+      max_stay: number | null;
       date_from: string;
       date_to: string;
       rows: Array<{ date: string }>;
@@ -952,6 +1031,13 @@ export class ZodomusChannelAdapter {
         previous.external_rate_id === row.external_rate_id &&
         previous.currency === row.currency &&
         previous.base_rate === row.base_rate &&
+        previous.room_category_max_occupancy === row.room_category_max_occupancy &&
+        previous.pricing_config_key === row.pricing_config_key &&
+        previous.closed === row.closed &&
+        previous.closed_to_arrival === row.closed_to_arrival &&
+        previous.closed_to_departure === row.closed_to_departure &&
+        previous.min_stay === row.min_stay &&
+        previous.max_stay === row.max_stay &&
         previous.date_to === row.date
       ) {
         previous.rows.push({ date: row.date });
@@ -964,6 +1050,14 @@ export class ZodomusChannelAdapter {
         external_rate_id: row.external_rate_id,
         currency: row.currency,
         base_rate: row.base_rate,
+        room_category_max_occupancy: row.room_category_max_occupancy,
+        pricing_config: row.pricing_config,
+        pricing_config_key: row.pricing_config_key,
+        closed: row.closed,
+        closed_to_arrival: row.closed_to_arrival,
+        closed_to_departure: row.closed_to_departure,
+        min_stay: row.min_stay,
+        max_stay: row.max_stay,
         date_from: row.date,
         date_to: this.nextDate(row.date),
         rows: [{ date: row.date }],
@@ -971,6 +1065,314 @@ export class ZodomusChannelAdapter {
     }
 
     return segments;
+  }
+
+  private readPriceModelId(value: unknown) {
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+      return value;
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isInteger(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    return 1;
+  }
+
+  private rateEndpointForPriceModel(
+    priceModelId: number,
+  ): 'rates' | 'rates-derived' | 'rates-occupancy' | 'rates-per-day' | 'rates-length-of-stay' {
+    if (priceModelId === 3) {
+      return 'rates-occupancy';
+    }
+
+    if (priceModelId === 4) {
+      return 'rates-per-day';
+    }
+
+    if (priceModelId === 5) {
+      return 'rates-length-of-stay';
+    }
+
+    return priceModelId === 2 ? 'rates-derived' : 'rates';
+  }
+
+  private async pushRateSegment(
+    client: ZodomusClient,
+    input: {
+      endpoint: 'rates' | 'rates-derived' | 'rates-occupancy' | 'rates-per-day' | 'rates-length-of-stay';
+      channelId: number;
+      propertyId: string;
+      segment: {
+        external_room_id: string;
+        external_rate_id: string;
+        currency: string;
+        base_rate: number;
+        room_category_max_occupancy: number | null;
+        pricing_config: Record<string, unknown>;
+        closed: boolean;
+        closed_to_arrival: boolean;
+        closed_to_departure: boolean;
+        min_stay: number | null;
+        max_stay: number | null;
+        date_from: string;
+        date_to: string;
+      };
+    },
+  ) {
+    const defaultRateResponse = await client.pushRates({
+      channelId: input.channelId,
+      propertyId: input.propertyId,
+      roomId: input.segment.external_room_id,
+      rateId: input.segment.external_rate_id,
+      dateFrom: input.segment.date_from,
+      dateTo: input.segment.date_to,
+      currencyCode: input.segment.currency,
+      ...(input.endpoint === 'rates-per-day' || input.endpoint === 'rates-length-of-stay'
+        ? { baseOccupancy: this.perDayBaseOccupancy(input.segment) }
+        : {}),
+      prices:
+        input.endpoint === 'rates-derived'
+          ? { price: input.segment.base_rate.toFixed(2) }
+          : input.endpoint === 'rates-occupancy'
+            ? this.occupancyPricesForSegment(input.segment)
+            : input.endpoint === 'rates-per-day'
+              ? { price: input.segment.base_rate.toFixed(2) }
+              : input.endpoint === 'rates-length-of-stay'
+                ? this.lengthOfStayPricesForSegment(input.segment)
+          : this.ratePricesForSegment(input.segment),
+      closed: input.segment.closed ? '1' : '0',
+      closedToArrival: input.segment.closed_to_arrival ? '1' : '0',
+      closedToDeparture: input.segment.closed_to_departure ? '1' : '0',
+      minimumStay: (input.segment.min_stay ?? 1).toString(),
+      maximumStay: (input.segment.max_stay ?? 31).toString(),
+    });
+
+    if (input.endpoint !== 'rates-derived') {
+      return defaultRateResponse;
+    }
+
+    const defaultRateError = this.readProviderFailure(defaultRateResponse);
+    if (defaultRateError) {
+      return defaultRateResponse;
+    }
+
+    const derivedRateResponse = await client.pushDerivedRates({
+      channelId: input.channelId,
+      propertyId: input.propertyId,
+      roomId: input.segment.external_room_id,
+      rateId: input.segment.external_rate_id,
+      baseOccupancy: this.derivedBaseOccupancy(input.segment),
+      occupancy: this.derivedOccupancyOffsets(input.segment),
+    });
+
+    return {
+      default_rate: defaultRateResponse,
+      derived_rate: derivedRateResponse,
+    };
+  }
+
+  private ratePricesForSegment(segment: { base_rate: number; room_category_max_occupancy: number | null }) {
+    const price = segment.base_rate.toFixed(2);
+    if (segment.room_category_max_occupancy !== null && segment.room_category_max_occupancy <= 1) {
+      return { price };
+    }
+
+    const singlePrice = this.optionalPrice(this.readObject((segment as { pricing_config?: unknown }).pricing_config).single_price);
+    return {
+      price,
+      priceSingle: singlePrice ?? price,
+    };
+  }
+
+  private occupancyPricesForSegment(segment: {
+    base_rate: number;
+    room_category_max_occupancy: number | null;
+    pricing_config?: Record<string, unknown>;
+  }) {
+    const configuredPrices = this.readArray(segment.pricing_config?.occupancy_prices ?? segment.pricing_config?.prices)
+      .map((item) => {
+        const record = this.readObject(item);
+        const guests = this.optionalPositiveInteger(record.guests);
+        const price = this.optionalPrice(record.price);
+        return guests && price ? { guests: guests.toString(), price } : null;
+      })
+      .filter((item): item is { guests: string; price: string } => item !== null);
+
+    if (configuredPrices.length > 0) {
+      return configuredPrices;
+    }
+
+    const maxOccupancy = segment.room_category_max_occupancy ?? 1;
+    const price = segment.base_rate.toFixed(2);
+
+    return Array.from({ length: maxOccupancy }, (_, index) => ({
+      guests: (index + 1).toString(),
+      price,
+    }));
+  }
+
+  private lengthOfStayPricesForSegment(segment: { base_rate: number; pricing_config?: Record<string, unknown> }) {
+    const configuredPrices = this.readArray(
+      segment.pricing_config?.length_of_stay_prices ?? segment.pricing_config?.los_prices ?? segment.pricing_config?.prices,
+    )
+      .map((item) => {
+        const record = this.readObject(item);
+        const days = this.optionalPositiveInteger(record.days);
+        const price = this.optionalPrice(record.price);
+        return days && price ? { days: days.toString(), price } : null;
+      })
+      .filter((item): item is { days: string; price: string } => item !== null);
+
+    if (configuredPrices.length > 0) {
+      return configuredPrices;
+    }
+
+    const price = segment.base_rate.toFixed(2);
+
+    return Array.from({ length: 31 }, (_, index) => ({
+      days: (index + 1).toString(),
+      price,
+    }));
+  }
+
+  private derivedBaseOccupancy(segment: { room_category_max_occupancy: number | null }) {
+    const configuredBaseOccupancy = this.optionalPositiveInteger(
+      this.readObject((segment as { pricing_config?: unknown }).pricing_config).baseOccupancy ??
+        this.readObject((segment as { pricing_config?: unknown }).pricing_config).base_occupancy,
+    );
+    if (configuredBaseOccupancy) {
+      return configuredBaseOccupancy.toString();
+    }
+
+    const maxOccupancy = segment.room_category_max_occupancy ?? 2;
+    return Math.min(Math.max(maxOccupancy, 1), 2).toString();
+  }
+
+  private perDayBaseOccupancy(segment: { room_category_max_occupancy: number | null }) {
+    const configuredBaseOccupancy = this.optionalPositiveInteger(
+      this.readObject((segment as { pricing_config?: unknown }).pricing_config).baseOccupancy ??
+        this.readObject((segment as { pricing_config?: unknown }).pricing_config).base_occupancy,
+    );
+    if (configuredBaseOccupancy) {
+      return configuredBaseOccupancy.toString();
+    }
+
+    const maxOccupancy = segment.room_category_max_occupancy ?? 1;
+    return Math.min(Math.max(maxOccupancy, 1), 2).toString();
+  }
+
+  private derivedOccupancyOffsets(segment: { room_category_max_occupancy: number | null; pricing_config?: Record<string, unknown> }) {
+    const configuredOffsets = this.readArray(segment.pricing_config?.derived_offsets ?? segment.pricing_config?.offsets)
+      .map((item) => {
+        const record = this.readObject(item);
+        const persons = this.optionalPositiveInteger(record.persons);
+        if (!persons) {
+          return null;
+        }
+
+        const percentage = this.optionalStringOrNumber(record.percentage);
+        const additional = this.optionalStringOrNumber(record.additional);
+        const round = this.optionalStringOrNumber(record.round) ?? '1';
+        if (!percentage && !additional) {
+          return null;
+        }
+
+        return {
+          persons: persons.toString(),
+          ...(percentage ? { percentage } : {}),
+          ...(additional ? { additional } : {}),
+          round,
+        };
+      })
+      .filter(
+        (
+          item,
+        ): item is { persons: string; percentage?: string; additional?: string; round: string } => item !== null,
+      );
+
+    if (configuredOffsets.length > 0) {
+      return configuredOffsets;
+    }
+
+    const maxOccupancy = segment.room_category_max_occupancy ?? 2;
+    const baseOccupancy = Number.parseInt(this.derivedBaseOccupancy(segment), 10);
+    const offsets: Array<{ persons: string; percentage: string; round: string }> = [];
+
+    for (let persons = 1; persons <= maxOccupancy; persons += 1) {
+      if (persons === baseOccupancy) {
+        continue;
+      }
+
+      offsets.push({
+        persons: persons.toString(),
+        percentage: '0',
+        round: '1',
+      });
+    }
+
+    return offsets;
+  }
+
+  private optionalPositiveInteger(value: unknown) {
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+      return value;
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isInteger(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  private optionalBoolean(value: unknown) {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    if (typeof value === 'number') {
+      return value === 1;
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      return ['1', 'true', 'yes'].includes(value.trim().toLowerCase());
+    }
+
+    return false;
+  }
+
+  private optionalPrice(value: unknown) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value.toFixed(2);
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number.parseFloat(value);
+      if (Number.isFinite(parsed)) {
+        return parsed.toFixed(2);
+      }
+    }
+
+    return null;
+  }
+
+  private optionalStringOrNumber(value: unknown) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value.toString();
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+
+    return null;
   }
 
   private async tryFetchReservationDetailById(
@@ -1003,15 +1405,53 @@ export class ZodomusChannelAdapter {
   private readWebhookTriggeredReservationImport(value: unknown) {
     const record = this.readObject(value);
     const mode = this.firstString(record, 'mode');
-    const reservationId = this.firstString(record, 'reservation_id', 'reservationId');
-    if (mode !== 'webhook_trigger' || !reservationId) {
+    const reservationIds = this.readReservationIdList(record);
+    if (mode !== 'webhook_trigger' || reservationIds.length === 0) {
       return null;
     }
 
     return {
       mode,
-      reservationId,
+      reservationIds,
     };
+  }
+
+  private readReservationIdList(record: Record<string, unknown>) {
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    const add = (value: unknown) => {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        const normalized = String(value);
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          ids.push(normalized);
+        }
+        return;
+      }
+
+      if (typeof value !== 'string' || !value.trim()) {
+        return;
+      }
+
+      const normalized = value.trim();
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        ids.push(normalized);
+      }
+    };
+
+    add(record.reservation_id);
+    add(record.reservationId);
+    for (const key of ['reservation_ids', 'reservationIds']) {
+      const value = record[key];
+      if (Array.isArray(value)) {
+        value.forEach(add);
+      } else {
+        add(value);
+      }
+    }
+
+    return ids;
   }
 
   private readReservationImportMode(value: unknown) {

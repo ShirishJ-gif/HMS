@@ -170,6 +170,7 @@ model Property {
   email          String?        @db.VarChar(160)
   address        String         @db.Text
   timezone       String         @default("Asia/Kolkata") @db.VarChar(80)
+  isActive       Boolean        @default(true) @map("is_active")
   guests         Guest[]
   roomCategories RoomCategory[]
   ratePlans      RatePlan[]
@@ -190,6 +191,7 @@ model Property {
   createdAt      DateTime       @default(now()) @map("created_at")
   updatedAt      DateTime       @updatedAt @map("updated_at")
 
+  @@index([isActive])
   @@map("properties")
 }
 
@@ -432,6 +434,8 @@ model InventoryCalendar {
   reservedRooms  Int          @default(0) @map("reserved_rooms")
   availableRooms Int          @default(0) @map("available_rooms")
   stopSell       Boolean      @default(false) @map("stop_sell")
+  closedToArrival Boolean     @default(false) @map("closed_to_arrival")
+  closedToDeparture Boolean   @default(false) @map("closed_to_departure")
   minStay        Int?         @map("min_stay")
   maxStay        Int?         @map("max_stay")
   property       Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
@@ -638,6 +642,7 @@ model ChannelRoomMapping {
   roomCategoryId      String            @map("room_category_id") @db.Uuid
   externalRoomId      String            @map("external_room_id") @db.VarChar(120)
   externalRoomName    String?           @map("external_room_name") @db.VarChar(160)
+  isActivationEnabled Boolean           @default(true) @map("is_activation_enabled")
   channelConnection   ChannelConnection @relation(fields: [channelConnectionId], references: [id], onDelete: Cascade)
   roomCategory        RoomCategory      @relation(fields: [roomCategoryId], references: [id], onDelete: Restrict)
   createdAt           DateTime          @default(now()) @map("created_at")
@@ -656,6 +661,8 @@ model ChannelRateMapping {
   externalRoomId      String?           @map("external_room_id") @db.VarChar(120)
   externalRateId      String            @map("external_rate_id") @db.VarChar(120)
   externalRateName    String?           @map("external_rate_name") @db.VarChar(160)
+  isActivationEnabled Boolean           @default(true) @map("is_activation_enabled")
+  pricingConfig       Json?             @map("pricing_config")
   channelConnection   ChannelConnection @relation(fields: [channelConnectionId], references: [id], onDelete: Cascade)
   ratePlan            RatePlan          @relation(fields: [ratePlanId], references: [id], onDelete: Restrict)
   createdAt           DateTime          @default(now()) @map("created_at")

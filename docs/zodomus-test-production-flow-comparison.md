@@ -19,6 +19,7 @@ The important production path is:
 9. After Zodomus/Booking approval and final Booking.com confirmation, push availability and rates.
 10. Receive reservations by webhook and keep `GET /reservations-queue` polling as fallback.
 11. Fetch reservation details with `GET /reservations`.
+12. Fetch card details with `GET /reservationCC` only when operationally required and allowed.
 
 ## Zodomus Test Flow
 
@@ -38,6 +39,7 @@ The important production path is:
 | 12 | `POST /reservations-createtest` | Implemented for sandbox/testing |
 | 13 | `GET /reservations-queue` | Implemented and now used for booking fallback polling |
 | 14 | `GET /reservations` | Implemented |
+| 15 | `GET /reservationCC` | Implemented as an explicit operator lookup |
 
 ## Zodomus Production Flow
 
@@ -57,6 +59,7 @@ The important production path is:
 | 12 | `GET /reservations-summary` if needed for existing future reservations | Implemented as a manual one-time backfill action |
 | 13 | `GET /reservations-queue` or webhook | Implemented; webhook is primary, reservation queue is fallback polling |
 | 14 | `GET /reservations` for queued reservation details | Implemented |
+| 15 | `GET /reservationCC` when payment-card details are required | Implemented as an explicit operator lookup |
 
 ## Current HMS API Order
 
@@ -75,6 +78,8 @@ The important production path is:
 `GET /account` is extra compared with the checklist. It is used as a simple credential/account validation call and is not a harmful deviation.
 
 The selected `price_model_id` is operator-controlled in HMS and sent to Zodomus during `POST /property-activation`.
+
+HMS supports Zodomus price models `1` through `5` during rate sync. Model `2` sends the required two-step derived pricing flow: first `POST /rates` for the default price, then `POST /rates-derived` for offsets. Optional per-rate `pricing_config` can be stored on HMS channel rate mappings to provide single-occupancy prices, derived offsets, occupancy prices, per-day base occupancy, and length-of-stay prices.
 
 ### Initial Production Push
 

@@ -52,7 +52,12 @@ export class InventorySyncPayloadService {
           total_inventory: row?.totalRooms ?? 0,
           out_of_service: row?.blockedRooms ?? 0,
           booked: row?.reservedRooms ?? 0,
-          available: row?.availableRooms ?? 0,
+          available: row?.stopSell ? 0 : row?.availableRooms ?? 0,
+          stop_sell: row?.stopSell ?? false,
+          closed_to_arrival: this.readBoolean(row, 'closedToArrival'),
+          closed_to_departure: this.readBoolean(row, 'closedToDeparture'),
+          min_stay: row?.minStay ?? null,
+          max_stay: row?.maxStay ?? null,
         };
       });
     });
@@ -86,5 +91,9 @@ export class InventorySyncPayloadService {
 
   private formatDateOnly(value: Date) {
     return value.toISOString().slice(0, 10);
+  }
+
+  private readBoolean(row: unknown, key: string) {
+    return Boolean(row && typeof row === 'object' && key in row ? (row as Record<string, unknown>)[key] : false);
   }
 }

@@ -434,6 +434,9 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
 
       if (job.type === BackgroundJobType.WEBHOOK_PROCESS) {
         await this.markWebhookFailure(job.payload, message, nextStatus);
+        if (nextStatus === BackgroundJobStatus.DEAD_LETTER) {
+          await this.queueReservationPollFallbackForWebhook(job.payload, message);
+        }
       } else if (job.type === BackgroundJobType.CHANNEL_SYNC) {
         await this.markChannelSyncFailure(job.payload, message);
       } else if (job.type === BackgroundJobType.NOTIFICATION_SEND) {
@@ -527,11 +530,7 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     const providerChannelId =
       this.readString(payload.channelId) ??
       this.readString(payload.channel_id);
-    const reservationId =
-      this.readString(payload.reservationId) ??
-      this.readString(payload.reservation_id) ??
-      this.readString(payload.bookingId) ??
-      this.readString(payload.booking_id);
+    const reservationIds = this.readWebhookReservationIds(payload);
 
     const candidateConnections = await this.prisma.channelConnection.findMany({
       where: {
@@ -568,7 +567,8 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
               external_event_id: event.externalEventId,
               provider_property_id: providerPropertyId ?? null,
               provider_channel_id: providerChannelId ?? null,
-              reservation_id: reservationId ?? null,
+              reservation_id: reservationIds[0] ?? null,
+              reservation_ids: reservationIds,
             },
           } satisfies Prisma.InputJsonObject,
         },
@@ -588,6 +588,40 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
 
       this.metricsService.recordChannelSyncQueued(ChannelSyncType.BOOKINGS, connection.provider);
     }
+  }
+
+  private readWebhookReservationIds(payload: Record<string, unknown>) {
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    const add = (value: unknown) => {
+      const normalized =
+        typeof value === 'number' && Number.isFinite(value)
+          ? String(value)
+          : typeof value === 'string' && value.trim()
+            ? value.trim()
+            : null;
+      if (!normalized || seen.has(normalized)) {
+        return;
+      }
+
+      seen.add(normalized);
+      ids.push(normalized);
+    };
+
+    for (const key of ['reservationId', 'reservation_id', 'bookingId', 'booking_id']) {
+      add(payload[key]);
+    }
+
+    for (const key of ['reservationIds', 'reservation_ids', 'bookingIds', 'booking_ids']) {
+      const value = payload[key];
+      if (Array.isArray(value)) {
+        value.forEach(add);
+      } else {
+        add(value);
+      }
+    }
+
+    return ids;
   }
 
   private async processChannelSyncJob(job: {
@@ -829,6 +863,102 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
         processingError: message,
       },
     });
+  }
+
+  private async queueReservationPollFallbackForWebhook(payloadValue: Prisma.JsonValue, message: string) {
+    const payload = this.readObject(payloadValue);
+    const webhookEventId = this.readString(payload.webhook_event_id);
+    if (!webhookEventId) {
+      return;
+    }
+
+    const event = await this.prisma.webhookEvent.findUnique({
+      where: { id: webhookEventId },
+    });
+
+    if (!event || event.domain !== 'CHANNEL' || event.provider !== 'zodomus') {
+      return;
+    }
+
+    const eventPayload = this.readObject(event.payload);
+    const providerPropertyId =
+      this.readOptionalStringOrNumber(eventPayload.propertyId) ??
+      this.readOptionalStringOrNumber(eventPayload.property_id) ??
+      this.readOptionalStringOrNumber(eventPayload.hotelId) ??
+      this.readOptionalStringOrNumber(eventPayload.hotel_id);
+    const providerChannelId =
+      this.readOptionalStringOrNumber(eventPayload.channelId) ??
+      this.readOptionalStringOrNumber(eventPayload.channel_id);
+    const reservationId =
+      this.readOptionalStringOrNumber(eventPayload.reservationId) ??
+      this.readOptionalStringOrNumber(eventPayload.reservation_id) ??
+      this.readOptionalStringOrNumber(eventPayload.bookingId) ??
+      this.readOptionalStringOrNumber(eventPayload.booking_id);
+
+    if (!providerPropertyId) {
+      return;
+    }
+
+    const candidateConnections = await this.prisma.channelConnection.findMany({
+      where: {
+        provider: ChannelProvider.ZODOMUS,
+        status: ChannelConnectionStatus.ACTIVE,
+        externalHotelId: providerPropertyId,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const matchingConnections = candidateConnections.filter((connection) => {
+      const channelCode = this.readConnectionChannelCode(connection.credentials);
+      return !providerChannelId || !channelCode || providerChannelId === channelCode;
+    });
+
+    for (const connection of matchingConnections) {
+      const dedupeKey = `webhook-dead-letter-bookings:${event.id}:${connection.id}`;
+      const existingFallback = await this.prisma.backgroundJob.findUnique({
+        where: { dedupeKey },
+      });
+      if (existingFallback) {
+        continue;
+      }
+
+      const syncLog = await this.prisma.channelSyncLog.create({
+        data: {
+          channelConnectionId: connection.id,
+          syncType: ChannelSyncType.BOOKINGS,
+          status: ChannelSyncStatus.QUEUED,
+          requestPayload: {
+            reservation_import: {
+              mode: 'reservation_queue_poll',
+              from: null,
+              to: null,
+              fallback_for_webhook_event_id: event.id,
+              fallback_reason: message,
+              webhook_event_type: event.eventType,
+              webhook_external_event_id: event.externalEventId,
+              provider_property_id: providerPropertyId,
+              provider_channel_id: providerChannelId ?? null,
+              reservation_id: reservationId ?? null,
+            },
+            trigger: 'webhook_dead_letter_fallback',
+          } satisfies Prisma.InputJsonObject,
+        },
+      });
+
+      await this.enqueue({
+        type: BackgroundJobType.CHANNEL_SYNC,
+        propertyId: connection.propertyId,
+        dedupeKey,
+        entityType: 'channel_sync_log',
+        entityId: syncLog.id,
+        payload: {
+          channel_sync_log_id: syncLog.id,
+        },
+        maxAttempts: 3,
+      });
+
+      this.metricsService.recordChannelSyncQueued(ChannelSyncType.BOOKINGS, connection.provider);
+    }
   }
 
   private async markChannelSyncFailure(payloadValue: Prisma.JsonValue, message: string) {

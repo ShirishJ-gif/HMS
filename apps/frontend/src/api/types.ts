@@ -52,6 +52,7 @@ export type Property = {
   email: string | null;
   address: string;
   timezone: string;
+  is_active: boolean;
   images: MediaImage[];
 };
 
@@ -146,6 +147,8 @@ export type InventoryCalendarSummary = {
       reserved_rooms: number;
       available_rooms: number;
       stop_sell: boolean;
+      closed_to_arrival: boolean;
+      closed_to_departure: boolean;
       min_stay: number | null;
       max_stay: number | null;
     }>;
@@ -414,6 +417,7 @@ export type ChannelConnection = {
     room_category_id: string;
     external_room_id: string;
     external_room_name: string | null;
+    is_activation_enabled: boolean;
     room_category: Pick<RoomCategory, 'id' | 'name' | 'code'>;
   }>;
   rate_mappings: Array<{
@@ -422,6 +426,8 @@ export type ChannelConnection = {
     external_room_id: string | null;
     external_rate_id: string;
     external_rate_name: string | null;
+    is_activation_enabled: boolean;
+    pricing_config?: Record<string, unknown> | null;
     rate_plan: Pick<RatePlan, 'id' | 'name' | 'code'>;
   }>;
   recent_sync_logs: ChannelSyncLog[];

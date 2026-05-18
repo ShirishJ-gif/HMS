@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsObject, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 
 export class MapZodomusRateDto {
   @IsUUID()
@@ -20,4 +20,8 @@ export class MapZodomusRateDto {
   @IsString()
   @MaxLength(160)
   external_rate_name?: string;
+
+  @IsOptional()
+  @IsObject()
+  pricing_config?: Record<string, unknown>;
 }

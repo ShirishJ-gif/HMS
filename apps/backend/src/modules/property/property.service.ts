@@ -12,6 +12,7 @@ import { CreatePricingRuleDto } from './dto/create-pricing-rule.dto';
 import { CreateRatePlanDto } from './dto/create-rate-plan.dto';
 import { CreateRoomCategoryDto } from './dto/create-room-category.dto';
 import { UpdatePricingRuleDto } from './dto/update-pricing-rule.dto';
+import { UpdatePropertyStatusDto } from './dto/update-property-status.dto';
 
 @Injectable()
 export class PropertyService {
@@ -68,6 +69,33 @@ export class PropertyService {
     ]);
 
     return paginatedResponse(properties.map((property) => this.toPropertyResponse(property)), total, page, limit);
+  }
+
+  async updatePropertyStatus(id: string, dto: UpdatePropertyStatusDto) {
+    try {
+      const updatedCount = await this.prisma.$executeRaw`
+        UPDATE "properties"
+        SET "is_active" = ${dto.is_active}, "updated_at" = NOW()
+        WHERE "id" = ${id}::uuid
+      `;
+      if (updatedCount === 0) {
+        throw new NotFoundException('Property not found');
+      }
+
+      const property = await this.prisma.property.findUnique({
+        where: { id },
+        include: {
+          images: { orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }] },
+        },
+      });
+      if (!property) {
+        throw new NotFoundException('Property not found');
+      }
+
+      return this.toPropertyResponse({ ...property, isActive: dto.is_active });
+    } catch (error) {
+      this.handlePrismaError(error, 'Property code already exists');
+    }
   }
 
   async createRoomCategory(dto: CreateRoomCategoryDto, user?: AuthenticatedUser) {
@@ -518,6 +546,7 @@ export class PropertyService {
     email: string | null;
     address: string;
     timezone: string;
+    isActive?: boolean;
     images?: Array<{
       id: string;
       url: string;
@@ -537,6 +566,7 @@ export class PropertyService {
       email: property.email,
       address: property.address,
       timezone: property.timezone,
+      is_active: property.isActive ?? true,
       images: property.images?.map((image) => this.toImageResponse(image)) ?? [],
       created_at: property.createdAt,
       updated_at: property.updatedAt,

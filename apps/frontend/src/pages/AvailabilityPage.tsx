@@ -57,16 +57,16 @@ export function AvailabilityPage() {
   const outOfServiceRate = totalInventory === 0 ? 0 : Math.round((totalOutOfService / totalInventory) * 100);
   const categoryCount = displayedAvailability?.categories.length ?? roomCategories.length;
   const stopSellCount = displayedInventoryCalendar?.categories.reduce((s, c) => s + c.rows.filter((r) => r.stop_sell).length, 0) ?? 0;
-  const restrictedNightCount = displayedInventoryCalendar?.categories.reduce((s, c) => s + c.rows.filter((r) => r.stop_sell || r.min_stay != null || r.max_stay != null).length, 0) ?? 0;
+  const restrictedNightCount = displayedInventoryCalendar?.categories.reduce((s, c) => s + c.rows.filter((r) => hasRestriction(r)).length, 0) ?? 0;
   const topAvailableCategory = displayedAvailability?.categories.reduce<AvailabilitySummary['categories'][number] | null>((top, c) => (!top || c.available > top.available ? c : top), null);
   const inventoryCalendarRowCount = displayedInventoryCalendar?.categories.reduce((s, c) => s + c.rows.length, 0) ?? 0;
   const inventoryCategorySummaries = displayedInventoryCalendar?.categories.map((cat) => {
     const totalAv = cat.rows.reduce((s, r) => s + r.available_rooms, 0);
     const minAvailable = cat.rows.reduce<number | null>((m, r) => (m == null || r.available_rooms < m ? r.available_rooms : m), null);
-    const restrictedRows = cat.rows.filter((r) => r.stop_sell || r.min_stay != null || r.max_stay != null).length;
+    const restrictedRows = cat.rows.filter((r) => hasRestriction(r)).length;
     return { roomCategoryId: cat.room_category_id, name: cat.name, averageAvailable: cat.rows.length === 0 ? 0 : Math.round(totalAv / cat.rows.length), minAvailable: minAvailable ?? 0, restrictedRows };
   }) ?? [];
-  const inventoryExceptionRows = displayedInventoryCalendar?.categories.flatMap((cat) => cat.rows.filter((r) => r.stop_sell || r.min_stay != null || r.max_stay != null || r.blocked_rooms > 0 || r.available_rooms <= 0).map((r) => ({ ...r, roomCategoryId: cat.room_category_id, roomCategoryName: cat.name }))) ?? [];
+  const inventoryExceptionRows = displayedInventoryCalendar?.categories.flatMap((cat) => cat.rows.filter((r) => hasRestriction(r) || r.blocked_rooms > 0 || r.available_rooms <= 0).map((r) => ({ ...r, roomCategoryId: cat.room_category_id, roomCategoryName: cat.name }))) ?? [];
   const visibleInventoryExceptionRows = inventoryExceptionRows.slice(0, 12);
   const hiddenInventoryExceptionRows = Math.max(0, inventoryExceptionRows.length - visibleInventoryExceptionRows.length);
   const inventoryCalendarDates = displayedInventoryCalendar ? Array.from(new Set(displayedInventoryCalendar.categories.flatMap((c) => c.rows.map((r) => r.date)))).sort() : [];
@@ -270,7 +270,7 @@ export function AvailabilityPage() {
                                 <strong className="text-xs font-bold text-slate-900 block text-center">{row.available_rooms}</strong>
                                 <span className="text-[10px] text-slate-500 block text-center">{row.reserved_rooms} bkd</span>
                                 {row.blocked_rooms > 0 && <em className="text-[10px] text-amber-600 block text-center not-italic">{row.blocked_rooms} blk</em>}
-                                {(row.stop_sell || row.min_stay != null || row.max_stay != null) && <small className="text-[10px] text-rose-500 block text-center">{formatRestrictionSummary(row)}</small>}
+                                {hasRestriction(row) && <small className="text-[10px] text-rose-500 block text-center">{formatRestrictionSummary(row)}</small>}
                               </div>
                             );
                           })}
@@ -298,7 +298,7 @@ export function AvailabilityPage() {
                         <tr key={`${row.roomCategoryId}:${row.date}`} className="hover:bg-slate-50/60 border-b border-slate-50 last:border-0">
                           <Td>{row.roomCategoryName}</Td><Td>{row.date}</Td><Td>{row.available_rooms}</Td><Td>{row.blocked_rooms}</Td><Td>{row.reserved_rooms}</Td>
                           <Td className="text-xs text-rose-600">
-                            {[row.stop_sell ? 'Stop sell' : null, row.min_stay != null ? `Min ${row.min_stay}` : null, row.max_stay != null ? `Max ${row.max_stay}` : null].filter(Boolean).join(' · ') || '—'}
+                            {formatRestrictionSummary(row) || '—'}
                           </Td>
                         </tr>
                       ))}
@@ -389,13 +389,23 @@ function roomCategoryGridClass(count: number) {
 
 function availabilityCellTone(row: InventoryCalendarRow) {
   if (row.stop_sell || row.available_rooms <= 0) return 'closed';
-  if (row.min_stay != null || row.max_stay != null) return 'restricted';
+  if (hasRestriction(row)) return 'restricted';
   if (row.available_rooms <= 2 || row.blocked_rooms > 0) return 'limited';
   return 'healthy';
 }
 
+function hasRestriction(row: InventoryCalendarRow) {
+  return row.stop_sell || row.closed_to_arrival || row.closed_to_departure || row.min_stay != null || row.max_stay != null;
+}
+
 function formatRestrictionSummary(row: InventoryCalendarRow) {
-  return [row.stop_sell ? 'SS' : null, row.min_stay != null ? `Min${row.min_stay}` : null, row.max_stay != null ? `Max${row.max_stay}` : null].filter((p): p is string => Boolean(p)).join(' · ');
+  return [
+    row.stop_sell ? 'SS' : null,
+    row.closed_to_arrival ? 'CTA' : null,
+    row.closed_to_departure ? 'CTD' : null,
+    row.min_stay != null ? `Min${row.min_stay}` : null,
+    row.max_stay != null ? `Max${row.max_stay}` : null,
+  ].filter((p): p is string => Boolean(p)).join(' · ');
 }
 
 function formatDatePickerLabel(value: string) { return new Date(`${value}T00:00:00.000Z`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); }

@@ -18,6 +18,14 @@ export class SetInventoryRestrictionsDto {
   stop_sell?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  closed_to_arrival?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  closed_to_departure?: boolean;
+
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(365)

@@ -93,6 +93,12 @@ Reservation import body:
 }
 ```
 
+### Reservation card details
+
+```http
+GET /channels/:connectionId/provider-reservations/:reservationId/card
+```
+
 ### Inventory reconciliation
 
 ```http
@@ -126,11 +132,84 @@ Outbound:
 
 - `POST /availability`
 - `POST /rates`
+- `POST /rates-derived` for Booking derived pricing, after the default `POST /rates` call
+
+## HMS Rate Pricing Config
+
+HMS stores provider-specific pricing details on each channel rate mapping as `pricing_config`. New mappings can include it in `POST /channels/:id/rate-mappings` or `POST /channels/:id/mappings/batch`. Existing mappings can be updated without recreating them:
+
+```http
+PATCH /channels/:connectionId/rate-mappings/:mappingId/pricing-config
+```
+
+Maximum / Single, model `1`:
+
+```json
+{
+  "pricing_config": {
+    "single_price": 4200
+  }
+}
+```
+
+Derived pricing, model `2`:
+
+```json
+{
+  "pricing_config": {
+    "baseOccupancy": 2,
+    "offsets": [
+      { "persons": 1, "percentage": -25, "round": 1 },
+      { "persons": 3, "additional": 10, "round": 1 }
+    ]
+  }
+}
+```
+
+Occupancy pricing, model `3`:
+
+```json
+{
+  "pricing_config": {
+    "occupancy_prices": [
+      { "guests": 1, "price": 4500 },
+      { "guests": 2, "price": 5000 },
+      { "guests": 3, "price": 5600 }
+    ]
+  }
+}
+```
+
+Per Day, model `4`:
+
+```json
+{
+  "pricing_config": {
+    "base_occupancy": 2
+  }
+}
+```
+
+Length of Stay, model `5`:
+
+```json
+{
+  "pricing_config": {
+    "base_occupancy": 2,
+    "length_of_stay_prices": [
+      { "days": 1, "price": 5000 },
+      { "days": 2, "price": 4800 },
+      { "days": 3, "price": 4500 }
+    ]
+  }
+}
+```
 
 Inbound:
 
 - `GET /reservations-summary`
 - `GET /reservations`
+- `GET /reservationCC`
 
 ## Webhook Endpoint
 
@@ -166,7 +245,7 @@ Verification supports:
   "event_type": "reservation.created",
   "propertyId": "100",
   "channelId": "1",
-  "reservationId": "9355237"
+  "reservationIds": ["9355237"]
 }
 ```
 
@@ -177,7 +256,7 @@ Verification supports:
 3. HMS queues `WEBHOOK_PROCESS`
 4. HMS matches a ready Zodomus connection
 5. HMS queues a `BOOKINGS` channel sync
-6. If the webhook includes `reservationId`, HMS tries a targeted reservation-detail fetch first
+6. If the webhook includes `reservationId`, `reservation_id`, `reservationIds`, or `reservation_ids`, HMS tries targeted reservation-detail fetches first
 7. If targeted fetch is unusable, HMS falls back to reservation summary plus detail reconciliation
 8. HMS imports the resolved reservation payloads
 9. HMS fans out inventory updates if inventory changed

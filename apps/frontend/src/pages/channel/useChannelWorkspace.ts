@@ -328,10 +328,16 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   const hasCatalogRates = filteredCatalogRates.length > 0;
   const canLoadCatalog = Boolean(selectedConnection?.external_hotel_id && selectedConnection.provider_config_summary?.ota_name);
   const canMap = Boolean(selectedConnection && catalogLoaded && catalogConnectionId === selectedConnection.id);
+  const activeRoomMappings = selectedConnection?.room_mappings ?? [];
+  const activeExternalRoomIds = new Set(activeRoomMappings.map((mapping) => mapping.external_room_id));
+  const activeRateMappings =
+    selectedConnection?.rate_mappings.filter(
+      (mapping) => Boolean(mapping.external_room_id && activeExternalRoomIds.has(mapping.external_room_id)),
+    ) ?? [];
   const canActivateMappedRooms = Boolean(
     selectedConnection &&
-      selectedConnection.room_mappings.length > 0 &&
-      selectedConnection.rate_mappings.length > 0,
+      activeRoomMappings.length > 0 &&
+      activeRateMappings.length > 0,
   );
   const selectedPropertyScopeId = selectedConnection?.property_id ?? null;
   const providerCatalogRoomCount = persistedSetupStatus?.catalog_room_count ?? providerCatalog?.rooms.length ?? 0;
@@ -437,6 +443,8 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     localRatePlans: scopedRatePlans.length,
     mappedRooms: selectedConnection?.room_mappings.length ?? 0,
     mappedRates: selectedConnection?.rate_mappings.length ?? 0,
+    activeRooms: activeRoomMappings.length,
+    activeRates: activeRateMappings.length,
     providerRooms: providerCatalogRoomCount,
     providerRates: providerCatalogRateCount,
     roomMappingGap,
@@ -473,6 +481,12 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     !persistedSetupStatus?.catalog_loaded ? 'Provider room/rate IDs are not loaded yet.' : null,
     selectedConnection && selectedConnection.room_mappings.length === 0 ? 'No HMS room categories are mapped yet.' : null,
     selectedConnection && selectedConnection.rate_mappings.length === 0 ? 'No HMS rate plans are mapped yet.' : null,
+    selectedConnection && selectedConnection.room_mappings.length > 0 && activeRoomMappings.length === 0
+      ? 'No mapped rooms are available for provider activation.'
+      : null,
+    selectedConnection && selectedConnection.rate_mappings.length > 0 && activeRateMappings.length === 0
+      ? 'No mapped rates are linked to mapped rooms for provider activation.'
+      : null,
     persistedSetupStatus?.activated &&
     persistedSetupStatus?.catalog_loaded &&
     canActivateMappedRooms &&

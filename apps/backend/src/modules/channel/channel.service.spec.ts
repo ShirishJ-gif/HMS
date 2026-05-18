@@ -199,6 +199,36 @@ describe('ChannelService Zodomus automation defaults', () => {
   });
 });
 
+describe('ChannelService Zodomus price model validation', () => {
+  const service = Object.create(ChannelService.prototype) as ChannelService;
+  const validate = service as unknown as {
+    assertValidZodomusPriceModel: (otaKey: 'BOOKING_COM' | 'EXPEDIA' | 'AIRBNB', priceModelId: number) => void;
+  };
+
+  it.each([
+    ['BOOKING_COM', 1],
+    ['BOOKING_COM', 2],
+    ['BOOKING_COM', 4],
+    ['BOOKING_COM', 5],
+    ['EXPEDIA', 3],
+    ['EXPEDIA', 4],
+    ['EXPEDIA', 5],
+    ['AIRBNB', 4],
+  ] as const)('allows %s price model %i', (otaKey, priceModelId) => {
+    expect(() => validate.assertValidZodomusPriceModel(otaKey, priceModelId)).not.toThrow();
+  });
+
+  it.each([
+    ['BOOKING_COM', 3],
+    ['EXPEDIA', 1],
+    ['EXPEDIA', 2],
+    ['AIRBNB', 1],
+    ['AIRBNB', 3],
+  ] as const)('rejects %s price model %i', (otaKey, priceModelId) => {
+    expect(() => validate.assertValidZodomusPriceModel(otaKey, priceModelId)).toThrow(BadRequestException);
+  });
+});
+
 describe('ChannelService provider reservation creation', () => {
   const connection = {
     id: 'connection-1',
@@ -527,6 +557,113 @@ describe('ChannelService Zodomus readiness gate', () => {
         },
       }),
     );
+  });
+});
+
+describe('ChannelService Zodomus room activation payload', () => {
+  it('includes only room and rate mappings enabled for activation', async () => {
+    const prisma = {
+      room: {
+        count: jest.fn().mockResolvedValue(2),
+      },
+    };
+    const service = new ChannelService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const payload = await (service as unknown as {
+      buildZodomusRoomsActivationPayload: (connection: unknown) => Promise<Array<{ roomId: string; rates: string[] }>>;
+    }).buildZodomusRoomsActivationPayload({
+      id: 'connection-1',
+      propertyId: 'property-1',
+      roomMappings: [
+        {
+          roomCategoryId: 'category-1',
+          externalRoomId: 'room-1',
+          externalRoomName: 'Provider room 1',
+          isActivationEnabled: true,
+          roomCategory: { code: 'R1', name: 'Room 1' },
+        },
+        {
+          roomCategoryId: 'category-2',
+          externalRoomId: 'room-2',
+          externalRoomName: 'Provider room 2',
+          isActivationEnabled: false,
+          roomCategory: { code: 'R2', name: 'Room 2' },
+        },
+      ],
+      rateMappings: [
+        {
+          externalRoomId: 'room-1',
+          externalRateId: 'rate-1',
+          isActivationEnabled: true,
+        },
+        {
+          externalRoomId: 'room-1',
+          externalRateId: 'rate-2',
+          isActivationEnabled: false,
+        },
+        {
+          externalRoomId: 'room-2',
+          externalRateId: 'rate-3',
+          isActivationEnabled: true,
+        },
+      ],
+    });
+
+    expect(payload).toEqual([
+      {
+        roomId: 'room-1',
+        roomName: 'Provider room 1',
+        quantity: 2,
+        status: 1,
+        rates: ['rate-1'],
+      },
+    ]);
+  });
+
+  it('rejects activation when every mapped room is disabled', async () => {
+    const service = new ChannelService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      (service as unknown as {
+        buildZodomusRoomsActivationPayload: (connection: unknown) => Promise<unknown[]>;
+      }).buildZodomusRoomsActivationPayload({
+        propertyId: 'property-1',
+        roomMappings: [
+          {
+            roomCategoryId: 'category-1',
+            externalRoomId: 'room-1',
+            isActivationEnabled: false,
+            roomCategory: { code: 'R1', name: 'Room 1' },
+          },
+        ],
+        rateMappings: [
+          {
+            externalRoomId: 'room-1',
+            externalRateId: 'rate-1',
+            isActivationEnabled: true,
+          },
+        ],
+      }),
+    ).rejects.toThrow(BadRequestException);
   });
 });
 

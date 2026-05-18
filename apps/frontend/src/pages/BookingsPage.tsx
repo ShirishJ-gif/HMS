@@ -1,35 +1,51 @@
 import { Fragment, useEffect, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
-import { fetchAllPages, PaginatedResponse } from '../api/pagination';
-import { Property, ReservationGroup } from '../api/types';
-import { CustomSelect } from '../components/CustomSelect';
-import { FilterBar } from '../components/FilterBar';
+import { PaginatedResponse } from '../api/pagination';
+import { ReservationGroup } from '../api/types';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
-import { MetricCard, StatusBadge, TableCard, Th, Td, labelCls, inputCls, secondaryBtn, linkBtn, ErrorMsg, LoadingMsg } from './ui';
+import { ReservationsTimelinePage } from './ReservationsTimelinePage';
+import { MetricCard, StatusBadge, TableCard, Th, Td, secondaryBtn, linkBtn, ErrorMsg } from './ui';
 
 type DisplayReservationGroup = ReservationGroup & { duplicate_reservation_ids?: string[]; duplicate_count?: number };
 
 type TimelineRow = { id: string; label: string; secondary: string; detail: string; check_in_date: string; check_out_date: string; status: string };
 
 export function BookingsPage() {
-  const bookingsPerPage = 25;
+  const bookingsPerPage = 10;
   const todayDate = getTodayDate();
+  const [fullViewOpen, setFullViewOpen] = useState(() => isFullReservationsRoute());
   const [reloadKey, setReloadKey] = useState(0);
-  const [search, setSearch] = useState('');
-  const [propertyFilter, setPropertyFilter] = useState('ALL');
-  const [statusFilter, setStatusFilter] = useState('ACTIVE');
   const [feedPage, setFeedPage] = useState(1);
   const [viewMode, setViewMode] = useState<'timeline' | 'ledger'>('timeline');
   const [expandedReservationGroupId, setExpandedReservationGroupId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingReservationRoomActionId, setPendingReservationRoomActionId] = useState<string | null>(null);
-  const reservationFeedState = useAsync(async () => (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/feed', { params: { search: search || undefined, property_id: propertyFilter === 'ALL' ? undefined : propertyFilter, status: statusFilter === 'ACTIVE' || statusFilter === 'ALL_WITH_CANCELLED' ? undefined : statusFilter, include_cancelled: statusFilter === 'ALL_WITH_CANCELLED' ? true : undefined, page: feedPage, limit: bookingsPerPage } })).data, [reloadKey, search, propertyFilter, statusFilter, feedPage]);
-  const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), []);
-  const isInitialLoading = (reservationFeedState.loading && reservationFeedState.data == null) || (propertiesState.loading && propertiesState.data == null);
+  const reservationFeedState = useAsync(async () => (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/feed', { params: { page: feedPage, limit: bookingsPerPage } })).data, [reloadKey, feedPage]);
+  const isInitialLoading = reservationFeedState.loading && reservationFeedState.data == null;
 
-  useEffect(() => { setFeedPage(1); }, [search, propertyFilter, statusFilter]);
   useEffect(() => { const totalPages = reservationFeedState.data?.meta.total_pages ?? 1; if (feedPage > totalPages) setFeedPage(totalPages); }, [feedPage, reservationFeedState.data?.meta.total_pages]);
+  useEffect(() => {
+    function handlePopState() {
+      setFullViewOpen(isFullReservationsRoute());
+    }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  function openFullReservationsView() {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('reservations', 'all');
+    window.history.pushState({}, '', nextUrl);
+    setFullViewOpen(true);
+  }
+
+  function closeFullReservationsView() {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete('reservations');
+    window.history.pushState({}, '', nextUrl);
+    setFullViewOpen(false);
+  }
 
   async function checkInReservationRoom(id: string) {
     setActionError(null); setPendingReservationRoomActionId(id);
@@ -47,17 +63,17 @@ export function BookingsPage() {
     catch (error) { setActionError(getApiErrorMessage(error)); } finally { setPendingReservationRoomActionId(null); }
   }
 
-  const properties = propertiesState.data ?? [];
+  if (fullViewOpen) return <ReservationsTimelinePage onBack={closeFullReservationsView} />;
+
   const reservationGroups = reservationFeedState.data?.data ?? [];
-  const reservationFeedMeta = reservationFeedState.data?.meta;
   const displayReservationGroups = groupVisibleReservations(reservationGroups);
   const bookedCount = displayReservationGroups.filter((g) => g.reservation_status === 'BOOKED').length;
   const checkedInCount = displayReservationGroups.filter((g) => g.reservation_status === 'CHECKED_IN').length;
   const checkedOutCount = displayReservationGroups.filter((g) => g.reservation_status === 'CHECKED_OUT').length;
-  const totalFeedPages = reservationFeedMeta?.total_pages ?? 1;
   const timelineRows = buildTimelineRows(displayReservationGroups);
   const timelineWindow = buildReservationTimelineWindow(timelineRows, todayDate, 30);
   const visibleTimelineRows = timelineRows.filter((stay) => doesStayOverlapWindow(stay.check_in_date, stay.check_out_date, timelineWindow.startDate, timelineWindow.endDateExclusive));
+  const previewTimelineRows = visibleTimelineRows.slice(0, 12);
   const hasTimelineRows = visibleTimelineRows.length > 0;
   const timeline = buildTimelineWindow(timelineWindow.startDate, timelineWindow.dayCount);
   const timelineGridTemplateColumns = `18rem repeat(${timeline.days.length}, 4.75rem)`;
@@ -69,7 +85,7 @@ export function BookingsPage() {
       <div>
         <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-amber-500 mb-1">Operations</p>
         <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Reservations</h2>
-        <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-2xl">Review imported reservations and provider bookings blocked during import from one operator ledger.</p>
+        <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-2xl">Review the 10 most recent reservation groups. Open the full view for filters, timeline, and the complete feed.</p>
       </div>
 
       <div className="flex gap-3 items-start bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm">
@@ -84,12 +100,6 @@ export function BookingsPage() {
         <MetricCard label="Checked in on page" value={checkedInCount.toString()} tone="green" />
         <MetricCard label="Checked out on page" value={checkedOutCount.toString()} tone="blue" />
       </div>
-
-      <FilterBar title="Reservation filters">
-        <label className={labelCls}><span>Search reservations</span><input className={inputCls} onChange={(e) => setSearch(e.target.value)} placeholder="Guest, phone, property, category, or room" value={search} /></label>
-        <label className={labelCls}><span>Property</span><CustomSelect onChange={setPropertyFilter} options={[{ label: 'All properties', value: 'ALL' }, ...properties.map((p) => ({ label: p.name, value: p.id }))]} value={propertyFilter} /></label>
-        <label className={labelCls}><span>Status</span><CustomSelect onChange={setStatusFilter} options={[{ label: 'Active statuses', value: 'ACTIVE' }, { label: 'Booked', value: 'BOOKED' }, { label: 'Checked in', value: 'CHECKED_IN' }, { label: 'Checked out', value: 'CHECKED_OUT' }, { label: 'Cancelled', value: 'CANCELLED' }, { label: 'All including cancelled', value: 'ALL_WITH_CANCELLED' }]} value={statusFilter} /></label>
-      </FilterBar>
 
       {hasTimelineRows && (
         <div className="flex items-center gap-2">
@@ -109,7 +119,7 @@ export function BookingsPage() {
         </div>
       )}
 
-      {(reservationFeedState.error || propertiesState.error) && <ErrorMsg>{reservationFeedState.error ?? propertiesState.error}</ErrorMsg>}
+      {reservationFeedState.error && <ErrorMsg>{reservationFeedState.error}</ErrorMsg>}
 
       {hasTimelineRows && viewMode === 'timeline' && timeline.days.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -118,7 +128,10 @@ export function BookingsPage() {
               <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Reservation timeline</p>
               <h3 className="text-sm font-bold text-slate-900">{timeline.days[0].label} to {timeline.days[timeline.days.length - 1].label}</h3>
             </div>
-            <span className="text-xs text-slate-400 leading-relaxed max-w-xs text-right">{timelineWindow.mode === 'today' ? 'Showing today through the next 30 days.' : 'Showing the full reservation date span on this page because no stays overlap today.'}</span>
+            <div className="flex flex-col items-end gap-2">
+              <span className="text-xs text-slate-400 leading-relaxed max-w-xs text-right">{timelineWindow.mode === 'today' ? `Showing ${previewTimelineRows.length} of ${visibleTimelineRows.length} rows for today through the next 30 days.` : `Showing ${previewTimelineRows.length} of ${visibleTimelineRows.length} rows from this page because no stays overlap today.`}</span>
+              <button className={secondaryBtn + ' !text-xs !px-3 !py-1.5'} onClick={openFullReservationsView} type="button">View all reservations</button>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <div className="timeline-header-grid min-w-max" style={{ gridTemplateColumns: timelineGridTemplateColumns, display: 'grid' }}>
@@ -131,7 +144,7 @@ export function BookingsPage() {
               ))}
             </div>
             <div>
-              {visibleTimelineRows.map((stay) => (
+              {previewTimelineRows.map((stay) => (
                 <div className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60 transition-colors min-w-max" key={stay.id} style={{ display: 'grid', gridTemplateColumns: timelineGridTemplateColumns }}>
                   <div className="px-4 py-3 border-r border-slate-100">
                     <strong className="text-xs font-bold text-slate-900 block">{stay.label}</strong>
@@ -142,8 +155,8 @@ export function BookingsPage() {
                     const occupied = isDateWithinStay(day.date, stay.check_in_date, stay.check_out_date);
                     const colorMap: Record<string, string> = { BOOKED: 'bg-sky-400', CHECKED_IN: 'bg-emerald-500', CHECKED_OUT: 'bg-slate-300', CANCELLED: 'bg-rose-400' };
                     return (
-                      <div className={`border-r border-slate-50 last:border-r-0 ${occupied ? 'bg-indigo-50' : ''}`} key={`${stay.id}-${day.date}`}>
-                        {occupied && <div className={`h-1 mx-1 mt-3 rounded-full ${colorMap[stay.status.toUpperCase()] ?? 'bg-slate-400'}`} />}
+                      <div className={`flex items-center justify-center border-r border-slate-50 last:border-r-0 ${occupied ? 'bg-indigo-50' : ''}`} key={`${stay.id}-${day.date}`}>
+                        {occupied && <div className={`h-1 w-1/3 rounded-full ${colorMap[stay.status.toUpperCase()] ?? 'bg-slate-400'}`} />}
                       </div>
                     );
                   })}
@@ -154,14 +167,14 @@ export function BookingsPage() {
         </div>
       )}
 
-      <TableCard title={`${displayReservationGroups.length} groups on this page`} eyebrow="Reservation feed" actions={
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-slate-400">Page {feedPage} of {totalFeedPages}</span>
-          <div className="flex gap-1.5">
-            <button className={secondaryBtn + ' !text-xs !px-3 !py-1.5'} disabled={feedPage === 1} onClick={() => setFeedPage((c) => Math.max(1, c - 1))} type="button">Previous</button>
-            <button className={secondaryBtn + ' !text-xs !px-3 !py-1.5'} disabled={feedPage === totalFeedPages} onClick={() => setFeedPage((c) => Math.min(totalFeedPages, c + 1))} type="button">Next</button>
-          </div>
+      {!hasTimelineRows && (
+        <div className="flex justify-end">
+          <button className={secondaryBtn} onClick={openFullReservationsView} type="button">View all reservations</button>
         </div>
+      )}
+
+      <TableCard title={`${displayReservationGroups.length} recent groups`} eyebrow="Reservation feed" actions={
+        <button className={secondaryBtn + ' !text-xs !px-3 !py-1.5'} onClick={openFullReservationsView} type="button">View all</button>
       }>
         <table className="w-full min-w-[700px]">
           <thead><tr className="bg-slate-50 border-b border-slate-100"><Th>Source / reservation</Th><Th>Property</Th><Th>Dates</Th><Th>Primary guest</Th><Th>Rooms</Th><Th>Total</Th><Th>Status</Th><Th>Actions</Th></tr></thead>
@@ -396,6 +409,10 @@ function groupVisibleReservations(groups: ReservationGroup[]): DisplayReservatio
     existing.duplicate_reservation_ids = [...(existing.duplicate_reservation_ids ?? [existing.external_reservation_id]), group.external_reservation_id]; existing.duplicate_count = (existing.duplicate_count ?? 1) + 1;
   }
   return visible;
+}
+
+function isFullReservationsRoute() {
+  return new URLSearchParams(window.location.search).get('reservations') === 'all';
 }
 
 function buildImportedDuplicateSignature(group: ReservationGroup) {

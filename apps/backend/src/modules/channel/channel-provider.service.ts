@@ -10,6 +10,7 @@ export type ChannelPayload = {
   credentials?: unknown;
   from?: string;
   to?: string;
+  price_model_id?: number;
   inventory?: unknown;
   rates?: unknown;
   reservation_import?: unknown;
@@ -56,6 +57,7 @@ interface ChannelAdapter {
   getPriceModels(payload: ChannelConnectionValidationPayload): Promise<Prisma.InputJsonObject>;
   getReservationsQueue(payload: ChannelReservationActionPayload): Promise<Prisma.InputJsonObject>;
   getReservation(payload: ChannelReservationActionPayload): Promise<Prisma.InputJsonObject>;
+  getReservationCC(payload: ChannelReservationActionPayload): Promise<Prisma.InputJsonObject>;
   getReservationsSummary(payload: ChannelReservationActionPayload): Promise<Prisma.InputJsonObject>;
   createTestReservation(payload: ChannelReservationActionPayload): Promise<Prisma.InputJsonObject>;
   push(payload: ChannelPayload): Promise<Prisma.InputJsonObject>;
@@ -168,6 +170,15 @@ class MockChannelAdapter implements ChannelAdapter {
     };
   }
 
+  async getReservationCC(payload: ChannelReservationActionPayload) {
+    return {
+      provider: payload.provider,
+      reservation_id: payload.reservation_id ?? null,
+      cards: [],
+      message: 'Mock provider has no reservation card API.',
+    };
+  }
+
   async getReservationsSummary(payload: ChannelReservationActionPayload) {
     return {
       provider: payload.provider,
@@ -269,6 +280,12 @@ class ExternalChannelAdapter implements ChannelAdapter {
   async getReservation(): Promise<Prisma.InputJsonObject> {
     throw new NotImplementedException(
       `${this.provider} reservation detail lookup requires a real provider adapter before it can be enabled.`,
+    );
+  }
+
+  async getReservationCC(): Promise<Prisma.InputJsonObject> {
+    throw new NotImplementedException(
+      `${this.provider} reservation card lookup requires a real provider adapter before it can be enabled.`,
     );
   }
 
@@ -387,6 +404,14 @@ export class ChannelProviderService {
   async getReservation(payload: ChannelReservationActionPayload) {
     try {
       return await this.adapterFor(payload.provider).getReservation(payload);
+    } catch (error) {
+      throw this.mapProviderError(error);
+    }
+  }
+
+  async getReservationCC(payload: ChannelReservationActionPayload) {
+    try {
+      return await this.adapterFor(payload.provider).getReservationCC(payload);
     } catch (error) {
       throw this.mapProviderError(error);
     }

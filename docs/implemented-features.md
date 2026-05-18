@@ -185,6 +185,13 @@ This document lists the features currently implemented in the Hotel Management S
   - `POST /zodomus/sync/rates`
 - Zodomus sync currently covers availability and rates only.
 - Zodomus rate sync now expands mapped rates into daily room/rate/date rows and pushes the actual HMS nightly price for each date.
+- Zodomus rate sync is price-model aware:
+  - `1` Maximum / Single uses `POST /rates` with `prices.price` and, for non-single rooms, `prices.priceSingle`.
+  - `2` Derived pricing uses the required two-step Booking flow: `POST /rates` for the default price, then `POST /rates-derived` for base occupancy and offsets.
+  - `3` Occupancy uses `POST /rates` with `prices[]` by guest count.
+  - `4` Per Day uses `POST /rates` with `baseOccupancy` and default `prices.price`.
+  - `5` Length of Stay uses `POST /rates` with `baseOccupancy` and `prices[]` by stay length.
+- Channel rate mappings now store optional `pricing_config` JSON for model-specific values such as single-occupancy price, derived offsets, occupancy prices, per-day base occupancy, and length-of-stay prices.
 - Active HMS pricing rules can now change the outbound Zodomus rate for specific dates on mapped rate plans.
 - Stop-sell, minimum stay, and maximum stay are not pushed to Zodomus yet.
 - Create room-category mappings to external room IDs.

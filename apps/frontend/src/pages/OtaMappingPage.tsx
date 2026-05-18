@@ -214,8 +214,24 @@ export function OtaMappingPage({ workspace }: { workspace: ChannelWorkspace }) {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            <MappingTable emptyText="No room mappings yet." rows={workspace.selectedConnection.room_mappings.map((mapping) => ({ id: mapping.id, internal: `${mapping.room_category.name} (${mapping.room_category.code})`, external: mapping.external_room_id }))} title="Mapped rooms" />
-            <MappingTable emptyText="No rate mappings yet." rows={workspace.selectedConnection.rate_mappings.map((mapping) => ({ id: mapping.id, internal: `${mapping.rate_plan.name} (${mapping.rate_plan.code})`, external: mapping.external_room_id ? `${mapping.external_room_id} / ${mapping.external_rate_id}` : mapping.external_rate_id }))} title="Mapped rates" />
+            <MappingTable
+              emptyText="No room mappings yet."
+              rows={workspace.selectedConnection.room_mappings.map((mapping) => ({
+                id: mapping.id,
+                internal: `${mapping.room_category.name} (${mapping.room_category.code})`,
+                external: mapping.external_room_id,
+              }))}
+              title="Mapped rooms"
+            />
+            <MappingTable
+              emptyText="No rate mappings yet."
+              rows={workspace.selectedConnection.rate_mappings.map((mapping) => ({
+                id: mapping.id,
+                internal: `${mapping.rate_plan.name} (${mapping.rate_plan.code})`,
+                external: mapping.external_room_id ? `${mapping.external_room_id} / ${mapping.external_rate_id}` : mapping.external_rate_id,
+              }))}
+              title="Mapped rates"
+            />
           </div>
         </div>
       )}

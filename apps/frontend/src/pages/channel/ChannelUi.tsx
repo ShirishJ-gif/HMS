@@ -85,9 +85,10 @@ export function CatalogList<T extends {
   );
 }
 
-export function MappingTable({ emptyText, rows, title }: {
+export function MappingTable({ emptyText, onToggleActivation, rows, title }: {
   emptyText: string;
-  rows: Array<{ id: string; internal: string; external: string }>;
+  rows: Array<{ id: string; internal: string; external: string; isActive?: boolean; pending?: boolean }>;
+  onToggleActivation?: (id: string, nextActive: boolean) => void;
   title: string;
 }) {
   return (
@@ -104,6 +105,7 @@ export function MappingTable({ emptyText, rows, title }: {
             <tr className="bg-slate-50 border-b border-slate-100">
               <Th>HMS item</Th>
               <Th>Provider ID</Th>
+              {onToggleActivation && <Th>Activation</Th>}
             </tr>
           </thead>
           <tbody>
@@ -111,11 +113,25 @@ export function MappingTable({ emptyText, rows, title }: {
               <tr key={row.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
                 <Td className="font-medium text-slate-800">{row.internal}</Td>
                 <Td className="font-mono text-xs text-slate-500">{row.external}</Td>
+                {onToggleActivation && (
+                  <Td>
+                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600">
+                      <input
+                        checked={row.isActive ?? true}
+                        className="h-4 w-4 rounded accent-emerald-600"
+                        disabled={row.pending}
+                        onChange={(event) => onToggleActivation(row.id, event.target.checked)}
+                        type="checkbox"
+                      />
+                      <span>{row.isActive ?? true ? 'Enabled' : 'Disabled'}</span>
+                    </label>
+                  </Td>
+                )}
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={2} className="px-4 py-4 text-center text-xs text-slate-400">{emptyText}</td>
+                <td colSpan={onToggleActivation ? 3 : 2} className="px-4 py-4 text-center text-xs text-slate-400">{emptyText}</td>
               </tr>
             )}
           </tbody>

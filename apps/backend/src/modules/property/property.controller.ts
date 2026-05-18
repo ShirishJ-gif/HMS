@@ -22,6 +22,7 @@ import { CreatePricingRuleDto } from './dto/create-pricing-rule.dto';
 import { CreateRatePlanDto } from './dto/create-rate-plan.dto';
 import { CreateRoomCategoryDto } from './dto/create-room-category.dto';
 import { UpdatePricingRuleDto } from './dto/update-pricing-rule.dto';
+import { UpdatePropertyStatusDto } from './dto/update-property-status.dto';
 import { PropertyService } from './property.service';
 
 @Controller()
@@ -43,6 +44,12 @@ export class PropertyController {
   @Get('properties')
   findProperties(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationQueryDto) {
     return this.propertyService.findProperties(query, user);
+  }
+
+  @Put('properties/:id/status')
+  @Roles(UserRole.SUPER_ADMIN)
+  updatePropertyStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdatePropertyStatusDto) {
+    return this.propertyService.updatePropertyStatus(id, dto);
   }
 
   @Post('properties/:id/images')

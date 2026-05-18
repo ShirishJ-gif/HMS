@@ -201,6 +201,7 @@ describe('ZodomusChannelAdapter', () => {
           external_rate_id: '100991',
           currency: 'INR',
           base_rate: 5000,
+          room_category_max_occupancy: 2,
         },
         {
           date: '2026-06-02',
@@ -208,6 +209,7 @@ describe('ZodomusChannelAdapter', () => {
           external_rate_id: '100991',
           currency: 'INR',
           base_rate: 5000,
+          room_category_max_occupancy: 2,
         },
         {
           date: '2026-06-03',
@@ -215,6 +217,7 @@ describe('ZodomusChannelAdapter', () => {
           external_rate_id: '100991',
           currency: 'INR',
           base_rate: 6200,
+          room_category_max_occupancy: 2,
         },
       ],
     });
@@ -227,11 +230,16 @@ describe('ZodomusChannelAdapter', () => {
         dateTo: '2026-06-03',
         roomId: '10001',
         rateId: '100991',
-        prices: {
+        prices: expect.objectContaining({
           price: '5000.00',
-        },
+          priceSingle: '5000.00',
+        }),
+        closed: '0',
+        minimumStay: '1',
+        maximumStay: '31',
       }),
     );
+    expect(pushRates.mock.calls[0][0]).not.toHaveProperty('weekDays');
     expect(pushRates).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
@@ -239,11 +247,412 @@ describe('ZodomusChannelAdapter', () => {
         dateTo: '2026-06-04',
         roomId: '10001',
         rateId: '100991',
-        prices: {
+        prices: expect.objectContaining({
           price: '6200.00',
+          priceSingle: '6200.00',
+        }),
+      }),
+    );
+  });
+
+  it('passes inventory restrictions through availability and rate pushes', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const pushAvailability = jest
+      .spyOn(ZodomusClient.prototype, 'pushAvailability')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+    const pushRates = jest
+      .spyOn(ZodomusClient.prototype, 'pushRates')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+
+    await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.INVENTORY,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: { ota_key: 'BOOKING_COM' },
+      inventory: [
+        {
+          date: '2026-06-01',
+          external_room_id: '10001',
+          available: 0,
+          stop_sell: true,
+          closed_to_arrival: true,
+          closed_to_departure: false,
+        },
+      ],
+    });
+
+    await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.RATES,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: { ota_key: 'BOOKING_COM' },
+      price_model_id: 1,
+      rates: [
+        {
+          date: '2026-06-01',
+          external_room_id: '10001',
+          external_rate_id: '100991',
+          currency: 'INR',
+          base_rate: 5000,
+          room_category_max_occupancy: 2,
+          closed: true,
+          closed_to_arrival: true,
+          closed_to_departure: true,
+          min_stay: 2,
+          max_stay: 5,
+        },
+      ],
+    });
+
+    expect(pushAvailability).toHaveBeenCalledWith(
+      expect.objectContaining({
+        availability: 0,
+        stopSell: 1,
+        closedToArrival: 1,
+        closedToDeparture: 0,
+      }),
+    );
+    expect(pushRates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        closed: '1',
+        closedToArrival: '1',
+        closedToDeparture: '1',
+        minimumStay: '2',
+        maximumStay: '5',
+      }),
+    );
+  });
+
+  it('omits priceSingle for single-room rate rows', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const pushRates = jest
+      .spyOn(ZodomusClient.prototype, 'pushRates')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+
+    await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.RATES,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: {
+        ota_key: 'BOOKING_COM',
+      },
+      from: '2026-06-01',
+      to: '2026-06-01',
+      rates: [
+        {
+          date: '2026-06-01',
+          external_room_id: '10001',
+          external_rate_id: '100991',
+          currency: 'INR',
+          base_rate: 5000,
+          room_category_max_occupancy: 1,
+        },
+      ],
+    });
+
+    expect(pushRates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prices: {
+          price: '5000.00',
         },
       }),
     );
+  });
+
+  it('uses configured single occupancy price for maximum/single pricing model', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const pushRates = jest
+      .spyOn(ZodomusClient.prototype, 'pushRates')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+
+    await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.RATES,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: {
+        ota_key: 'BOOKING_COM',
+      },
+      price_model_id: 1,
+      from: '2026-06-01',
+      to: '2026-06-01',
+      rates: [
+        {
+          date: '2026-06-01',
+          external_room_id: '10001',
+          external_rate_id: '100991',
+          currency: 'INR',
+          base_rate: 5000,
+          room_category_max_occupancy: 2,
+          pricing_config: {
+            single_price: 4200,
+          },
+        },
+      ],
+    });
+
+    expect(pushRates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prices: {
+          price: '5000.00',
+          priceSingle: '4200.00',
+        },
+      }),
+    );
+  });
+
+  it('uses rates-derived for Booking.com derived pricing model', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const pushRates = jest
+      .spyOn(ZodomusClient.prototype, 'pushRates')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+    const pushDerivedRates = jest
+      .spyOn(ZodomusClient.prototype, 'pushDerivedRates')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+
+    const response = await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.RATES,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: {
+        ota_key: 'BOOKING_COM',
+      },
+      price_model_id: 2,
+      from: '2026-06-01',
+      to: '2026-06-01',
+      rates: [
+        {
+          date: '2026-06-01',
+          external_room_id: '10001',
+          external_rate_id: '100991',
+          currency: 'INR',
+          base_rate: 5000,
+          room_category_max_occupancy: 3,
+          pricing_config: {
+            baseOccupancy: 2,
+            offsets: [
+              { persons: 1, percentage: -25, round: 1 },
+              { persons: 3, additional: 10, round: 1 },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(pushRates).toHaveBeenCalledWith({
+      channelId: 1,
+      propertyId: '100',
+      roomId: '10001',
+      rateId: '100991',
+      dateFrom: '2026-06-01',
+      dateTo: '2026-06-02',
+      currencyCode: 'INR',
+      prices: {
+        price: '5000.00',
+      },
+      closed: '0',
+      closedToArrival: '0',
+      closedToDeparture: '0',
+      minimumStay: '1',
+      maximumStay: '31',
+    });
+    expect(pushDerivedRates).toHaveBeenCalledWith({
+      channelId: 1,
+      propertyId: '100',
+      roomId: '10001',
+      rateId: '100991',
+      baseOccupancy: '2',
+      occupancy: [
+        { persons: '1', percentage: '-25', round: '1' },
+        { persons: '3', additional: '10', round: '1' },
+      ],
+    });
+    expect(response.price_model_id).toBe(2);
+    expect(response.row_results).toEqual([
+      expect.objectContaining({
+        endpoint: 'rates-derived',
+        status: 'SUCCEEDED',
+      }),
+    ]);
+  });
+
+  it('uses guest-count prices for occupancy pricing model', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const pushRates = jest
+      .spyOn(ZodomusClient.prototype, 'pushRates')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+
+    const response = await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.RATES,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: {
+        ota_key: 'EXPEDIA',
+      },
+      price_model_id: 3,
+      from: '2026-06-01',
+      to: '2026-06-01',
+      rates: [
+        {
+          date: '2026-06-01',
+          external_room_id: '10001',
+          external_rate_id: '100991',
+          currency: 'INR',
+          base_rate: 5000,
+          room_category_max_occupancy: 3,
+          pricing_config: {
+            occupancy_prices: [
+              { guests: 1, price: 4500 },
+              { guests: 2, price: 5000 },
+              { guests: 3, price: 5600 },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(pushRates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: 2,
+        propertyId: '100',
+        roomId: '10001',
+        rateId: '100991',
+        prices: [
+          { guests: '1', price: '4500.00' },
+          { guests: '2', price: '5000.00' },
+          { guests: '3', price: '5600.00' },
+        ],
+        closed: '0',
+        minimumStay: '1',
+        maximumStay: '31',
+      }),
+    );
+    expect(response.row_results).toEqual([
+      expect.objectContaining({
+        endpoint: 'rates-occupancy',
+        status: 'SUCCEEDED',
+      }),
+    ]);
+  });
+
+  it('uses base occupancy default price for per-day pricing model', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const pushRates = jest
+      .spyOn(ZodomusClient.prototype, 'pushRates')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+
+    const response = await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.RATES,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: {
+        ota_key: 'EXPEDIA',
+      },
+      price_model_id: 4,
+      from: '2026-06-01',
+      to: '2026-06-01',
+      rates: [
+        {
+          date: '2026-06-01',
+          external_room_id: '10001',
+          external_rate_id: '100991',
+          currency: 'INR',
+          base_rate: 5000,
+          room_category_max_occupancy: 4,
+          pricing_config: {
+            base_occupancy: 3,
+          },
+        },
+      ],
+    });
+
+    expect(pushRates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: 2,
+        propertyId: '100',
+        roomId: '10001',
+        rateId: '100991',
+        baseOccupancy: '3',
+        prices: {
+          price: '5000.00',
+        },
+        closed: '0',
+        minimumStay: '1',
+        maximumStay: '31',
+      }),
+    );
+    expect(pushRates.mock.calls[0][0]).not.toHaveProperty('priceSingle');
+    expect(response.row_results).toEqual([
+      expect.objectContaining({
+        endpoint: 'rates-per-day',
+        status: 'SUCCEEDED',
+      }),
+    ]);
+  });
+
+  it('uses day-count prices for length-of-stay pricing model', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const pushRates = jest
+      .spyOn(ZodomusClient.prototype, 'pushRates')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+
+    const response = await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.RATES,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: {
+        ota_key: 'EXPEDIA',
+      },
+      price_model_id: 5,
+      from: '2026-06-01',
+      to: '2026-06-01',
+      rates: [
+        {
+          date: '2026-06-01',
+          external_room_id: '10001',
+          external_rate_id: '100991',
+          currency: 'INR',
+          base_rate: 5000,
+          room_category_max_occupancy: 4,
+          pricing_config: {
+            length_of_stay_prices: [
+              { days: 1, price: 5000 },
+              { days: 2, price: 4800 },
+              { days: 3, price: 4500 },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(pushRates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: 2,
+        propertyId: '100',
+        roomId: '10001',
+        rateId: '100991',
+        baseOccupancy: '2',
+        prices: expect.arrayContaining([
+          { days: '1', price: '5000.00' },
+          { days: '2', price: '4800.00' },
+          { days: '3', price: '4500.00' },
+        ]),
+      }),
+    );
+    expect((pushRates.mock.calls[0][0] as { prices: unknown[] }).prices).toHaveLength(3);
+    expect(response.row_results).toEqual([
+      expect.objectContaining({
+        endpoint: 'rates-length-of-stay',
+        status: 'SUCCEEDED',
+      }),
+    ]);
   });
 
   it('defaults Zodomus sync concurrency to 1 in sandbox', () => {
@@ -468,6 +877,7 @@ describe('ZodomusChannelAdapter', () => {
       mode: 'webhook_trigger',
       strategy: 'targeted_reservation_fetch',
       reservation_id: 'res-101',
+      reservation_ids: ['res-101'],
     });
     expect(response.reservations).toEqual([
       {
@@ -519,11 +929,66 @@ describe('ZodomusChannelAdapter', () => {
       mode: 'webhook_trigger',
       strategy: 'reservation_queue_reconciliation',
       reservation_id: 'res-101',
+      reservation_ids: ['res-101'],
     });
     expect(response.reservations).toEqual([
       {
         status: { returnCode: 200, returnMessage: 'OK' },
         reservation: { reservation_id: 'res-101' },
+      },
+    ]);
+  });
+
+  it('uses targeted reservation fetches for plural webhook reservation IDs', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const getReservation = jest
+      .spyOn(ZodomusClient.prototype, 'getReservation')
+      .mockImplementation(async (query?: Record<string, string>) => ({
+        status: { returnCode: 200, returnMessage: 'OK' },
+        reservation: { reservation_id: query?.reservationId },
+      }) as never);
+    const pullReservationQueue = jest.spyOn(ZodomusClient.prototype, 'pullReservationQueue');
+
+    const response = await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.BOOKINGS,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: {
+        ota_key: 'BOOKING_COM',
+      },
+      reservation_import: {
+        mode: 'webhook_trigger',
+        reservation_ids: ['res-101', 'res-102', 'res-101'],
+      },
+    });
+
+    expect(getReservation).toHaveBeenCalledTimes(2);
+    expect(getReservation).toHaveBeenNthCalledWith(1, {
+      channelId: '1',
+      propertyId: '100',
+      reservationId: 'res-101',
+    });
+    expect(getReservation).toHaveBeenNthCalledWith(2, {
+      channelId: '1',
+      propertyId: '100',
+      reservationId: 'res-102',
+    });
+    expect(pullReservationQueue).not.toHaveBeenCalled();
+    expect(response.reservation_import).toEqual({
+      mode: 'webhook_trigger',
+      strategy: 'targeted_reservation_fetch',
+      reservation_id: 'res-101',
+      reservation_ids: ['res-101', 'res-102'],
+    });
+    expect(response.reservations).toEqual([
+      {
+        status: { returnCode: 200, returnMessage: 'OK' },
+        reservation: { reservation_id: 'res-101' },
+      },
+      {
+        status: { returnCode: 200, returnMessage: 'OK' },
+        reservation: { reservation_id: 'res-102' },
       },
     ]);
   });
@@ -567,5 +1032,38 @@ describe('ZodomusChannelAdapter', () => {
       reservations: [{ reservation: { id: 'future-101' } }],
     });
     expect(response.reservation_queue).toBeNull();
+  });
+
+  it('fetches reservation card details explicitly', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const getReservationCC = jest
+      .spyOn(ZodomusClient.prototype, 'getReservationCC')
+      .mockResolvedValue({ status: { returnCode: 200 }, card: { masked: '411111******1111' } } as never);
+
+    const response = await adapter.getReservationCC({
+      provider: ChannelProvider.ZODOMUS,
+      external_hotel_id: '100',
+      credentials: {
+        ota_key: 'BOOKING_COM',
+      },
+      reservation_id: 'res-101',
+    });
+
+    expect(getReservationCC).toHaveBeenCalledWith({
+      channelId: '1',
+      propertyId: '100',
+      reservationId: 'res-101',
+    });
+    expect(response).toEqual({
+      provider: ChannelProvider.ZODOMUS,
+      channel_id: 1,
+      ota_name: 'Booking.com',
+      external_hotel_id: '100',
+      reservation_id: 'res-101',
+      response: {
+        status: { returnCode: 200 },
+        card: { masked: '411111******1111' },
+      },
+    });
   });
 });

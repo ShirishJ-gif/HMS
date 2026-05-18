@@ -318,7 +318,8 @@ export class BookingService {
     const effectivePropertyId = scopedPropertyId ?? query.property_id ?? null;
     const statusFilter = query.status;
     const includeCancelled = query.include_cancelled ?? false;
-    const importedWhere = this.reservationFeedImportedWhere(effectivePropertyId, search, statusFilter, includeCancelled);
+    const dateWindow = this.reservationFeedDateWindow(query.date_from, query.date_to);
+    const importedWhere = this.reservationFeedImportedWhere(effectivePropertyId, search, statusFilter, includeCancelled, dateWindow);
     const importedTake = page * limit;
 
     const [groups, importedTotal] = await this.prisma.$transaction([
@@ -352,6 +353,7 @@ export class BookingService {
       search,
       statusFilter,
       includeCancelled,
+      dateWindow,
     );
 
     const merged = [...importedResponses, ...providerOnlyResponses]
@@ -781,6 +783,7 @@ export class BookingService {
     search: string,
     statusFilter?: BookingStatus,
     includeCancelled = false,
+    dateWindow?: { from?: Date; toExclusive?: Date },
   ) {
     const syncLogs = await this.prisma.channelSyncLog.findMany({
       where: {
@@ -861,6 +864,10 @@ export class BookingService {
           continue;
         }
 
+        if (dateWindow && !this.reservationGroupOverlapsDateWindow(response, dateWindow)) {
+          continue;
+        }
+
         providerOnlyReservations.push(response);
       }
     }
@@ -868,15 +875,37 @@ export class BookingService {
     return providerOnlyReservations;
   }
 
+  private reservationGroupOverlapsDateWindow(
+    group: ReservationGroupResponse,
+    dateWindow: { from?: Date; toExclusive?: Date },
+  ) {
+    return group.rooms.some((room) => {
+      const arrival = this.parseFeedDateOnly(room.arrival_date);
+      const departure = this.parseFeedDateOnly(room.departure_date);
+      return (!dateWindow.toExclusive || arrival < dateWindow.toExclusive) && (!dateWindow.from || departure > dateWindow.from);
+    });
+  }
+
   private reservationFeedImportedWhere(
     propertyId: string | null,
     search: string,
     status?: BookingStatus,
     includeCancelled = false,
+    dateWindow?: { from?: Date; toExclusive?: Date },
   ): Prisma.ReservationGroupWhereInput {
     return {
       ...(propertyId ? { propertyId } : {}),
       ...(status ? { status } : includeCancelled ? {} : { status: { not: BookingStatus.CANCELLED } }),
+      ...(dateWindow?.from || dateWindow?.toExclusive
+        ? {
+            rooms: {
+              some: {
+                ...(dateWindow.toExclusive ? { arrivalDate: { lt: dateWindow.toExclusive } } : {}),
+                ...(dateWindow.from ? { departureDate: { gt: dateWindow.from } } : {}),
+              },
+            },
+          }
+        : {}),
       ...(search
         ? {
             OR: [
@@ -890,6 +919,26 @@ export class BookingService {
           }
         : {}),
     };
+  }
+
+  private reservationFeedDateWindow(dateFrom?: string, dateTo?: string) {
+    const from = dateFrom ? this.parseFeedDateOnly(dateFrom) : undefined;
+    const toExclusive = dateTo ? this.addUtcDays(this.parseFeedDateOnly(dateTo), 1) : undefined;
+    if (!from && !toExclusive) {
+      return undefined;
+    }
+
+    return { from, toExclusive };
+  }
+
+  private parseFeedDateOnly(value: string) {
+    return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
+  }
+
+  private addUtcDays(date: Date, days: number) {
+    const next = new Date(date);
+    next.setUTCDate(next.getUTCDate() + days);
+    return next;
   }
 
   private toProviderOnlyReservationGroupResponse(input: {

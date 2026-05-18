@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { InventoryService } from '../inventory/inventory.service';
 import { PricingService } from '../pricing/pricing.service';
 
 type RateSyncMapping = {
@@ -9,6 +10,8 @@ type RateSyncMapping = {
   ratePlanCode: string;
   roomCategoryId: string;
   roomCategoryCode: string;
+  roomCategoryMaxOccupancy: number;
+  pricingConfig?: Prisma.JsonValue | null;
   ratePlan: {
     id: string;
     baseRate: Prisma.Decimal;
@@ -23,7 +26,10 @@ type RateWindow = {
 
 @Injectable()
 export class RateSyncPayloadService {
-  constructor(private readonly pricingService: PricingService) {}
+  constructor(
+    private readonly pricingService: PricingService,
+    private readonly inventoryService: InventoryService,
+  ) {}
 
   async buildDailyRateRows(
     propertyId: string,
@@ -35,6 +41,13 @@ export class RateSyncPayloadService {
     }
 
     const dates = this.expandWindow(window);
+    const roomCategoryIds = [...new Set(rateMappings.map((mapping) => mapping.roomCategoryId))];
+    const inventoryRows = await this.inventoryService.rebuildCalendarRange({
+      propertyId,
+      roomCategoryIds,
+      from: this.parseDateOnly(window.from),
+      to: this.parseDateOnly(window.to),
+    });
     const rows: Array<{
       date: string;
       external_room_id: string;
@@ -43,6 +56,13 @@ export class RateSyncPayloadService {
       rate_plan_code: string;
       room_category_id: string;
       room_category_code: string;
+      room_category_max_occupancy: number;
+      pricing_config: Prisma.JsonValue | null;
+      closed: boolean;
+      closed_to_arrival: boolean;
+      closed_to_departure: boolean;
+      min_stay: number | null;
+      max_stay: number | null;
       base_rate: number;
       currency: string;
     }> = [];
@@ -59,6 +79,11 @@ export class RateSyncPayloadService {
           },
           date,
         });
+        const inventoryRow = inventoryRows.find(
+          (row: any) =>
+            row.roomCategoryId === mapping.roomCategoryId &&
+            row.stayDate.toISOString().slice(0, 10) === this.formatDateOnly(date),
+        );
 
         rows.push({
           date: this.formatDateOnly(date),
@@ -68,6 +93,13 @@ export class RateSyncPayloadService {
           rate_plan_code: mapping.ratePlanCode,
           room_category_id: mapping.roomCategoryId,
           room_category_code: mapping.roomCategoryCode,
+          room_category_max_occupancy: mapping.roomCategoryMaxOccupancy,
+          pricing_config: mapping.pricingConfig ?? null,
+          closed: inventoryRow?.stopSell ?? false,
+          closed_to_arrival: this.readBoolean(inventoryRow, 'closedToArrival'),
+          closed_to_departure: this.readBoolean(inventoryRow, 'closedToDeparture'),
+          min_stay: inventoryRow?.minStay ?? null,
+          max_stay: inventoryRow?.maxStay ?? null,
           base_rate: nightlyRate.toNumber(),
           currency: mapping.ratePlan.currency,
         });
@@ -105,5 +137,9 @@ export class RateSyncPayloadService {
 
   private formatDateOnly(value: Date) {
     return value.toISOString().slice(0, 10);
+  }
+
+  private readBoolean(row: unknown, key: string) {
+    return Boolean(row && typeof row === 'object' && key in row ? (row as Record<string, unknown>)[key] : false);
   }
 }

@@ -120,7 +120,7 @@ export function SupportConsolePage({
       </div>
 
       <FilterBar title="Support scope">
-        <label className={`${labelCls} min-w-[15rem] flex-1 lg:flex-none lg:w-[16rem]`}>
+        <label className={`${labelCls} min-w-[16rem] flex-1 lg:flex-none lg:w-[17rem]`}>
           <span>Channel connection</span>
           <CustomSelect
             disabled={supportState.loading && allChannels.length === 0}
@@ -135,11 +135,11 @@ export function SupportConsolePage({
             value={channelFilter}
           />
         </label>
-        <label className={labelCls}>
+        <label className={`${labelCls} min-w-[17rem]`}>
           <span>Console focus</span>
           <input className={inputCls} disabled value={focusLabel} />
         </label>
-        <label className={labelCls}>
+        <label className={`${labelCls} min-w-[17rem]`}>
           <span>Retry policy</span>
           <input className={inputCls} disabled value="Manual retry for dead-letter jobs" />
         </label>

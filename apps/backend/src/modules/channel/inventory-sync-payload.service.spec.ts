@@ -21,6 +21,11 @@ describe('InventorySyncPayloadService', () => {
         blockedRooms: 1,
         reservedRooms: 1,
         availableRooms: 1,
+        stopSell: false,
+        closedToArrival: false,
+        closedToDeparture: false,
+        minStay: null,
+        maxStay: null,
       },
       {
         roomCategoryId: 'cat-1',
@@ -29,6 +34,11 @@ describe('InventorySyncPayloadService', () => {
         blockedRooms: 1,
         reservedRooms: 1,
         availableRooms: 1,
+        stopSell: true,
+        closedToArrival: true,
+        closedToDeparture: false,
+        minStay: 2,
+        maxStay: 5,
       },
       {
         roomCategoryId: 'cat-1',
@@ -37,6 +47,11 @@ describe('InventorySyncPayloadService', () => {
         blockedRooms: 1,
         reservedRooms: 0,
         availableRooms: 2,
+        stopSell: false,
+        closedToArrival: false,
+        closedToDeparture: true,
+        minStay: null,
+        maxStay: null,
       },
     ]);
 
@@ -71,6 +86,11 @@ describe('InventorySyncPayloadService', () => {
         out_of_service: 1,
         booked: 1,
         available: 1,
+        stop_sell: false,
+        closed_to_arrival: false,
+        closed_to_departure: false,
+        min_stay: null,
+        max_stay: null,
       },
       {
         date: '2026-06-02',
@@ -80,7 +100,12 @@ describe('InventorySyncPayloadService', () => {
         total_inventory: 3,
         out_of_service: 1,
         booked: 1,
-        available: 1,
+        available: 0,
+        stop_sell: true,
+        closed_to_arrival: true,
+        closed_to_departure: false,
+        min_stay: 2,
+        max_stay: 5,
       },
       {
         date: '2026-06-03',
@@ -91,6 +116,11 @@ describe('InventorySyncPayloadService', () => {
         out_of_service: 1,
         booked: 0,
         available: 2,
+        stop_sell: false,
+        closed_to_arrival: false,
+        closed_to_departure: true,
+        min_stay: null,
+        max_stay: null,
       },
     ]);
   });

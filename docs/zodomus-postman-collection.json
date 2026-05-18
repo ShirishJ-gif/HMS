@@ -549,7 +549,7 @@
             "value": "application/json"
           }
         ],
-        "url": {
+       "url": {
           "raw": "{{base_url}}/reservations-cc?channelId={{channel_id}}&propertyId={{property_id}}&reservationId={{reservation_id}}",
           "host": [
             "{{base_url}}"

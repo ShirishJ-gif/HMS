@@ -67,7 +67,7 @@ Use this as your validation sheet.
   - Expected HMS result:
     sync log shows success and stores daily row results with date-specific base rates
   - Expected Zodomus result:
-    POST /rates accepted for each room/rate/date row
+    POST /rates accepted for each room/rate/date row, or for price model `2`, POST /rates plus POST /rates-derived accepted
   - Pass if:
     correct roomId, rateId, dates, and price are accepted by Zodomus
   - Live proof:

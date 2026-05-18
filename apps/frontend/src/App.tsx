@@ -82,6 +82,7 @@ const navGroups = [
 
 export function App() {
   const [activePage, setActivePage] = useState<Page>(() => {
+    if (isReservationsFullRoute()) return 'bookings';
     const stored = getStoredActivePage();
     return isPage(stored) ? stored : 'dashboard';
   });
@@ -152,6 +153,9 @@ export function App() {
   if (!user) return <LoginPage onLogin={setUser} />;
 
   function handlePageSelect(pageId: Page) {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete('reservations');
+    window.history.pushState({}, '', nextUrl);
     setActivePage(pageId);
     setStoredActivePage(pageId);
     setMobileNavOpen(false);
@@ -300,6 +304,10 @@ function isPage(value: string | null): value is Page {
 
 function isChannelWorkspacePage(page: Page) {
   return page === 'mapping' || page === 'channels' || page === 'webhooks';
+}
+
+function isReservationsFullRoute() {
+  return new URLSearchParams(window.location.search).get('reservations') === 'all';
 }
 
 function NavIcon({ name }: { name: string }) {

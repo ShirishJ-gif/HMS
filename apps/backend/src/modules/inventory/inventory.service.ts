@@ -148,6 +148,8 @@ export class InventoryService {
 
     if (
       dto.stop_sell === undefined &&
+      dto.closed_to_arrival === undefined &&
+      dto.closed_to_departure === undefined &&
       dto.min_stay === undefined &&
       dto.max_stay === undefined
     ) {
@@ -188,9 +190,11 @@ export class InventoryService {
       },
       data: {
         ...(dto.stop_sell !== undefined ? { stopSell: dto.stop_sell } : {}),
+        ...(dto.closed_to_arrival !== undefined ? { closedToArrival: dto.closed_to_arrival } : {}),
+        ...(dto.closed_to_departure !== undefined ? { closedToDeparture: dto.closed_to_departure } : {}),
         ...(dto.min_stay !== undefined ? { minStay: dto.min_stay } : {}),
         ...(dto.max_stay !== undefined ? { maxStay: dto.max_stay } : {}),
-      },
+      } as any,
     });
 
     await this.auditLogService.record({
@@ -204,6 +208,8 @@ export class InventoryService {
         from_date: dto.from_date,
         to_date: dto.to_date,
         stop_sell: dto.stop_sell,
+        closed_to_arrival: dto.closed_to_arrival,
+        closed_to_departure: dto.closed_to_departure,
         min_stay: dto.min_stay,
         max_stay: dto.max_stay,
       },
@@ -216,6 +222,8 @@ export class InventoryService {
       from_date: dto.from_date,
       to_date: dto.to_date,
       stop_sell: dto.stop_sell,
+      closed_to_arrival: dto.closed_to_arrival,
+      closed_to_departure: dto.closed_to_departure,
       min_stay: dto.min_stay,
       max_stay: dto.max_stay,
       updated: true,
@@ -449,10 +457,20 @@ export class InventoryService {
     }
 
     const stayLength = stayDates.length;
-    for (const row of rows) {
+    for (const [index, row] of rows.entries()) {
       if (row.stopSell) {
         throw new ConflictException(
           `Stop-sell is active for ${row.stayDate.toISOString().slice(0, 10)}`,
+        );
+      }
+      if (index === 0 && this.readBoolean(row, 'closedToArrival')) {
+        throw new ConflictException(
+          `Closed to arrival is active for ${row.stayDate.toISOString().slice(0, 10)}`,
+        );
+      }
+      if (index === rows.length - 1 && this.readBoolean(row, 'closedToDeparture')) {
+        throw new ConflictException(
+          `Closed to departure is active for ${row.stayDate.toISOString().slice(0, 10)}`,
         );
       }
       if (row.minStay && stayLength < row.minStay) {
@@ -560,6 +578,8 @@ export class InventoryService {
     reservedRooms: number;
     availableRooms: number;
     stopSell: boolean;
+    closedToArrival?: boolean;
+    closedToDeparture?: boolean;
     minStay: number | null;
     maxStay: number | null;
   }) {
@@ -570,9 +590,15 @@ export class InventoryService {
       reserved_rooms: row.reservedRooms,
       available_rooms: row.availableRooms,
       stop_sell: row.stopSell,
+      closed_to_arrival: this.readBoolean(row, 'closedToArrival'),
+      closed_to_departure: this.readBoolean(row, 'closedToDeparture'),
       min_stay: row.minStay,
       max_stay: row.maxStay,
     };
+  }
+
+  private readBoolean(row: unknown, key: string) {
+    return Boolean(row && typeof row === 'object' && key in row ? (row as Record<string, unknown>)[key] : false);
   }
 
   private toInventoryBlockResponse(block: {

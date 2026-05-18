@@ -36,6 +36,7 @@ export function PropertySetupPage() {
   const ratePlansState = useAsync(async () => fetchAllPages<RatePlan>('/rate-plans'), [reloadKey]);
   const pricingRulesState = useAsync(async () => fetchAllPages<PricingRule>('/pricing-rules'), [reloadKey]);
   const properties = propertiesState.data ?? [];
+  const activeProperties = properties.filter((property) => property.is_active);
   const categories = categoriesState.data ?? [];
   const ratePlans = ratePlansState.data ?? [];
   const pricingRules = pricingRulesState.data ?? [];
@@ -50,6 +51,14 @@ export function PropertySetupPage() {
   async function submitProperty(event: FormEvent) {
     event.preventDefault();
     await runAction('create-property', async () => { await api.post('/properties', { ...propertyForm, phone: propertyForm.phone || undefined, email: propertyForm.email || undefined }); setPropertyForm(defaultPropertyForm); setActionStatus('Property created.'); setReloadKey((v) => v + 1); });
+  }
+  async function togglePropertyArchive(property: Property) {
+    const nextActive = !property.is_active;
+    await runAction(`toggle-property:${property.id}`, async () => {
+      await api.put(`/properties/${property.id}/status`, { is_active: nextActive });
+      setActionStatus(nextActive ? 'Property restored.' : 'Property archived.');
+      setReloadKey((v) => v + 1);
+    });
   }
   async function submitCategory(event: FormEvent) {
     event.preventDefault();
@@ -116,7 +125,7 @@ export function PropertySetupPage() {
       {actionError && <ErrorMsg>{actionError}</ErrorMsg>}
 
       <div className="grid grid-cols-3 gap-4">
-        {[{ label: 'Properties', value: properties.length.toString(), sub: 'Operating entities' }, { label: 'Categories', value: categories.length.toString(), sub: 'Sellable room groups' }, { label: 'Rate plans', value: ratePlans.length.toString(), sub: 'Commercial plans' }].map((s) => (
+        {[{ label: 'Active properties', value: activeProperties.length.toString(), sub: `${properties.length - activeProperties.length} archived` }, { label: 'Categories', value: categories.length.toString(), sub: 'Sellable room groups' }, { label: 'Rate plans', value: ratePlans.length.toString(), sub: 'Commercial plans' }].map((s) => (
           <div key={s.label} className="bg-white border border-slate-200 rounded-xl shadow-sm p-4">
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">{s.label}</p>
             <strong className="text-2xl font-extrabold text-slate-900 block">{s.value}</strong>
@@ -129,6 +138,27 @@ export function PropertySetupPage() {
         <strong className="text-slate-800 flex-shrink-0">Commercial setup</strong>
         <span className="text-slate-500 leading-relaxed">Build the property, category, rate, media, and pricing layers in that order. This workspace defines the commercial structure that later feeds OTA mapping and sellable inventory.</span>
       </div>
+
+      <TableCard title={`${properties.length} properties configured`} eyebrow="Property register">
+        <table className="w-full min-w-[650px]">
+          <thead><tr className="bg-slate-50 border-b border-slate-100"><Th>Property</Th><Th>Contact</Th><Th>Timezone</Th><Th>Status</Th><Th>Actions</Th></tr></thead>
+          <tbody>
+            {properties.map((property) => (
+              <tr key={property.id} className="hover:bg-slate-50/60 border-b border-slate-50 last:border-0">
+                <Td><span className="font-medium text-slate-900 block">{property.name}</span><span className="text-xs text-slate-400 font-mono">{property.code}</span></Td>
+                <Td><span className="block">{property.email ?? '—'}</span><span className="text-xs text-slate-400">{property.phone ?? 'No phone'}</span></Td>
+                <Td>{property.timezone}</Td>
+                <Td><StatusBadge label={property.is_active ? 'ACTIVE' : 'ARCHIVED'} tone={property.is_active ? 'green' : 'default'} /></Td>
+                <Td>
+                  <button className={`${secondaryBtn} !text-xs !px-2.5 !py-1.5 ${property.is_active ? '!text-amber-700 hover:!bg-amber-50 hover:!border-amber-200' : ''}`} disabled={pendingAction === `toggle-property:${property.id}`} onClick={() => void togglePropertyArchive(property)} type="button">
+                    {pendingAction === `toggle-property:${property.id}` ? 'Saving…' : property.is_active ? 'Archive' : 'Restore'}
+                  </button>
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableCard>
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.05fr)_minmax(20rem,1.1fr)] xl:grid-cols-[minmax(0,0.95fr)_minmax(22rem,1.05fr)] gap-5 items-stretch">
         <form className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full" onSubmit={submitProperty}>
@@ -148,7 +178,7 @@ export function PropertySetupPage() {
           <SectionHeading eyebrow="Setup posture" title="Commercial inventory" />
           <div className="grid grid-cols-3 gap-3">
             {[
-              { label: 'Properties', value: properties.length, tone: 'bg-slate-100 border-slate-200 text-slate-700' },
+              { label: 'Active properties', value: activeProperties.length, tone: 'bg-slate-100 border-slate-200 text-slate-700' },
               { label: 'Rate plans', value: ratePlans.length, tone: 'bg-emerald-50 border-emerald-100 text-emerald-700' },
               { label: 'Active rules', value: activePricingRules, tone: 'bg-amber-50 border-amber-100 text-amber-700' },
             ].map((s) => (
@@ -188,7 +218,7 @@ export function PropertySetupPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.05fr)_minmax(20rem,1.1fr)] xl:grid-cols-[minmax(0,0.95fr)_minmax(22rem,1.05fr)] gap-5 items-stretch">
         <form className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full" onSubmit={submitCategory}>
           <SectionHeading eyebrow="Inventory" title="Create room category" />
-          <label className={labelCls}><span>Property</span><CustomSelect onChange={(v) => setCategoryForm({ ...categoryForm, property_id: v })} options={properties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={categoryForm.property_id} /></label>
+          <label className={labelCls}><span>Property</span><CustomSelect onChange={(v) => setCategoryForm({ ...categoryForm, property_id: v })} options={activeProperties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={categoryForm.property_id} /></label>
           <div className="grid grid-cols-2 gap-4">
             <label className={labelCls}><span>Category name</span><input className={inputCls} onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })} placeholder="Deluxe" required value={categoryForm.name} /></label>
             <label className={labelCls}><span>Code</span><input className={inputCls} onChange={(e) => setCategoryForm({ ...categoryForm, code: e.target.value })} placeholder="DELUXE" required value={categoryForm.code} /></label>
@@ -200,7 +230,7 @@ export function PropertySetupPage() {
 
         <form className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full" onSubmit={submitRatePlan}>
           <SectionHeading eyebrow="Rates" title="Create rate plan" />
-          <label className={labelCls}><span>Property</span><CustomSelect onChange={(v) => setRatePlanForm({ ...ratePlanForm, property_id: v })} options={properties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={ratePlanForm.property_id} /></label>
+          <label className={labelCls}><span>Property</span><CustomSelect onChange={(v) => setRatePlanForm({ ...ratePlanForm, property_id: v })} options={activeProperties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={ratePlanForm.property_id} /></label>
           <label className={labelCls}><span>Room category</span><CustomSelect onChange={(v) => setRatePlanForm({ ...ratePlanForm, room_category_id: v })} options={categories.filter((c) => !ratePlanForm.property_id || c.property_id === ratePlanForm.property_id).map((c) => ({ label: c.name, value: c.id }))} placeholder="Select category" value={ratePlanForm.room_category_id} /></label>
           <div className="grid grid-cols-2 gap-4">
             <label className={labelCls}><span>Plan name</span><input className={inputCls} onChange={(e) => setRatePlanForm({ ...ratePlanForm, name: e.target.value })} placeholder="Deluxe Flexible" required value={ratePlanForm.name} /></label>
@@ -219,7 +249,7 @@ export function PropertySetupPage() {
         </div>
         {editingPricingRuleId && <div className="flex gap-2 items-center bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-sm text-amber-700"><strong className="text-amber-800">Editing existing rule.</strong> Update the fields below and save.</div>}
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-          <label className={labelCls}><span>Property</span><CustomSelect disabled={!!editingPricingRuleId} onChange={(v) => setPricingRuleForm({ ...pricingRuleForm, property_id: v, rate_plan_id: '' })} options={properties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={pricingRuleForm.property_id} /></label>
+          <label className={labelCls}><span>Property</span><CustomSelect disabled={!!editingPricingRuleId} onChange={(v) => setPricingRuleForm({ ...pricingRuleForm, property_id: v, rate_plan_id: '' })} options={activeProperties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={pricingRuleForm.property_id} /></label>
           <label className={labelCls}><span>Rate plan</span><CustomSelect disabled={!!editingPricingRuleId} onChange={(v) => setPricingRuleForm({ ...pricingRuleForm, rate_plan_id: v })} options={ratePlans.filter((r) => !pricingRuleForm.property_id || r.property_id === pricingRuleForm.property_id).map((r) => ({ label: `${r.room_category.name} · ${r.name}`, value: r.id }))} placeholder="Select rate plan" value={pricingRuleForm.rate_plan_id} /></label>
           <label className={labelCls}><span>Rule name</span><input className={inputCls} onChange={(e) => setPricingRuleForm({ ...pricingRuleForm, name: e.target.value })} placeholder="Weekend surcharge" required value={pricingRuleForm.name} /></label>
           <label className={labelCls}><span>Rule type</span><CustomSelect onChange={(v) => setPricingRuleForm({ ...pricingRuleForm, type: v, start_date: '', end_date: '', occupancy_threshold: '' })} options={[{ label: 'Weekend', value: 'WEEKEND' }, { label: 'Festival / date range', value: 'DATE_RANGE' }, { label: 'Occupancy surge', value: 'OCCUPANCY' }]} value={pricingRuleForm.type} /></label>
@@ -243,7 +273,7 @@ export function PropertySetupPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.05fr)_minmax(20rem,1.1fr)] xl:grid-cols-[minmax(0,0.95fr)_minmax(22rem,1.05fr)] gap-5 items-stretch">
         <form className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full" onSubmit={submitPropertyImage}>
           <SectionHeading eyebrow="Media" title="Property photos" />
-          <label className={labelCls}><span>Property</span><CustomSelect onChange={(v) => setPropertyImageForm({ ...propertyImageForm, property_id: v })} options={properties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={propertyImageForm.property_id} /></label>
+          <label className={labelCls}><span>Property</span><CustomSelect onChange={(v) => setPropertyImageForm({ ...propertyImageForm, property_id: v })} options={activeProperties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={propertyImageForm.property_id} /></label>
           <label className={labelCls}><span>Caption</span><input className={inputCls} onChange={(e) => setPropertyImageForm({ ...propertyImageForm, caption: e.target.value })} placeholder="Front exterior" value={propertyImageForm.caption} /></label>
           <div className={labelCls}>
             <span>Image</span>
@@ -254,7 +284,7 @@ export function PropertySetupPage() {
 
         <form className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full" onSubmit={submitRoomImage}>
           <SectionHeading eyebrow="Media" title="Room category photos" />
-          <label className={labelCls}><span>Room category</span><CustomSelect onChange={(v) => setRoomImageForm({ ...roomImageForm, room_category_id: v })} options={categories.map((c) => ({ label: `${c.property.name} · ${c.name}`, value: c.id }))} placeholder="Select category" value={roomImageForm.room_category_id} /></label>
+          <label className={labelCls}><span>Room category</span><CustomSelect onChange={(v) => setRoomImageForm({ ...roomImageForm, room_category_id: v })} options={categories.filter((c) => activeProperties.some((property) => property.id === c.property_id)).map((c) => ({ label: `${c.property.name} · ${c.name}`, value: c.id }))} placeholder="Select category" value={roomImageForm.room_category_id} /></label>
           <label className={labelCls}><span>Caption</span><input className={inputCls} onChange={(e) => setRoomImageForm({ ...roomImageForm, caption: e.target.value })} placeholder="Deluxe king bed" value={roomImageForm.caption} /></label>
           <div className={labelCls}>
             <span>Image</span>

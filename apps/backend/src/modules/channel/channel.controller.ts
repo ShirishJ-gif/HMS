@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { UserRole } from '@prisma/client';
 import { AuthenticatedUser } from '../auth/auth.guard';
@@ -14,6 +14,8 @@ import { SaveChannelMappingsBatchDto } from './dto/save-channel-mappings-batch.d
 import { SetupZodomusChannelDto } from './dto/setup-zodomus-channel.dto';
 import { SyncChannelDto } from './dto/sync-channel.dto';
 import { UpdateChannelAutomationDto } from './dto/update-channel-automation.dto';
+import { UpdateChannelMappingActivationDto } from './dto/update-channel-mapping-activation.dto';
+import { UpdateChannelRatePricingConfigDto } from './dto/update-channel-rate-pricing-config.dto';
 
 @Controller('channels')
 export class ChannelController {
@@ -144,6 +146,16 @@ export class ChannelController {
     return this.channelService.getProviderReservation(id, reservationId, user);
   }
 
+  @Get(':id/provider-reservations/:reservationId/card')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  getProviderReservationCC(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('reservationId') reservationId: string,
+  ) {
+    return this.channelService.getProviderReservationCC(id, reservationId, user);
+  }
+
   @Post(':id/provider-reservations-create-test')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   createProviderTestReservation(
@@ -172,6 +184,39 @@ export class ChannelController {
     @Body() dto: CreateChannelRateMappingDto,
   ) {
     return this.channelService.createRateMapping(id, dto, user);
+  }
+
+  @Patch(':id/rate-mappings/:mappingId/pricing-config')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  updateRateMappingPricingConfig(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('mappingId', ParseUUIDPipe) mappingId: string,
+    @Body() dto: UpdateChannelRatePricingConfigDto,
+  ) {
+    return this.channelService.updateRateMappingPricingConfig(id, mappingId, dto.pricing_config, user);
+  }
+
+  @Patch(':id/room-mappings/:mappingId/activation')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  updateRoomMappingActivation(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('mappingId', ParseUUIDPipe) mappingId: string,
+    @Body() dto: UpdateChannelMappingActivationDto,
+  ) {
+    return this.channelService.updateRoomMappingActivation(id, mappingId, dto.is_activation_enabled, user);
+  }
+
+  @Patch(':id/rate-mappings/:mappingId/activation')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  updateRateMappingActivation(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('mappingId', ParseUUIDPipe) mappingId: string,
+    @Body() dto: UpdateChannelMappingActivationDto,
+  ) {
+    return this.channelService.updateRateMappingActivation(id, mappingId, dto.is_activation_enabled, user);
   }
 
   @Post(':id/mappings/batch')

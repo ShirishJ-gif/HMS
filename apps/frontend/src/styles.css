@@ -32,6 +32,24 @@
     font-size: 0.8125rem;
   }
 
+  .hms-day-picker-compact {
+    --rdp-day-height: 1.85rem;
+    --rdp-day-width: 1.85rem;
+    --rdp-day_button-height: 1.6rem;
+    --rdp-day_button-width: 1.6rem;
+    --rdp-day_button-border-radius: 0.5rem;
+    font-size: 0.75rem;
+  }
+
+  .hms-day-picker-compact .rdp-month_caption {
+    height: 1.85rem;
+    font-size: 0.8rem;
+  }
+
+  .hms-day-picker-compact .rdp-weekday {
+    font-size: 0.58rem;
+  }
+
   .hms-day-picker .rdp-month_caption {
     height: 2.25rem;
     font-size: 0.875rem;
@@ -74,8 +92,15 @@
   }
 
   .hms-day-picker .rdp-today .rdp-day_button {
-    border-color: #f59e0b;
-    color: #b45309;
+    background: #eff6ff;
+    border-color: #38bdf8;
+    color: #0369a1;
+  }
+
+  .hms-day-picker .rdp-selected.rdp-today .rdp-day_button {
+    background: #059669;
+    border-color: #059669;
+    color: white;
   }
 
   .hms-day-picker .rdp-outside {

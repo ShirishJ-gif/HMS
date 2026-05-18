@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsObject, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 
 export class CreateChannelRateMappingDto {
   @IsUUID()
@@ -17,4 +17,8 @@ export class CreateChannelRateMappingDto {
   @IsString()
   @MaxLength(160)
   external_rate_name?: string;
+
+  @IsOptional()
+  @IsObject()
+  pricing_config?: Record<string, unknown>;
 }

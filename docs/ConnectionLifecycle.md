@@ -209,7 +209,14 @@ Important:
 - rate sync must use `external_room_id + external_rate_id`
 - HMS now builds rate sync as one row per mapped provider room/rate per day
 - active HMS pricing rules are applied before each daily Zodomus `/rates` push
-- Zodomus receives one `/rates` push per room/rate/date row
+- Zodomus receives one `/rates` push per room/rate/date row for price models `1`, `3`, `4`, and `5`
+- derived Booking pricing, price model `2`, receives `POST /rates` for the default price and then `POST /rates-derived` for base occupancy and offsets
+- per-rate `pricing_config` on `channel_rate_mappings` can override default placeholders:
+  - `single_price` for Maximum / Single
+  - `baseOccupancy` or `base_occupancy` for Derived, Per Day, and Length of Stay
+  - `offsets` or `derived_offsets` for Derived pricing
+  - `occupancy_prices` for Occupancy pricing
+  - `length_of_stay_prices` or `los_prices` for Length of Stay pricing
 - routine Zodomus `sync_window_days` is the rolling scheduler/manual window
 - explicit full-sync actions use `full_sync_window_days`, which defaults to `365` in production
 - inventory sync status can now be `SUCCEEDED`, `PARTIAL_FAILED`, or `FAILED`
@@ -285,7 +292,7 @@ HMS behavior:
    - provider `channel_id`
    - final readiness state
 5. enqueue `BOOKINGS` sync for that connection
-6. if webhook payload includes `reservation_id`, try targeted `GET /reservations` for that reservation first
+6. if webhook payload includes `reservation_id`, `reservationId`, `reservation_ids`, or `reservationIds`, try targeted `GET /reservations` for those reservations first
 7. if targeted fetch is unavailable, incomplete, or hits the provider download limit, fall back to reservation queue reconciliation
 8. import the resolved reservation payloads
 
