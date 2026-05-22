@@ -1,7 +1,10 @@
-import { BookingStatus, PaymentStatus, Prisma, RoomStatus } from '@prisma/client';
+import { BookingStatus, ChannelConnectionStatus, PaymentStatus, Prisma, RoomStatus } from '@prisma/client';
 import { BookingService } from './booking.service';
 
 describe('BookingService', () => {
+  const originalZodomusEnvironment = process.env.ZODOMUS_ENVIRONMENT;
+  const originalShowDetachedOtaReservationHistory = process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+
   const tx = {
     reservationRoom: {
       findUnique: jest.fn(),
@@ -119,6 +122,20 @@ describe('BookingService', () => {
     );
   });
 
+  afterEach(() => {
+    if (originalZodomusEnvironment === undefined) {
+      delete process.env.ZODOMUS_ENVIRONMENT;
+    } else {
+      process.env.ZODOMUS_ENVIRONMENT = originalZodomusEnvironment;
+    }
+
+    if (originalShowDetachedOtaReservationHistory === undefined) {
+      delete process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+    } else {
+      process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY = originalShowDetachedOtaReservationHistory;
+    }
+  });
+
   it('creates a pending invoice automatically when checking out a room stay without billing', async () => {
     const response = await service.checkOutReservationRoom(reservationRoom.id);
 
@@ -199,5 +216,50 @@ describe('BookingService', () => {
       propertyId: 'property-1',
     });
     expect(where).not.toHaveProperty('status');
+  });
+
+  it('hides detached or paused OTA reservation history in non-production reservation feeds', () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
+    delete process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+
+    const where = (
+      service as unknown as {
+        reservationFeedImportedWhere: (
+          propertyId: string | null,
+          search: string,
+          status?: BookingStatus,
+          includeCancelled?: boolean,
+        ) => Record<string, unknown>;
+      }
+    ).reservationFeedImportedWhere('property-1', '');
+
+    expect(where).toMatchObject({
+      AND: [
+        {
+          OR: [
+            { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
+            { channelConnectionId: null, source: 'DIRECT' },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('can show detached OTA reservation history in production-style feeds', () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'production';
+    delete process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+
+    const where = (
+      service as unknown as {
+        reservationFeedImportedWhere: (
+          propertyId: string | null,
+          search: string,
+          status?: BookingStatus,
+          includeCancelled?: boolean,
+        ) => Record<string, unknown>;
+      }
+    ).reservationFeedImportedWhere('property-1', '');
+
+    expect(where).not.toHaveProperty('OR');
   });
 });

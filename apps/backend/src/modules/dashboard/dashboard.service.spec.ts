@@ -1,7 +1,10 @@
-import { Prisma, RoomStatus } from '@prisma/client';
+import { ChannelConnectionStatus, Prisma, RoomStatus } from '@prisma/client';
 import { DashboardService } from './dashboard.service';
 
 describe('DashboardService', () => {
+  const originalZodomusEnvironment = process.env.ZODOMUS_ENVIRONMENT;
+  const originalShowDetachedOtaReservationHistory = process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+
   const prisma = {
     reservationGroup: {
       count: jest.fn(),
@@ -24,7 +27,23 @@ describe('DashboardService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
+    delete process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
     service = new DashboardService(prisma as never);
+  });
+
+  afterEach(() => {
+    if (originalZodomusEnvironment === undefined) {
+      delete process.env.ZODOMUS_ENVIRONMENT;
+    } else {
+      process.env.ZODOMUS_ENVIRONMENT = originalZodomusEnvironment;
+    }
+
+    if (originalShowDetachedOtaReservationHistory === undefined) {
+      delete process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+    } else {
+      process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY = originalShowDetachedOtaReservationHistory;
+    }
   });
 
   it('returns dashboard summary metrics', async () => {
@@ -59,6 +78,17 @@ describe('DashboardService', () => {
     expect(prisma.room.count).toHaveBeenNthCalledWith(1, {
       where: {
         status: RoomStatus.OCCUPIED,
+        reservationRooms: {
+          some: {
+            status: 'CHECKED_IN',
+            reservationGroup: {
+              OR: [
+                { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
+                { channelConnectionId: null, source: 'DIRECT' },
+              ],
+            },
+          },
+        },
       },
     });
   });

@@ -1,4 +1,4 @@
-import { ChannelProvider, ChannelSyncStatus, ChannelSyncType, Prisma } from '@prisma/client';
+import { BookingStatus, ChannelProvider, ChannelSyncStatus, ChannelSyncType, Prisma } from '@prisma/client';
 import { BadRequestException } from '@nestjs/common';
 import { ChannelService } from './channel.service';
 
@@ -787,6 +787,169 @@ describe('ChannelService reservation summary backfill', () => {
     );
 
     await expect(service.backfillReservationsSummary('connection-1')).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('ChannelService connection removal cleanup', () => {
+  it('deletes imported reservations and releases active inventory before removing the OTA connection', async () => {
+    const connection = {
+      id: 'connection-1',
+      propertyId: 'property-1',
+      provider: ChannelProvider.ZODOMUS,
+      name: 'Booking.com OTA',
+      externalHotelId: '47',
+      credentials: { ota_name: 'Booking.com' },
+      property: { id: 'property-1' },
+      roomMappings: [{ id: 'room-map-1' }],
+      rateMappings: [{ id: 'rate-map-1' }],
+      syncLogs: [{ id: 'sync-log-1' }],
+    };
+
+    const stayDateOne = new Date('2026-06-10T00:00:00.000Z');
+    const stayDateTwo = new Date('2026-06-11T00:00:00.000Z');
+    const tx = {
+      reservationGroup: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'reservation-group-1',
+            primaryGuestId: 'guest-1',
+            rooms: [
+              {
+                id: 'reservation-room-1',
+                propertyId: 'property-1',
+                roomCategoryId: 'category-1',
+                arrivalDate: stayDateOne,
+                departureDate: new Date('2026-06-12T00:00:00.000Z'),
+                status: BookingStatus.BOOKED,
+              },
+            ],
+          },
+        ]),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      billing: {
+        count: jest.fn().mockResolvedValue(0),
+      },
+      inventoryCalendar: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'inventory-1',
+            totalRooms: 3,
+            blockedRooms: 0,
+            reservedRooms: 1,
+          })
+          .mockResolvedValueOnce({
+            id: 'inventory-2',
+            totalRooms: 3,
+            blockedRooms: 0,
+            reservedRooms: 1,
+          }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      channelConnection: {
+        delete: jest.fn().mockResolvedValue(connection),
+      },
+      guest: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const prisma = {
+      channelConnection: {
+        findUnique: jest.fn().mockResolvedValue(connection),
+      },
+      $transaction: jest.fn((callback) => callback(tx)),
+    };
+    const auditLogService = {
+      record: jest.fn().mockResolvedValue(undefined),
+    };
+    const backgroundJobService = {
+      queueInventorySyncsForProperty: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ChannelService(
+      prisma as never,
+      {} as never,
+      auditLogService as never,
+      {} as never,
+      backgroundJobService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const result = await service.deleteConnection(connection.id);
+
+    expect(tx.reservationGroup.findMany).toHaveBeenCalledWith({
+      where: { channelConnectionId: connection.id },
+      include: {
+        rooms: {
+          select: {
+            id: true,
+            propertyId: true,
+            roomCategoryId: true,
+            arrivalDate: true,
+            departureDate: true,
+            status: true,
+          },
+        },
+      },
+    });
+    expect(tx.inventoryCalendar.findUnique).toHaveBeenNthCalledWith(1, {
+      where: {
+        propertyId_roomCategoryId_stayDate: {
+          propertyId: 'property-1',
+          roomCategoryId: 'category-1',
+          stayDate: stayDateOne,
+        },
+      },
+    });
+    expect(tx.inventoryCalendar.findUnique).toHaveBeenNthCalledWith(2, {
+      where: {
+        propertyId_roomCategoryId_stayDate: {
+          propertyId: 'property-1',
+          roomCategoryId: 'category-1',
+          stayDate: stayDateTwo,
+        },
+      },
+    });
+    expect(tx.inventoryCalendar.update).toHaveBeenCalledTimes(2);
+    expect(tx.reservationGroup.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['reservation-group-1'] } },
+    });
+    expect(tx.guest.deleteMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['guest-1'] },
+        idProof: 'CHANNEL_IMPORT',
+        address: 'Imported from Zodomus',
+        reservationGroups: { none: {} },
+      },
+    });
+    expect(tx.channelConnection.delete).toHaveBeenCalledWith({ where: { id: connection.id } });
+    expect(backgroundJobService.queueInventorySyncsForProperty).toHaveBeenCalledWith('property-1', {
+      trigger: 'channel_connection_removed_reservation_cleanup',
+      sourceConnectionId: connection.id,
+    });
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          reservation_groups_deleted: 1,
+          reservation_rooms_deleted: 1,
+          imported_guests_deleted: 1,
+          active_room_nights_released: 2,
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      id: connection.id,
+      deleted: true,
+      reservation_cleanup: {
+        reservation_groups_deleted: 1,
+        reservation_rooms_deleted: 1,
+        imported_guests_deleted: 1,
+        active_room_nights_released: 2,
+      },
+    });
   });
 });
 

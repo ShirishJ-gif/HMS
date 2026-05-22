@@ -17,6 +17,7 @@ import {
   ZodomusSetupResponse,
 } from '../../api/types';
 import { usePersistedPropertyId } from '../../hooks/usePersistedPropertyId';
+import { formatConnectionLabel } from './ChannelUi';
 
 const zodomusOtaOptions = [
   { key: 'BOOKING_COM', label: 'Booking.com' },
@@ -88,6 +89,28 @@ type ChannelWorkspaceCache = {
 const channelWorkspaceCacheBySession = new Map<string, ChannelWorkspaceCache>();
 const diagnosticsCacheUpdatedAtByKey = new Map<string, number>();
 const diagnosticsCacheTtlMs = 60_000;
+const selectedConnectionStorageKey = 'hms_selected_channel_connection_id';
+
+function readPersistedSelectedConnectionId() {
+  try {
+    return localStorage.getItem(selectedConnectionStorageKey) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function persistSelectedConnectionId(connectionId: string) {
+  try {
+    if (connectionId) {
+      localStorage.setItem(selectedConnectionStorageKey, connectionId);
+      return;
+    }
+
+    localStorage.removeItem(selectedConnectionStorageKey);
+  } catch {
+    // Ignore storage failures so the workspace still works in restricted browser contexts.
+  }
+}
 
 function buildEmptyWorkspaceCache(enabled: boolean): ChannelWorkspaceCache {
   return {
@@ -121,7 +144,7 @@ function buildEmptyWorkspaceCache(enabled: boolean): ChannelWorkspaceCache {
     ratesInterval: '60',
     reservationImportInterval: '5',
     roomCategoryId: '',
-    selectedConnectionId: '',
+    selectedConnectionId: readPersistedSelectedConnectionId(),
     status: null,
     syncLogs: [],
     syncLogsError: null,
@@ -294,6 +317,10 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   const automationSummary = selectedConnection?.provider_config_summary?.automation ?? null;
   const latestInventorySyncLog = useMemo(
     () => selectedConnection?.recent_sync_logs.find((log) => log.sync_type === 'INVENTORY') ?? null,
+    [selectedConnection],
+  );
+  const latestRateSyncLog = useMemo(
+    () => selectedConnection?.recent_sync_logs.find((log) => log.sync_type === 'RATES') ?? null,
     [selectedConnection],
   );
   const scopedCategories = useMemo(
@@ -684,6 +711,10 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   ]);
 
   useEffect(() => {
+    persistSelectedConnectionId(selectedConnectionId);
+  }, [selectedConnectionId]);
+
+  useEffect(() => {
     if (properties.length === 0) {
       if (propertyId) setPropertyId('');
       return;
@@ -953,6 +984,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   async function createRoomMapping(event: FormEvent) {
     event.preventDefault();
     if (!selectedConnection) return;
+    if (!confirmMappingChange('room')) return;
     await runAction('create-room-mapping', async () => {
       await api.post(`/channels/${selectedConnection.id}/room-mappings`, {
         room_category_id: roomCategoryId,
@@ -967,6 +999,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   async function createRateMapping(event: FormEvent) {
     event.preventDefault();
     if (!selectedConnection) return;
+    if (!confirmMappingChange('rate')) return;
     await runAction('create-rate-mapping', async () => {
       await api.post(`/channels/${selectedConnection.id}/rate-mappings`, {
         rate_plan_id: ratePlanId,
@@ -982,6 +1015,22 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       setStatus('Rate mapping saved.');
       await loadData();
     });
+  }
+
+  function confirmMappingChange(mappingType: 'room' | 'rate') {
+    if (!selectedConnection) return false;
+    const hasLiveSignals =
+      Boolean(selectedConnection.provider_config_summary?.setup_status.ready) ||
+      Boolean(selectedConnection.provider_config_summary?.setup_status.rooms_activated) ||
+      selectedConnection.recent_sync_logs.length > 0;
+
+    if (!hasLiveSignals) {
+      return true;
+    }
+
+    return window.confirm(
+      `Save this ${mappingType} mapping for ${formatConnectionLabel(selectedConnection)}? This connection already has activation or sync history, so run room activation/property check and a fresh sync after changing mappings.`,
+    );
   }
 
   async function activateMappedRooms() {
@@ -1019,7 +1068,6 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
 
   async function deleteConnection() {
     if (!selectedConnection) return;
-    if (!window.confirm(`Remove ${selectedConnection.name}? This will delete its room mappings, rate mappings, and sync logs from HMS.`)) return;
     await runAction('delete-connection', async () => {
       await api.delete(`/channels/${selectedConnection.id}`);
       setProviderCatalog(null);
@@ -1058,7 +1106,6 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
 
   async function disconnectConnection() {
     if (!selectedConnection) return;
-    if (!window.confirm(`Disconnect ${selectedConnection.name} from Zodomus? This pauses sync and marks the remote property link as disconnected.`)) return;
     await runAction('disconnect-connection', async () => {
       await api.post(`/channels/${selectedConnection.id}/disconnect`);
       setStatus('Connection disconnected from Zodomus.');
@@ -1152,14 +1199,6 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
 
   async function backfillExistingReservations() {
     if (!selectedConnection) return;
-    if (
-      !window.confirm(
-        'Backfill existing future reservations from Zodomus summary? Use this once during production go-live after mappings are ready.',
-      )
-    ) {
-      return;
-    }
-
     await runAction('reservations-summary-backfill', async () => {
       await api.post(`/channels/${selectedConnection.id}/reservations-summary-backfill`);
       await loadData();
@@ -1205,22 +1244,23 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     });
   }
 
-  async function submitProviderReservationEvent(event: FormEvent) {
-    event.preventDefault();
+  async function retryFailedRateRows() {
+    if (!selectedConnection || !latestRateSyncLog) return;
+    await runAction('retry-failed-rate-rows', async () => {
+      await api.post(`/channels/${selectedConnection.id}/sync-logs/${latestRateSyncLog.id}/retry-failed-rows`);
+      await loadData();
+      await loadSyncLogs(selectedConnection.id);
+      setStatus('Queued retry for failed rate rows.');
+    });
+  }
+
+  async function submitProviderReservationEvent(event?: FormEvent) {
+    event?.preventDefault();
     if (!selectedConnection) return;
 
     const trimmedReservationId = providerReservationId.trim();
     if (providerReservationEventStatus !== 'new' && !trimmedReservationId) {
       setError('Reservation ID is required for modified or cancelled provider events.');
-      return;
-    }
-
-    if (
-      providerReservationEventStatus === 'cancelled' &&
-      !window.confirm(
-        `Cancel provider reservation ${trimmedReservationId} in Zodomus and sync that cancellation into HMS?`,
-      )
-    ) {
       return;
     }
 
@@ -1296,6 +1336,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     inventoryRowResultsError,
     inventoryRowResultsLoading,
     latestInventorySyncLog,
+    latestRateSyncLog,
     loadBackgroundJobs,
     loadData,
     loadProviderCatalog,
@@ -1332,6 +1373,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     resumeConnection,
     resyncInventoryDriftWindow,
     retryFailedInventoryRows,
+    retryFailedRateRows,
     roomCategoryId,
     saveAutomationSettings,
     scopedCategories,

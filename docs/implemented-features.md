@@ -55,6 +55,7 @@ This document lists the features currently implemented in the Hotel Management S
 - List physical rooms with pagination/search.
 - Update room details/status.
 - Delete rooms when no dependent records block deletion.
+- Physical room deletion is explicitly blocked when the room has active or future `BOOKED` / `CHECKED_IN` reservation stays.
 - Room statuses: `AVAILABLE`, `OCCUPIED`, `MAINTENANCE`.
 - Create, list, and delete date-ranged room out-of-service periods.
 - Temporary room blocks can now be modeled by date range instead of only with permanent `MAINTENANCE` status.
@@ -197,6 +198,7 @@ This document lists the features currently implemented in the Hotel Management S
 - Create room-category mappings to external room IDs.
 - Create rate-plan mappings to external rate IDs.
 - Trigger syncs for `INVENTORY`, `RATES`, and `BOOKINGS`.
+- Removing an OTA connection also removes reservation groups imported through that connection for test cleanup, releases active reserved inventory, removes orphan channel-imported guests, and queues inventory fan-out for remaining active OTA connections.
 - Zodomus booking import is webhook-first, with scheduled/manual fallback polling through provider `reservations-queue` followed by reservation detail fetches.
 - Zodomus webhook-triggered booking sync has been locally validated through ngrok: signed webhook intake stores the event, queues a webhook-triggered `BOOKINGS` sync, fetches the targeted reservation, and reconciles cancellation into HMS.
 - Fetched Zodomus reservation details are persisted to provider reservation intake records before local import, so consumed provider queue payloads remain visible and recoverable if HMS import fails.
@@ -211,6 +213,7 @@ This document lists the features currently implemented in the Hotel Management S
 - HMS intentionally skips roomless cancelled provider reservations when no matching HMS reservation exists yet, because the payload lacks room/date/rate context needed to create reliable local inventory records.
 - Numeric provider reservation status `3` is now treated as `CANCELLED` during Zodomus import.
 - The default reservation feed and Reservations page now exclude cancelled reservations; operators can still select the Cancelled status or All including cancelled view for history/reconciliation.
+- Sandbox/local views now hide detached OTA reservation history by default across the reservation feed, imported guest registry rows, provider-only failure records, and reservation-related dashboard counts. Production-style history remains available through `ZODOMUS_ENVIRONMENT="production"` or explicit visibility flags.
 - Provider reservation test events now reject placeholder IDs such as `RESERVATION_ID`; `new` events may omit the ID, while `modified` and `cancelled` events require a real provider reservation ID.
 - Zodomus reservation detail entries that only report `Reservation already downloaded 5 times. The limit was reached.` are filtered out of HMS booking-sync payloads as provider queue noise.
 - Imported reservation-group totals now fall back to summed room-line totals when the provider reservation-level total is missing or zero.
@@ -227,7 +230,9 @@ This document lists the features currently implemented in the Hotel Management S
 - Rate syncs now persist row-level result summaries too, and provider-side business rejection no longer appears as unconditional `SUCCEEDED`.
 - Rate sync row results now also persist the synced `date` and nightly `base_rate`, so provider logs show exactly which day and price were pushed.
 - Failed inventory rows can be retried through `POST /channels/:id/sync-logs/:syncLogId/retry-failed-rows`.
+- Failed rate rows can also be retried through the same failed-row retry endpoint; HMS rebuilds the retry payload from the original failed room/rate/date rows.
 - HMS persists each inventory row result in `inventory_sync_rows`.
+- Stale failed inventory-row diagnostics are cleared automatically when a later sync succeeds for the same connection, provider room, and date.
 - HMS exposes inventory reconciliation through `GET /channels/:id/inventory-reconciliation`.
 - HMS exposes persisted row-level inventory analytics through `GET /channels/:id/inventory-row-results`.
 - Channel sync requests now return a queued sync log immediately and run provider pushes through the background-job worker.
@@ -235,11 +240,16 @@ This document lists the features currently implemented in the Hotel Management S
 - `SITEMINDER`, `BOOKING_COM`, and `AIRBNB` are explicit adapter placeholders that reject live syncs until provider credentials, retry policy, and webhook reconciliation are implemented.
 - Channel syncs build payloads from internal inventory/rate mappings and do not write directly to booking or room tables.
 - HMS can update a Zodomus connection external hotel/property mapping without recreating the connection.
+- Saving new room/rate mappings on a Zodomus connection resets room activation/readiness, requiring room activation and property check before treating the connection as ready again.
 - Frontend Channels page includes summary tiles, active connection workspace, mapping forms, sync controls, inventory reconciliation, persisted failed-row analytics, mapping tables, connection table, recent sync logs, background-job surfaces, webhook-event surfaces, dead-letter retry controls, and metrics-summary snapshots.
 - Channel Manager workspace state now persists across page switches in the frontend, so returning to the page restores the current connection context instead of cold-loading from empty state.
 - OTA Mapping, Channel Manager, and Webhooks & Sync Logs now share the same cached channel workspace state in the frontend.
+- The selected OTA connection is persisted across browser refreshes, so Webhooks & Sync and manual inventory/rate sync actions stay on the selected Zodomus connection instead of falling back to the first connection.
 - Sync logs, webhook events, background jobs, and reconciliation data now load lazily for the diagnostics page instead of every channel-related page paying that cost.
 - Channel connection, mapping, and sync actions now disable duplicate submits while requests are in flight and surface backend request-aware error messages.
+- Mapping saves on connections with activation or sync history require operator confirmation in the frontend.
+- Provider reservation test events require confirmation that includes the selected OTA connection and target reservation ID before sending.
+- Webhooks & Sync includes a background-job health panel for pending, processing, dead-letter, and stuck jobs.
 
 ## Webhook Foundation
 

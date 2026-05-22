@@ -13,6 +13,9 @@ describe('RoomService', () => {
       update: jest.fn(),
       delete: jest.fn(),
     },
+    reservationRoom: {
+      count: jest.fn(),
+    },
     roomOutOfServicePeriod: {
       findFirst: jest.fn(),
       findUnique: jest.fn(),
@@ -44,6 +47,7 @@ describe('RoomService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     prisma.$transaction.mockImplementation((queries) => Promise.all(queries));
+    prisma.reservationRoom.count.mockResolvedValue(0);
     service = new RoomService(prisma as never, auditLogService as never, backgroundJobService as never);
   });
 
@@ -162,6 +166,16 @@ describe('RoomService', () => {
   });
 
   it('prevents deleting rooms with dependent reservation stays', async () => {
+    prisma.room.findUnique.mockResolvedValue(roomRecord());
+    prisma.reservationRoom.count.mockResolvedValue(1);
+
+    await expect(service.remove('7f43ac6b-743c-4e21-b3a3-931025058655')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(prisma.room.delete).not.toHaveBeenCalled();
+  });
+
+  it('maps room deletion foreign key failures to conflict errors', async () => {
     prisma.room.findUnique.mockResolvedValue(roomRecord());
     prisma.room.delete.mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', {

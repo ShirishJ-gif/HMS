@@ -1,6 +1,9 @@
 import { GuestService } from './guest.service';
 
 describe('GuestService', () => {
+  const originalZodomusEnvironment = process.env.ZODOMUS_ENVIRONMENT;
+  const originalShowDetachedOtaReservationHistory = process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+
   const prisma = {
     $transaction: jest.fn(),
     guest: {
@@ -16,6 +19,20 @@ describe('GuestService', () => {
     jest.clearAllMocks();
     prisma.$transaction.mockImplementation((queries) => Promise.all(queries));
     service = new GuestService(prisma as never);
+  });
+
+  afterEach(() => {
+    if (originalZodomusEnvironment === undefined) {
+      delete process.env.ZODOMUS_ENVIRONMENT;
+    } else {
+      process.env.ZODOMUS_ENVIRONMENT = originalZodomusEnvironment;
+    }
+
+    if (originalShowDetachedOtaReservationHistory === undefined) {
+      delete process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+    } else {
+      process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY = originalShowDetachedOtaReservationHistory;
+    }
   });
 
   it('creates a guest', async () => {
@@ -88,7 +105,12 @@ describe('GuestService', () => {
     });
 
     expect(prisma.guest.findMany).toHaveBeenCalledWith({
-      where: {},
+      where: {
+        NOT: {
+          idProof: 'CHANNEL_IMPORT',
+          address: 'Imported from Zodomus',
+        },
+      },
       include: {
         property: true,
       },
@@ -98,5 +120,20 @@ describe('GuestService', () => {
       skip: 0,
       take: 25,
     });
+  });
+
+  it('can list imported OTA guests in production-style history mode', async () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'production';
+    delete process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+    prisma.guest.findMany.mockResolvedValue([]);
+    prisma.guest.count.mockResolvedValue(0);
+
+    await service.findAll({ page: 1, limit: 25 });
+
+    expect(prisma.guest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {},
+      }),
+    );
   });
 });

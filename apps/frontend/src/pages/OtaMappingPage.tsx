@@ -32,18 +32,6 @@ export function OtaMappingPage({ workspace }: { workspace: ChannelWorkspace }) {
             </div>
             {workspace.selectedConnection && <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700">Active</span>}
           </div>
-          {workspace.zodomusConnections.length > 1 && (
-            <label className={labelCls}>
-              <span>OTA connection</span>
-              <CustomSelect
-                disabled={workspace.zodomusConnections.length === 0}
-                onChange={workspace.selectConnection}
-                options={workspace.zodomusConnections.map((connection) => ({ label: formatConnectionLabel(connection), value: connection.id }))}
-                placeholder="Select connection"
-                value={workspace.selectedConnectionId}
-              />
-            </label>
-          )}
           {workspace.selectedConnection ? (
             <div className="flex gap-2 flex-wrap">
               <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700">{workspace.selectedConnection.provider_config_summary?.ota_name ?? workspace.selectedConnection.provider}</span>

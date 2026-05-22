@@ -38,6 +38,8 @@ ZODOMUS_SANDBOX_MIN_INVENTORY_SYNC_MINUTES="60"
 ZODOMUS_SANDBOX_MIN_RATES_SYNC_MINUTES="180"
 ZODOMUS_SANDBOX_MIN_BOOKINGS_SYNC_MINUTES="15"
 ZODOMUS_SANDBOX_MAX_SYNC_WINDOW_DAYS="7"
+SHOW_DETACHED_OTA_RESERVATION_HISTORY="false"
+SHOW_PROVIDER_ONLY_RESERVATION_FAILURES="false"
 ZODOMUS_SANDBOX_AUTH_BACKOFF_MINUTES="180"
 ZODOMUS_SANDBOX_RATE_LIMIT_BACKOFF_MINUTES="60"
 ```
@@ -47,6 +49,7 @@ Recommended usage:
 - leave inventory and rate sync on only if you are actively validating outbound payloads
 - if the sandbox account is fragile, set `ZODOMUS_AUTO_SYNC_ENABLED="false"` and run manual syncs only
 - verify `GET /channels/:id/provider-account` before turning automation back on after any auth issue
+- keep detached OTA reservation history hidden during local/test cleanup so removed or paused OTA connections do not keep noisy test reservations, imported guests, or dashboard counts visible
 
 ## Production Profile
 
@@ -65,6 +68,8 @@ ZODOMUS_AUTO_SYNC_WINDOW_DAYS="90"
 ZODOMUS_PRODUCTION_ROUTINE_SYNC_WINDOW_DAYS="90"
 ZODOMUS_PRODUCTION_FULL_SYNC_WINDOW_DAYS="365"
 ZODOMUS_FULL_SYNC_WINDOW_DAYS="365"
+SHOW_DETACHED_OTA_RESERVATION_HISTORY="true"
+SHOW_PROVIDER_ONLY_RESERVATION_FAILURES="true"
 ZODOMUS_AUTH_BACKOFF_MINUTES="60"
 ZODOMUS_RATE_LIMIT_BACKOFF_MINUTES="30"
 ```

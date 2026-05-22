@@ -1,9 +1,14 @@
+import { useState } from 'react';
 import { formatConnectionLabel, SetupBadge, SummaryTile } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
 import { CustomSelect } from '../components/CustomSelect';
-import { labelCls, inputCls, primaryBtn, secondaryBtn, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
+import { labelCls, inputCls, primaryBtn, secondaryBtn, dangerBtn, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
 
 export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace }) {
+  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
+  const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState(false);
+  const [backfillConfirmOpen, setBackfillConfirmOpen] = useState(false);
+  const [providerEventConfirmOpen, setProviderEventConfirmOpen] = useState(false);
   const setupStatus = workspace.persistedSetupStatus;
   const selectedConnection = workspace.selectedConnection;
   const hasSelectedConnection = Boolean(selectedConnection);
@@ -175,11 +180,11 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                     ))}
                   </dl>
                 </div>
-                <button className="inline-flex items-center justify-center w-full border border-rose-200 bg-rose-50 hover:bg-rose-100 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-rose-700 font-semibold px-4 py-2.5 rounded-lg shadow-sm text-sm transition" disabled={workspace.pendingAction === 'delete-connection'} onClick={() => void workspace.deleteConnection()} type="button">{workspace.pendingAction === 'delete-connection' ? 'Removing…' : 'Remove connection'}</button>
+                <button className="inline-flex items-center justify-center w-full border border-rose-200 bg-rose-50 hover:bg-rose-100 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-rose-700 font-semibold px-4 py-2.5 rounded-lg shadow-sm text-sm transition" disabled={workspace.pendingAction === 'delete-connection'} onClick={() => setRemoveConfirmOpen(true)} type="button">{workspace.pendingAction === 'delete-connection' ? 'Removing…' : 'Remove connection'}</button>
                 <div className="flex gap-2">
                   <button className="inline-flex flex-1 items-center justify-center bg-amber-50 hover:bg-amber-100 border border-amber-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-amber-800 font-bold px-2 py-2 rounded-lg text-xs transition" disabled={workspace.pendingAction === 'pause-connection'} onClick={() => void workspace.pauseConnection()} type="button">Pause</button>
                   <button className="inline-flex flex-1 items-center justify-center bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-emerald-800 font-bold px-2 py-2 rounded-lg text-xs transition" disabled={workspace.pendingAction === 'resume-connection'} onClick={() => void workspace.resumeConnection()} type="button">Resume</button>
-                  <button className="inline-flex flex-1 items-center justify-center bg-rose-50 hover:bg-rose-100 border border-rose-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-rose-800 font-bold px-2 py-2 rounded-lg text-xs transition" disabled={workspace.pendingAction === 'disconnect-connection'} onClick={() => void workspace.disconnectConnection()} type="button">Disconnect</button>
+                  <button className="inline-flex flex-1 items-center justify-center bg-rose-50 hover:bg-rose-100 border border-rose-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-rose-800 font-bold px-2 py-2 rounded-lg text-xs transition" disabled={workspace.pendingAction === 'disconnect-connection'} onClick={() => setDisconnectConfirmOpen(true)} type="button">Disconnect</button>
                 </div>
               </div>
             ) : (
@@ -375,7 +380,13 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                   </div>
                 </form>
 
-                <form onSubmit={workspace.submitProviderReservationEvent} className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    setProviderEventConfirmOpen(true);
+                  }}
+                  className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4"
+                >
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Admin tools</p>
@@ -411,7 +422,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
 
                   <div className="space-y-2 pt-2 border-t border-slate-100">
                     <p className="text-[11px] text-slate-400">Use summary backfill once at production go-live to import future reservations that existed before the channel-manager connection.</p>
-                    <button className="inline-flex items-center justify-center w-full bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-indigo-800 font-bold text-xs px-4 py-2.5 rounded-lg transition-colors" disabled={!workspace.selectedConnection || !workspace.persistedSetupStatus?.ready || workspace.pendingAction === 'reservations-summary-backfill'} onClick={() => void workspace.backfillExistingReservations()} type="button">{workspace.pendingAction === 'reservations-summary-backfill' ? 'Queueing…' : 'Backfill existing future reservations'}</button>
+                    <button className="inline-flex items-center justify-center w-full bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-indigo-800 font-bold text-xs px-4 py-2.5 rounded-lg transition-colors" disabled={!workspace.selectedConnection || !workspace.persistedSetupStatus?.ready || workspace.pendingAction === 'reservations-summary-backfill'} onClick={() => setBackfillConfirmOpen(true)} type="button">{workspace.pendingAction === 'reservations-summary-backfill' ? 'Queueing…' : 'Backfill existing future reservations'}</button>
                   </div>
 
                   <div className="space-y-2">
@@ -427,6 +438,148 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
           )}
         </div>
       </div>
+
+      {removeConfirmOpen && workspace.selectedConnection && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 py-6" role="dialog" aria-modal="true" aria-label="Remove OTA connection">
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden">
+            <div className="p-5 border-b border-slate-100">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-rose-500 mb-1">Remove OTA connection</p>
+              <h3 className="text-lg font-extrabold text-slate-900">Remove {formatConnectionLabel(workspace.selectedConnection)}?</h3>
+              <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+                This removes the OTA workspace and its imported reservation test data from HMS. Reservation timeline, feed, guests, reports, analytics, and dashboard numbers will refresh without this OTA's reservations.
+              </p>
+            </div>
+            <div className="p-5 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  ['Room mappings', String(workspace.selectedConnection.room_mappings.length)],
+                  ['Rate mappings', String(workspace.selectedConnection.rate_mappings.length)],
+                  ['Property', workspace.selectedConnection.property.code],
+                  ['Zodomus ID', workspace.selectedConnection.external_hotel_id ?? '—'],
+                ].map(([label, value]) => (
+                  <div key={label} className="bg-slate-50 border border-slate-100 rounded-lg p-3">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">{label}</span>
+                    <strong className="text-sm font-bold text-slate-900">{value}</strong>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-rose-700 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2 leading-relaxed">
+                Use this for test cleanup only. HMS will release inventory held by this OTA's active imported reservations, remove orphan imported guests, then delete its mappings and sync logs.
+              </p>
+            </div>
+            <div className="p-5 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button className={secondaryBtn} disabled={workspace.pendingAction === 'delete-connection'} onClick={() => setRemoveConfirmOpen(false)} type="button">Cancel</button>
+              <button
+                className={`${dangerBtn} !bg-rose-600 !text-white !border-rose-600 hover:!bg-rose-700`}
+                disabled={workspace.pendingAction === 'delete-connection'}
+                onClick={() => {
+                  void workspace.deleteConnection().then(() => setRemoveConfirmOpen(false));
+                }}
+                type="button"
+              >
+                {workspace.pendingAction === 'delete-connection' ? 'Removing…' : 'Remove connection'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {disconnectConfirmOpen && workspace.selectedConnection && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 py-6" role="dialog" aria-modal="true" aria-label="Disconnect OTA connection">
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden">
+            <div className="p-5 border-b border-slate-100">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-1">Disconnect OTA connection</p>
+              <h3 className="text-lg font-extrabold text-slate-900">Disconnect {formatConnectionLabel(workspace.selectedConnection)}?</h3>
+              <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+                This asks Zodomus to disconnect the remote property link and pauses the HMS connection. Mappings, sync logs, and imported reservation history remain in HMS.
+              </p>
+            </div>
+            <div className="p-5 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  ['Current status', workspace.selectedConnection.status],
+                  ['Readiness', workspace.persistedSetupStatus?.ready ? 'Ready' : 'Not ready'],
+                  ['OTA', workspace.selectedConnection.provider_config_summary?.ota_name ?? workspace.selectedConnection.provider],
+                  ['Zodomus ID', workspace.selectedConnection.external_hotel_id ?? '—'],
+                ].map(([label, value]) => (
+                  <div key={label} className="bg-slate-50 border border-slate-100 rounded-lg p-3">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">{label}</span>
+                    <strong className="text-sm font-bold text-slate-900">{value}</strong>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 leading-relaxed">
+                Use disconnect when the provider-side link should stop syncing but you still want to keep this workspace for review or later recovery.
+              </p>
+            </div>
+            <div className="p-5 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button className={secondaryBtn} disabled={workspace.pendingAction === 'disconnect-connection'} onClick={() => setDisconnectConfirmOpen(false)} type="button">Cancel</button>
+              <button
+                className={`${dangerBtn} !bg-rose-600 !text-white !border-rose-600 hover:!bg-rose-700`}
+                disabled={workspace.pendingAction === 'disconnect-connection'}
+                onClick={() => {
+                  void workspace.disconnectConnection().then(() => setDisconnectConfirmOpen(false));
+                }}
+                type="button"
+              >
+                {workspace.pendingAction === 'disconnect-connection' ? 'Disconnecting…' : 'Disconnect'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {backfillConfirmOpen && workspace.selectedConnection && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 py-6" role="dialog" aria-modal="true" aria-label="Backfill existing future reservations">
+          <div className="w-full max-w-lg bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden">
+            <div className="p-5 border-b border-slate-100">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-500 mb-1">Go-live backfill</p>
+              <h3 className="text-lg font-extrabold text-slate-900">Backfill future Zodomus reservations?</h3>
+              <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+                This queues a one-time import from the Zodomus reservations summary for future stays that existed before HMS became the channel manager.
+              </p>
+            </div>
+            <div className="p-5 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button className={secondaryBtn} disabled={workspace.pendingAction === 'reservations-summary-backfill'} onClick={() => setBackfillConfirmOpen(false)} type="button">Cancel</button>
+              <button
+                className="inline-flex items-center justify-center bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-xs font-bold whitespace-nowrap shadow-sm transition-colors"
+                disabled={workspace.pendingAction === 'reservations-summary-backfill'}
+                onClick={() => {
+                  void workspace.backfillExistingReservations().then(() => setBackfillConfirmOpen(false));
+                }}
+                type="button"
+              >
+                {workspace.pendingAction === 'reservations-summary-backfill' ? 'Queueing…' : 'Queue backfill'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {providerEventConfirmOpen && workspace.selectedConnection && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 py-6" role="dialog" aria-modal="true" aria-label="Send provider reservation event">
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden">
+            <div className="p-5 border-b border-slate-100">
+              <p className="text-sm font-semibold text-slate-800 leading-relaxed">
+                Send {formatProviderEventLabel(workspace.providerReservationEventStatus)} provider reservation event to {formatConnectionLabel(workspace.selectedConnection)} for {workspace.providerReservationId.trim() || 'a new test reservation'}?
+              </p>
+            </div>
+            <div className="p-5 bg-slate-50 flex items-center justify-end gap-2">
+              <button className={secondaryBtn} disabled={workspace.pendingAction === 'provider-reservation-event'} onClick={() => setProviderEventConfirmOpen(false)} type="button">Cancel</button>
+              <button
+                className="inline-flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-xs font-bold whitespace-nowrap shadow-sm transition-colors"
+                disabled={workspace.pendingAction === 'provider-reservation-event'}
+                onClick={() => {
+                  void workspace.submitProviderReservationEvent().then(() => setProviderEventConfirmOpen(false));
+                }}
+                type="button"
+              >
+                {workspace.pendingAction === 'provider-reservation-event' ? 'Sending…' : 'Send event'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

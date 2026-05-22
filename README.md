@@ -356,11 +356,14 @@ Content-Type: application/json
 GET /guests?page=1&limit=25&search=Priya
 ```
 
+In sandbox/local testing, Zodomus-imported guest records from detached OTA history are hidden by default so removed or paused test connections do not keep noisy guest profiles visible. Production-style history is controlled by `ZODOMUS_ENVIRONMENT="production"` or `SHOW_DETACHED_OTA_RESERVATION_HISTORY="true"`.
+
 ## Booking API
 
 ### Create Booking
 
 Reservation intake comes from OTA/channel import into `ReservationGroup` and `ReservationRoom`.
+In sandbox/local testing, reservation feed and reservation-related dashboard counts include direct HMS reservations and active OTA connections only; detached OTA history and provider-only failure records are hidden unless explicitly enabled for production-style review.
 
 ### Reservation Groups
 

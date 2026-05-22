@@ -113,7 +113,7 @@ Important enums:
 - `ChannelProvider`: `MOCK`, `ZODOMUS`, `SITEMINDER`, `BOOKING_COM`, `AIRBNB`
 - `ChannelConnectionStatus`: `ACTIVE`, `PAUSED`, `ERROR`
 - `ChannelSyncType`: `INVENTORY`, `RATES`, `BOOKINGS`
-- `ChannelSyncStatus`: `QUEUED`, `SUCCEEDED`, `FAILED`
+- `ChannelSyncStatus`: `QUEUED`, `SUCCEEDED`, `PARTIAL_FAILED`, `FAILED`
 - `AuditAction`: `CREATE`, `UPDATE`, `DELETE`, `CHECK_IN`, `CHECK_OUT`, `PAYMENT_COLLECT`, `PAYMENT_REFUND`, `CHANNEL_SYNC`
 - `HousekeepingStatus`: `DIRTY`, `CLEANING`, `CLEAN`, `INSPECTED`, `OUT_OF_SERVICE`
 - `HousekeepingPriority`: `LOW`, `NORMAL`, `HIGH`, `URGENT`
@@ -136,6 +136,7 @@ Schema files:
 - Check-out changes booking status to `CHECKED_OUT` and room status to `AVAILABLE`.
 - Imported reservation-room lines also support line-level check-in and check-out, with group status recomputed from room-line states.
 - Rooms in `MAINTENANCE` cannot be booked or checked in.
+- Physical rooms with active or future `BOOKED` / `CHECKED_IN` reservation-room stays cannot be deleted until those stays are reassigned, checked out, or cancelled.
 - Billing allows one invoice per reservation room.
 - Billing also allows one invoice per imported reservation room.
 - Billing total is `amount + tax + extra_charges_total`.
@@ -152,6 +153,7 @@ Schema files:
 - Channel syncs do not write directly to room or booking tables. They build provider payloads from internal inventory/rate mappings and record request/response logs.
 - Channel sync requests enqueue background jobs and update sync logs asynchronously instead of blocking the request until provider push completes.
 - Channel connection setup, room/rate mappings, and sync outcomes create audit log records.
+- New room/rate mappings on an existing Zodomus connection reset room activation/readiness and require room activation plus property check before treating the connection as ready.
 - Channel sync supports `Idempotency-Key`.
 - Idempotent channel sync requests are serialized per idempotency key before response persistence so concurrent retries do not create duplicate sync-side effects or duplicate sync logs.
 - Payment and channel webhooks are verified with HMAC secrets, persisted as webhook events, and deduplicated through a stored replay key plus advisory-lock serialization.
@@ -159,6 +161,7 @@ Schema files:
 - Reservation confirmations, hotel-owner reservation notifications, and check-in reminders enqueue persisted notification jobs with retry scheduling and dead-letter state instead of sending inline from the request path.
 - `MOCK`, `CASH`, `CARD`, and `UPI` payments use the local payment adapter; `RAZORPAY` and `STRIPE` are still placeholders that reject live calls until credentials, webhook verification, and idempotency are added.
 - `MOCK` channel syncs use the local adapter; `ZODOMUS` is the first real provider adapter with availability sync, rate sync, reservation polling, reservation detail fetch, and reservation import. `SITEMINDER`, `BOOKING_COM`, and `AIRBNB` remain placeholders.
+- Failed inventory and rate row retries are supported from channel sync logs; successful inventory row retries clear stale failed-row diagnostics for the same connection, room, and date.
 - Images are uploaded as multipart files and stored locally for MVP only. Production should move to S3/R2/Cloudinary-style object storage.
 - `SUPER_ADMIN` can see and manage all hotels.
 - `ADMIN` and `STAFF` are scoped to `user.property_id` and cannot access other hotel records.
@@ -253,6 +256,7 @@ Paginated/searchable list endpoints support `page`, `limit`, and `search` query 
 - `POST /channels/:id/rate-mappings`
 - `POST /channels/:id/sync`
 - `GET /channels/:id/sync-logs`
+- `POST /channels/:id/sync-logs/:syncLogId/retry-failed-rows`
 
 ### Audit Logs
 
@@ -392,7 +396,11 @@ Current frontend capabilities:
 - Collect invoice payments and reservation-group folio payments through the payment provider boundary.
 - View channel connections and mappings.
 - Trigger Zodomus inventory/rate/booking syncs and inspect recent sync logs.
+- Removing an OTA connection is treated as a test-cleanup path: imported reservation groups for that connection are deleted after active inventory is released, orphan channel-imported guests are removed, and remaining active OTA connections receive inventory fan-out.
 - Review channel operations through sync, background-job, webhook, and metrics-summary surfaces.
+- Review background-job health for pending, processing, dead-letter, and stuck jobs in Webhooks & Sync.
+- Retry partial-failed inventory and rate sync rows from the channel diagnostics workflow.
+- Persist the selected OTA connection across Channel Manager, OTA Mapping, and Webhooks & Sync refreshes so manual syncs and diagnostics stay scoped to the operator-selected connection, such as Expedia instead of defaulting back to Booking.com.
 - Review audit logs for sensitive operational actions in an event-stream layout with actor/action filters.
 - Upload and preview property and room-category photos.
 - Surface backend request-aware API errors, including request IDs when available.

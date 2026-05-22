@@ -173,9 +173,17 @@ export function PaymentsPage() {
       {(billingsState.error || paymentsState.error || reservationGroupsState.error) && <ErrorMsg>{billingsState.error ?? paymentsState.error ?? reservationGroupsState.error}</ErrorMsg>}
 
       <FilterBar title="Payment filters">
-        <label className={labelCls}><span>Search payments</span><input className={inputCls} onChange={(e) => setSearch(e.target.value)} placeholder="Guest, property, or payment reference" value={search} /></label>
-        <label className={labelCls}><span>Provider</span><CustomSelect onChange={(v) => setProviderFilter(v as 'ALL' | PaymentProvider)} options={[{ label: 'All providers', value: 'ALL' }, ...providerOptions]} value={providerFilter} /></label>
-        <label className={labelCls}><span>Status</span><CustomSelect onChange={(v) => setStatusFilter(v as typeof statusFilter)} options={[{ label: 'All statuses', value: 'ALL' }, { label: 'Succeeded', value: 'SUCCEEDED' }, { label: 'Failed', value: 'FAILED' }, { label: 'Refunded', value: 'REFUNDED' }]} value={statusFilter} /></label>
+        <label className={`${labelCls} min-w-[18rem]`}>
+          <span>Search payments</span>
+          <div className="relative">
+            <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" />
+            </svg>
+            <input className={`${inputCls} pl-9`} onChange={(e) => setSearch(e.target.value)} placeholder="Guest, property, or payment reference" type="search" value={search} />
+          </div>
+        </label>
+        <label className={`${labelCls} min-w-[15rem]`}><span>Provider</span><CustomSelect onChange={(v) => setProviderFilter(v as 'ALL' | PaymentProvider)} options={[{ label: 'All providers', value: 'ALL' }, ...providerOptions]} value={providerFilter} /></label>
+        <label className={`${labelCls} min-w-[15rem]`}><span>Status</span><CustomSelect onChange={(v) => setStatusFilter(v as typeof statusFilter)} options={[{ label: 'All statuses', value: 'ALL' }, { label: 'Succeeded', value: 'SUCCEEDED' }, { label: 'Failed', value: 'FAILED' }, { label: 'Refunded', value: 'REFUNDED' }]} value={statusFilter} /></label>
       </FilterBar>
 
       {uninvoicedCheckedOutReservationRooms.length > 0 && (

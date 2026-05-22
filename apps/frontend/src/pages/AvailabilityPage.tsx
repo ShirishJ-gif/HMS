@@ -11,27 +11,45 @@ import { formatCurrency } from '../utils/format';
 import { labelCls, primaryBtn, TableCard, Th, Td, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
 
 const AVAILABILITY_STORAGE_KEY = 'hms_availability_state';
-const INVENTORY_CALENDAR_PREVIEW_DAYS = 7;
+const INVENTORY_CALENDAR_DAYS = 30;
+const RANGE_PRESET_OPTIONS = [
+  { label: 'Next 30 days', value: 'next_30' },
+  { label: 'Next 60 days', value: 'next_60' },
+  { label: 'Next 90 days', value: 'next_90' },
+  { label: 'This month', value: 'this_month' },
+  { label: 'Next month', value: 'next_month' },
+  { label: 'Custom dates', value: 'custom' },
+] as const;
+
+type RangePreset = (typeof RANGE_PRESET_OPTIONS)[number]['value'];
 
 type PersistedAvailabilityQuery = { propertyId: string; from: string; to: string };
 type PersistedAvailabilityState = { lastLoadedQuery: PersistedAvailabilityQuery; availability: AvailabilitySummary; inventoryCalendar: InventoryCalendarSummary };
 
 export function AvailabilityPage() {
-  const today = new Date().toISOString().slice(0, 10);
-  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const today = dateToInputValue(new Date());
+  const defaultTo = addDays(today, INVENTORY_CALENDAR_DAYS - 1);
   const [propertyId, setPropertyId] = usePersistedPropertyId();
   const persistedAvailabilityState = useMemo(() => readPersistedAvailabilityState(), []);
   const restoredQuery = persistedAvailabilityState?.lastLoadedQuery ?? null;
-  const shouldRestorePersistedResults = restoredQuery != null && (!propertyId || restoredQuery.propertyId === propertyId);
+  const shouldRestorePersistedResults =
+    restoredQuery != null &&
+    (!propertyId || restoredQuery.propertyId === propertyId) &&
+    persistedAvailabilityState?.inventoryCalendar.from === restoredQuery.from &&
+    persistedAvailabilityState?.inventoryCalendar.to === restoredQuery.to;
   const [from, setFrom] = useState(shouldRestorePersistedResults ? restoredQuery.from : today);
-  const [to, setTo] = useState(shouldRestorePersistedResults ? restoredQuery.to : tomorrow);
+  const [to, setTo] = useState(shouldRestorePersistedResults ? restoredQuery.to : defaultTo);
   const [availability, setAvailability] = useState<AvailabilitySummary | null>(shouldRestorePersistedResults ? persistedAvailabilityState?.availability ?? null : null);
   const [inventoryCalendar, setInventoryCalendar] = useState<InventoryCalendarSummary | null>(shouldRestorePersistedResults ? persistedAvailabilityState?.inventoryCalendar ?? null : null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [lastLoadedQuery, setLastLoadedQuery] = useState<PersistedAvailabilityQuery | null>(shouldRestorePersistedResults ? restoredQuery : null);
   const [openDatePicker, setOpenDatePicker] = useState<'from' | 'to' | null>(null);
+  const [rangePreset, setRangePreset] = useState<RangePreset>(
+    shouldRestorePersistedResults && restoredQuery ? inferRangePreset(restoredQuery.from, restoredQuery.to, today) : 'next_30',
+  );
   const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), []);
   const categoriesState = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), []);
   const properties = propertiesState.data ?? [];
@@ -45,6 +63,11 @@ export function AvailabilityPage() {
     if (properties.length === 0) { if (propertyId) setPropertyId(''); setAvailability(null); setInventoryCalendar(null); setLastLoadedQuery(null); clearPersistedAvailabilityState(); return; }
     if (!propertyId || !properties.some((p) => p.id === propertyId)) { setPropertyId(properties[0].id); setAvailability(null); setInventoryCalendar(null); setLastLoadedQuery(null); clearPersistedAvailabilityState(); }
   }, [properties, propertyId, setPropertyId]);
+
+  useEffect(() => {
+    if (!hasLoadedProperties || !selectedPropertyExists || lastLoadedQuery?.propertyId === propertyId) return;
+    void fetchAvailability({ propertyId, from, to });
+  }, [from, hasLoadedProperties, lastLoadedQuery?.propertyId, propertyId, selectedPropertyExists, to]);
 
   const displayedAvailability = hasLoadedProperties && selectedPropertyExists && lastLoadedQuery?.propertyId === propertyId ? availability : null;
   const displayedInventoryCalendar = displayedAvailability ? inventoryCalendar : null;
@@ -70,20 +93,44 @@ export function AvailabilityPage() {
   const visibleInventoryExceptionRows = inventoryExceptionRows.slice(0, 12);
   const hiddenInventoryExceptionRows = Math.max(0, inventoryExceptionRows.length - visibleInventoryExceptionRows.length);
   const inventoryCalendarDates = displayedInventoryCalendar ? Array.from(new Set(displayedInventoryCalendar.categories.flatMap((c) => c.rows.map((r) => r.date)))).sort() : [];
-  const inventoryCalendarGridTemplate = `13rem repeat(${Math.max(inventoryCalendarDates.length, 1)}, minmax(4.4rem, 1fr))`;
+  const inventoryDateGridTemplate = `repeat(${Math.max(inventoryCalendarDates.length, 1)}, minmax(5.25rem, 5.25rem))`;
 
-  async function loadAvailability(event: FormEvent) {
-    event.preventDefault(); setError(null);
+  async function fetchAvailability(query: PersistedAvailabilityQuery) {
+    setError(null); setAvailabilityLoading(true);
     try {
-      const query = { propertyId, from, to };
       if (!query.propertyId) { setError('Select a property before checking availability.'); return; }
       const [availabilityResponse, inventoryResponse] = await Promise.all([
         api.get<AvailabilitySummary>('/availability', { params: { property_id: query.propertyId, from: query.from, to: query.to } }),
-        api.get<InventoryCalendarSummary>('/inventory-calendar', { params: { property_id: query.propertyId, from: query.from, to: previousDate(query.to) } }),
+        api.get<InventoryCalendarSummary>('/inventory-calendar', { params: { property_id: query.propertyId, from: query.from, to: query.to } }),
       ]);
       setAvailability(availabilityResponse.data); setInventoryCalendar(inventoryResponse.data); setLastLoadedQuery(query);
       writePersistedAvailabilityState({ lastLoadedQuery: query, availability: availabilityResponse.data, inventoryCalendar: inventoryResponse.data });
     } catch (loadError) { setError(loadError instanceof Error ? loadError.message : 'Failed to load availability'); }
+    finally { setAvailabilityLoading(false); }
+  }
+
+  function loadAvailability(event: FormEvent) {
+    event.preventDefault();
+    void fetchAvailability({ propertyId, from, to });
+  }
+
+  function applyRangePreset(value: string) {
+    const preset = value as RangePreset;
+    setRangePreset(preset);
+    if (preset === 'custom') return;
+    const range = getPresetRange(preset, today);
+    setFrom(range.from);
+    setTo(range.to);
+  }
+
+  function updateFromDate(value: string) {
+    setFrom(value);
+    setRangePreset('custom');
+  }
+
+  function updateToDate(value: string) {
+    setTo(value);
+    setRangePreset('custom');
   }
 
   return (
@@ -102,10 +149,11 @@ export function AvailabilityPage() {
           </div>
           <div className="grid grid-cols-2 gap-4 flex-1 content-start">
             <label className={`${labelCls} col-span-2`}><span>Property</span><CustomSelect onChange={setPropertyId} options={properties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={propertyId} /></label>
-            <DatePickerField label="From" onChange={setFrom} open={openDatePicker === 'from'} setOpen={(open) => setOpenDatePicker(open ? 'from' : null)} value={from} />
-            <DatePickerField align="right" label="To" onChange={setTo} open={openDatePicker === 'to'} setOpen={(open) => setOpenDatePicker(open ? 'to' : null)} value={to} />
+            <label className={`${labelCls} col-span-2`}><span>Range</span><CustomSelect onChange={applyRangePreset} options={[...RANGE_PRESET_OPTIONS]} value={rangePreset} /></label>
+            <DatePickerField label="From" onChange={updateFromDate} open={openDatePicker === 'from'} setOpen={(open) => setOpenDatePicker(open ? 'from' : null)} value={from} />
+            <DatePickerField align="right" label="To" onChange={updateToDate} open={openDatePicker === 'to'} setOpen={(open) => setOpenDatePicker(open ? 'to' : null)} value={to} />
           </div>
-          <button className={primaryBtn + ' w-full justify-center'} type="submit">Check availability</button>
+          <button className={primaryBtn + ' w-full justify-center'} disabled={availabilityLoading} type="submit">{availabilityLoading ? 'Loading…' : 'Check availability'}</button>
         </form>
 
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 min-h-[17.5rem] flex flex-col gap-4">
@@ -160,7 +208,7 @@ export function AvailabilityPage() {
         </div>
       </div>
 
-      {(propertiesState.loading || categoriesState.loading) && <LoadingMsg>Loading properties and room types…</LoadingMsg>}
+      {(propertiesState.loading || categoriesState.loading || availabilityLoading) && <LoadingMsg>{availabilityLoading ? 'Loading 30-day availability…' : 'Loading properties and room types…'}</LoadingMsg>}
       {(propertiesState.error || categoriesState.error || error) && <ErrorMsg>{propertiesState.error ?? categoriesState.error ?? error}</ErrorMsg>}
       {actionStatus && <SuccessMsg>{actionStatus}</SuccessMsg>}
       {actionError && <ErrorMsg>{actionError}</ErrorMsg>}
@@ -242,41 +290,45 @@ export function AvailabilityPage() {
                   </div>
                   <span className="text-xs text-slate-400">{inventoryCalendarRowCount} room-night rows in this query</span>
                 </div>
-                <div className="overflow-x-auto">
-                  <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: inventoryCalendarGridTemplate }}>
-                    <div className="px-4 py-2.5 bg-slate-50 border-b border-r border-slate-100 text-xs font-bold text-slate-600">Room type</div>
-                    {inventoryCalendarDates.map((date) => (
-                      <div key={date} className="px-2 py-2.5 bg-slate-50 border-b border-r border-slate-100 last:border-r-0 text-center">
-                        <strong className="block text-[10px] font-bold text-slate-500">{formatShortDate(date)}</strong>
-                        <span className="text-[10px] text-slate-400">{formatWeekday(date)}</span>
-                      </div>
-                    ))}
+                <div className="grid grid-cols-[13rem_minmax(0,1fr)]">
+                  <div>
+                    <div className="px-4 py-2.5 min-h-[3.75rem] bg-slate-50 border-b border-r border-slate-100 text-xs font-bold text-slate-600 flex items-center">Room type</div>
                     {displayedInventoryCalendar.categories.map((cat) => {
-                      const rowByDate = new Map(cat.rows.map((r) => [r.date, r]));
                       const summary = inventoryCategorySummaries.find((s) => s.roomCategoryId === cat.room_category_id);
                       return (
-                        <div key={cat.room_category_id} style={{ display: 'contents' }}>
-                          <div className="px-4 py-3 border-b border-r border-slate-100 bg-white">
-                            <strong className="text-xs font-bold text-slate-900 block">{cat.name}</strong>
-                            <span className="text-[11px] text-slate-400">Avg {summary?.averageAvailable ?? 0} · Low {summary?.minAvailable ?? 0} · {summary?.restrictedRows ?? 0} restricted</span>
-                          </div>
-                          {inventoryCalendarDates.map((date) => {
-                            const row = rowByDate.get(date);
-                            if (!row) return <div key={date} className="border-b border-r border-slate-50 last:border-r-0 p-2 bg-white flex items-center justify-center"><strong className="text-xs text-slate-300">—</strong></div>;
-                            const tone = availabilityCellTone(row);
-                            const toneMap: Record<string, string> = { healthy: 'bg-emerald-50', limited: 'bg-amber-50', closed: 'bg-rose-50', restricted: 'bg-indigo-50' };
-                            return (
-                              <div key={date} className={`border-b border-r border-slate-50 last:border-r-0 p-2 ${toneMap[tone] ?? 'bg-white'}`}>
-                                <strong className="text-xs font-bold text-slate-900 block text-center">{row.available_rooms}</strong>
-                                <span className="text-[10px] text-slate-500 block text-center">{row.reserved_rooms} bkd</span>
-                                {row.blocked_rooms > 0 && <em className="text-[10px] text-amber-600 block text-center not-italic">{row.blocked_rooms} blk</em>}
-                                {hasRestriction(row) && <small className="text-[10px] text-rose-500 block text-center">{formatRestrictionSummary(row)}</small>}
-                              </div>
-                            );
-                          })}
+                        <div key={cat.room_category_id} className="px-4 py-3 min-h-[4.75rem] border-b border-r border-slate-100 bg-white">
+                          <strong className="text-xs font-bold text-slate-900 block">{cat.name}</strong>
+                          <span className="text-[11px] text-slate-400">Avg {summary?.averageAvailable ?? 0} · Low {summary?.minAvailable ?? 0} · {summary?.restrictedRows ?? 0} restricted</span>
                         </div>
                       );
                     })}
+                  </div>
+                  <div className="scrollbar-none overflow-x-auto overscroll-x-contain">
+                    <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: inventoryDateGridTemplate }}>
+                      {inventoryCalendarDates.map((date) => (
+                        <div key={date} className="px-2 py-2.5 min-h-[3.75rem] bg-slate-50 border-b border-r border-slate-100 last:border-r-0 text-center">
+                          <strong className="block text-[10px] font-bold text-slate-500">{formatShortDate(date)}</strong>
+                          <span className="text-[10px] text-slate-400">{formatWeekday(date)}</span>
+                        </div>
+                      ))}
+                      {displayedInventoryCalendar.categories.map((cat) => {
+                        const rowByDate = new Map(cat.rows.map((r) => [r.date, r]));
+                        return inventoryCalendarDates.map((date) => {
+                          const row = rowByDate.get(date);
+                          if (!row) return <div key={`${cat.room_category_id}:${date}`} className="min-h-[4.75rem] border-b border-r border-slate-50 last:border-r-0 p-2 bg-white flex items-center justify-center"><strong className="text-xs text-slate-300">—</strong></div>;
+                          const tone = availabilityCellTone(row);
+                          const toneMap: Record<string, string> = { healthy: 'bg-emerald-50', limited: 'bg-amber-50', closed: 'bg-rose-50', restricted: 'bg-indigo-50' };
+                          return (
+                            <div key={`${cat.room_category_id}:${date}`} className={`min-h-[4.75rem] border-b border-r border-slate-50 last:border-r-0 p-2 ${toneMap[tone] ?? 'bg-white'}`}>
+                              <strong className="text-xs font-bold text-slate-900 block text-center">{row.available_rooms}</strong>
+                              <span className="text-[10px] text-slate-500 block text-center">{row.reserved_rooms} bkd</span>
+                              {row.blocked_rooms > 0 && <em className="text-[10px] text-amber-600 block text-center not-italic">{row.blocked_rooms} blk</em>}
+                              {hasRestriction(row) && <small className="text-[10px] text-rose-500 block text-center">{formatRestrictionSummary(row)}</small>}
+                            </div>
+                          );
+                        });
+                      })}
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-4 px-5 py-3 border-t border-slate-100 bg-slate-50">
@@ -413,7 +465,25 @@ function parseDateValue(value: string) { if (!value) return undefined; return ne
 function dateToInputValue(value: Date) { return value.toISOString().slice(0, 10); }
 function formatShortDate(value: string) { return new Date(`${value}T00:00:00.000Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); }
 function formatWeekday(value: string) { return new Date(`${value}T00:00:00.000Z`).toLocaleDateString(undefined, { weekday: 'short' }); }
-function previousDate(value: string) { const d = new Date(`${value}T00:00:00.000Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); }
+function addDays(value: string, days: number) { const d = new Date(`${value}T00:00:00.000Z`); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10); }
+function getPresetRange(preset: Exclude<RangePreset, 'custom'>, today: string) {
+  if (preset === 'next_30') return { from: today, to: addDays(today, 29) };
+  if (preset === 'next_60') return { from: today, to: addDays(today, 59) };
+  if (preset === 'next_90') return { from: today, to: addDays(today, 89) };
+
+  const current = new Date(`${today}T00:00:00.000Z`);
+  const monthOffset = preset === 'next_month' ? 1 : 0;
+  const start = new Date(Date.UTC(current.getUTCFullYear(), current.getUTCMonth() + monthOffset, 1));
+  const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0));
+  return { from: dateToInputValue(start), to: dateToInputValue(end) };
+}
+function inferRangePreset(from: string, to: string, today: string): RangePreset {
+  for (const preset of ['next_30', 'next_60', 'next_90', 'this_month', 'next_month'] as Exclude<RangePreset, 'custom'>[]) {
+    const range = getPresetRange(preset, today);
+    if (range.from === from && range.to === to) return preset;
+  }
+  return 'custom';
+}
 
 function CalendarIcon({ className = '' }: { className?: string }) {
   return (
@@ -421,13 +491,6 @@ function CalendarIcon({ className = '' }: { className?: string }) {
       <path d="M7 3v3M17 3v3M4.5 9.5h15M6.5 5h11A2.5 2.5 0 0 1 20 7.5v10A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5v-10A2.5 2.5 0 0 1 6.5 5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
     </svg>
   );
-}
-
-function buildDateRange(startDate: string, endDateExclusive: string) {
-  if (!startDate || !endDateExclusive || startDate >= endDateExclusive) return [];
-  const dates: string[] = []; const current = new Date(`${startDate}T00:00:00.000Z`); const end = new Date(`${endDateExclusive}T00:00:00.000Z`);
-  while (current < end) { dates.push(current.toISOString().slice(0, 10)); current.setUTCDate(current.getUTCDate() + 1); }
-  return dates;
 }
 
 function readPersistedAvailabilityState(): PersistedAvailabilityState | null {

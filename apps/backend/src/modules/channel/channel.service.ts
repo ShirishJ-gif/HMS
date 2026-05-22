@@ -7,7 +7,14 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { AuditAction, ChannelProvider, ChannelSyncStatus, ChannelSyncType, Prisma } from '@prisma/client';
+import {
+  AuditAction,
+  BookingStatus,
+  ChannelProvider,
+  ChannelSyncStatus,
+  ChannelSyncType,
+  Prisma,
+} from '@prisma/client';
 import { BackgroundJobService } from '../background-job/background-job.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -59,6 +66,12 @@ type InventorySyncRowResult = {
 };
 
 type DbClient = PrismaService | Prisma.TransactionClient;
+type ImportedReservationCleanupSummary = {
+  reservation_groups_deleted: number;
+  reservation_rooms_deleted: number;
+  imported_guests_deleted: number;
+  active_room_nights_released: number;
+};
 
 @Injectable()
 export class ChannelService implements OnModuleInit, OnModuleDestroy {
@@ -206,9 +219,22 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     assertCanAccessProperty(user, connection.propertyId);
     const providerConfigSummary = this.readProviderConfigSummary(connection.provider, connection.credentials);
 
-    await this.prisma.channelConnection.delete({
-      where: { id: connectionId },
+    const cleanupSummary = await this.prisma.$transaction(async (tx) => {
+      const summary = await this.deleteImportedReservationsForConnection(tx, connectionId);
+
+      await tx.channelConnection.delete({
+        where: { id: connectionId },
+      });
+
+      return summary;
     });
+
+    if (cleanupSummary.active_room_nights_released > 0) {
+      await this.backgroundJobService.queueInventorySyncsForProperty(connection.propertyId, {
+        trigger: 'channel_connection_removed_reservation_cleanup',
+        sourceConnectionId: connection.id,
+      });
+    }
 
     await this.auditLogService.record({
       action: AuditAction.DELETE,
@@ -223,6 +249,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         room_mapping_count: connection.roomMappings.length,
         rate_mapping_count: connection.rateMappings.length,
         recent_sync_log_count: connection.syncLogs.length,
+        ...cleanupSummary,
       },
       user,
     });
@@ -230,6 +257,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     return {
       id: connection.id,
       deleted: true,
+      reservation_cleanup: cleanupSummary,
     };
   }
 
@@ -721,35 +749,28 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    const detailResponse = await this.providerService.getReservation({
-      provider: connection.provider,
-      external_hotel_id: connection.externalHotelId,
-      credentials: connection.credentials,
-      reservation_id: createdReservationId,
-    });
-    const providerReservationDetail = this.readObject(
-      this.readObject(detailResponse as unknown as Prisma.JsonValue).response,
-    );
-    const importSummary = await this.zodomusReservationImportService.importFromSync({
-      channelConnectionId: connection.id,
-      propertyId: connection.propertyId,
-      responsePayload: JSON.parse(
-        JSON.stringify({
-          reservations: [providerReservationDetail],
-        }),
-      ) as Prisma.JsonValue,
+    const importResult = await this.importCreatedProviderTestReservation({
+      connection,
+      reservationId: createdReservationId,
     });
 
     await this.backgroundJobService.finalizeImportedReservationImport({
       sourceConnectionId: connection.id,
       propertyId: connection.propertyId,
-      importSummary,
+      importSummary: importResult.importSummary,
     });
 
     return {
       ...providerResponse,
       reservation_id: createdReservationId,
-      import_summary: importSummary,
+      import_summary: importResult.importSummary,
+      ...(importResult.attempts > 1 ? { import_attempts: importResult.attempts } : {}),
+      ...(importResult.imported
+        ? {}
+        : {
+            import_skipped_reason:
+              'Zodomus accepted the test reservation but reservation detail was not available for import yet.',
+          }),
     };
   }
 
@@ -771,6 +792,78 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     }
 
     return trimmedReservationId;
+  }
+
+  private async importCreatedProviderTestReservation(input: {
+    connection: Awaited<ReturnType<ChannelService['findAccessibleConnection']>>;
+    reservationId: string;
+  }) {
+    const maxAttempts = 4;
+    let importSummary: Prisma.InputJsonObject = {
+      errors: [],
+      failed: 0,
+      created: 0,
+      skipped: 0,
+      updated: 0,
+      cancelled: 0,
+      discovered: 0,
+      imported_room_count: 0,
+      created_reservation_group_ids: [],
+      imported_reservation_room_ids: [],
+      updated_reservation_group_ids: [],
+      imported_reservation_group_ids: [],
+      cancelled_reservation_group_ids: [],
+    };
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const detailResponse = await this.providerService.getReservation({
+        provider: input.connection.provider,
+        external_hotel_id: input.connection.externalHotelId,
+        credentials: input.connection.credentials,
+        reservation_id: input.reservationId,
+      });
+      const providerReservationDetail = this.readObject(
+        this.readObject(detailResponse as unknown as Prisma.JsonValue).response,
+      );
+      importSummary = await this.zodomusReservationImportService.importFromSync({
+        channelConnectionId: input.connection.id,
+        propertyId: input.connection.propertyId,
+        responsePayload: JSON.parse(
+          JSON.stringify({
+            reservations: [providerReservationDetail],
+          }),
+        ) as Prisma.JsonValue,
+      });
+
+      if (this.didProviderTestImportDiscoverReservation(importSummary)) {
+        return { importSummary, attempts: attempt, imported: true };
+      }
+
+      if (attempt < maxAttempts) {
+        await this.delay(1500);
+      }
+    }
+
+    return { importSummary, attempts: maxAttempts, imported: false };
+  }
+
+  private didProviderTestImportDiscoverReservation(importSummary: Prisma.InputJsonObject) {
+    return (
+      this.readUnknownCount(importSummary.discovered) > 0 ||
+      this.readUnknownCount(importSummary.created) > 0 ||
+      this.readUnknownCount(importSummary.updated) > 0 ||
+      this.readUnknownCount(importSummary.cancelled) > 0 ||
+      this.readUnknownCount(importSummary.skipped) > 0 ||
+      this.readUnknownCount(importSummary.failed) > 0
+    );
+  }
+
+  private readUnknownCount(value: unknown) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  }
+
+  private delay(milliseconds: number) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
   }
 
   async createRoomMapping(connectionId: string, dto: CreateChannelRoomMappingDto, user?: AuthenticatedUser) {
@@ -810,6 +903,135 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     });
 
     return this.toConnectionResponse(updated);
+  }
+
+  private async deleteImportedReservationsForConnection(
+    tx: Prisma.TransactionClient,
+    connectionId: string,
+  ): Promise<ImportedReservationCleanupSummary> {
+    const reservationGroups = await tx.reservationGroup.findMany({
+      where: { channelConnectionId: connectionId },
+      include: {
+        rooms: {
+          select: {
+            id: true,
+            propertyId: true,
+            roomCategoryId: true,
+            arrivalDate: true,
+            departureDate: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    if (reservationGroups.length === 0) {
+      return {
+        reservation_groups_deleted: 0,
+        reservation_rooms_deleted: 0,
+        imported_guests_deleted: 0,
+        active_room_nights_released: 0,
+      };
+    }
+
+    const reservationGroupIds = reservationGroups.map((group) => group.id);
+    const primaryGuestIds = Array.from(
+      new Set(
+        reservationGroups.flatMap((group) => (group.primaryGuestId ? [group.primaryGuestId] : [])),
+      ),
+    );
+    const billingCount = await tx.billing.count({
+      where: {
+        reservationRoom: {
+          is: {
+            reservationGroupId: { in: reservationGroupIds },
+          },
+        },
+      },
+    });
+
+    if (billingCount > 0) {
+      throw new ConflictException(
+        'Cannot remove OTA connection because imported reservations have billing records. Void or detach billing first.',
+      );
+    }
+
+    const activeStatuses = new Set<BookingStatus>([BookingStatus.BOOKED, BookingStatus.CHECKED_IN]);
+    const releaseCounts = new Map<string, { propertyId: string; roomCategoryId: string; stayDate: Date; roomCount: number }>();
+
+    for (const reservationGroup of reservationGroups) {
+      for (const room of reservationGroup.rooms) {
+        if (!activeStatuses.has(room.status)) {
+          continue;
+        }
+
+        for (const stayDate of this.eachStayDate(room.arrivalDate, room.departureDate)) {
+          const key = `${room.propertyId}:${room.roomCategoryId}:${stayDate.toISOString().slice(0, 10)}`;
+          const existing = releaseCounts.get(key);
+          if (existing) {
+            existing.roomCount += 1;
+          } else {
+            releaseCounts.set(key, {
+              propertyId: room.propertyId,
+              roomCategoryId: room.roomCategoryId,
+              stayDate,
+              roomCount: 1,
+            });
+          }
+        }
+      }
+    }
+
+    for (const release of releaseCounts.values()) {
+      const row = await tx.inventoryCalendar.findUnique({
+        where: {
+          propertyId_roomCategoryId_stayDate: {
+            propertyId: release.propertyId,
+            roomCategoryId: release.roomCategoryId,
+            stayDate: release.stayDate,
+          },
+        },
+      });
+
+      if (!row) {
+        continue;
+      }
+
+      const nextReserved = Math.max(row.reservedRooms - release.roomCount, 0);
+      await tx.inventoryCalendar.update({
+        where: { id: row.id },
+        data: {
+          reservedRooms: nextReserved,
+          availableRooms: Math.max(row.totalRooms - row.blockedRooms - nextReserved, 0),
+        },
+      });
+    }
+
+    await tx.reservationGroup.deleteMany({
+      where: { id: { in: reservationGroupIds } },
+    });
+
+    const deletedGuests =
+      primaryGuestIds.length > 0
+        ? await tx.guest.deleteMany({
+            where: {
+              id: { in: primaryGuestIds },
+              idProof: 'CHANNEL_IMPORT',
+              address: 'Imported from Zodomus',
+              reservationGroups: { none: {} },
+            },
+          })
+        : { count: 0 };
+
+    return {
+      reservation_groups_deleted: reservationGroups.length,
+      reservation_rooms_deleted: reservationGroups.reduce((total, group) => total + group.rooms.length, 0),
+      imported_guests_deleted: deletedGuests.count,
+      active_room_nights_released: Array.from(releaseCounts.values()).reduce(
+        (total, release) => total + release.roomCount,
+        0,
+      ),
+    };
   }
 
   async createRateMapping(connectionId: string, dto: CreateChannelRateMappingDto, user?: AuthenticatedUser) {
@@ -1112,6 +1334,16 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       if (result.room_mappings.length > 0) {
         await this.backgroundJobService.queueInventorySyncsForProperty(connection.propertyId, {
           trigger: 'room_mapping_created',
+        });
+      }
+
+      if (connection.provider === ChannelProvider.ZODOMUS && (result.room_mappings.length > 0 || result.rate_mappings.length > 0)) {
+        await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
+          setup_status: {
+            rooms_activated: false,
+            ready: false,
+            ready_at: null,
+          },
         });
       }
 
@@ -1460,25 +1692,36 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException('Channel sync log not found for this connection');
     }
 
-    if (sourceLog.syncType !== ChannelSyncType.INVENTORY) {
-      throw new BadRequestException('Failed-row retry is only supported for inventory sync logs.');
+    if (sourceLog.syncType !== ChannelSyncType.INVENTORY && sourceLog.syncType !== ChannelSyncType.RATES) {
+      throw new BadRequestException('Failed-row retry is only supported for inventory and rate sync logs.');
     }
 
-    const failedRows = this.extractFailedInventoryRows(sourceLog.responsePayload, sourceLog.requestPayload);
+    const failedRows =
+      sourceLog.syncType === ChannelSyncType.RATES
+        ? this.extractFailedRateRows(sourceLog.responsePayload, sourceLog.requestPayload)
+        : this.extractFailedInventoryRows(sourceLog.responsePayload, sourceLog.requestPayload);
     if (failedRows.length === 0) {
-      throw new BadRequestException('This inventory sync log has no failed rows to retry.');
+      throw new BadRequestException('This sync log has no failed rows to retry.');
     }
 
-    const sortedDates = failedRows.map((row) => row.date).sort((left, right) => left.localeCompare(right));
+    const sortedDates = failedRows
+      .map((row) => (typeof row.date === 'string' ? row.date : null))
+      .filter((date): date is string => Boolean(date))
+      .sort((left, right) => left.localeCompare(right));
     const queuedLog = await this.prisma.channelSyncLog.create({
       data: {
         channelConnectionId: connection.id,
-        syncType: ChannelSyncType.INVENTORY,
+        syncType: sourceLog.syncType,
         status: ChannelSyncStatus.QUEUED,
         requestPayload: {
           from: sortedDates[0],
           to: sortedDates[sortedDates.length - 1],
-          inventory: failedRows,
+          ...(sourceLog.syncType === ChannelSyncType.RATES
+            ? {
+                rates: failedRows,
+                ...this.retryRatePriceModelPayload(sourceLog.requestPayload),
+              }
+            : { inventory: failedRows }),
           trigger: 'retry_failed_rows',
           retry_of_sync_log_id: sourceLog.id,
         } satisfies Prisma.InputJsonObject,
@@ -1497,7 +1740,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       maxAttempts: 3,
     });
 
-    this.metricsService.recordChannelSyncQueued(ChannelSyncType.INVENTORY, connection.provider);
+    this.metricsService.recordChannelSyncQueued(sourceLog.syncType, connection.provider);
     return this.toSyncLogResponse(queuedLog);
   }
 
@@ -1822,6 +2065,24 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, Prisma.JsonValue>)
       : {};
+  }
+
+  private eachStayDate(checkInDate: Date, checkOutDate: Date) {
+    const dates: Date[] = [];
+    for (let cursor = this.toDateOnly(checkInDate); cursor < checkOutDate; cursor = this.addDays(cursor, 1)) {
+      dates.push(new Date(cursor));
+    }
+    return dates;
+  }
+
+  private toDateOnly(value: Date) {
+    return new Date(`${value.toISOString().slice(0, 10)}T00:00:00.000Z`);
+  }
+
+  private addDays(date: Date, days: number) {
+    const next = new Date(date);
+    next.setUTCDate(next.getUTCDate() + days);
+    return next;
   }
 
   private isSuccessfulZodomusReservationCreate(payload: Prisma.InputJsonObject) {
@@ -2870,6 +3131,20 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       where: { channelSyncLogId: syncLogId },
     });
 
+    const succeededRowResults = dedupedRowResults.filter((row) => row.status === 'SUCCEEDED');
+    if (succeededRowResults.length > 0) {
+      await inventorySyncRows.deleteMany({
+        where: {
+          channelConnectionId: connectionId,
+          status: 'FAILED',
+          OR: succeededRowResults.map((row) => ({
+            syncDate: new Date(`${row.date}T00:00:00.000Z`),
+            externalRoomId: row.external_room_id,
+          })),
+        },
+      });
+    }
+
     await inventorySyncRows.createMany({
       data: dedupedRowResults.map((row) => ({
         channelSyncLogId: syncLogId,
@@ -2972,6 +3247,57 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         } satisfies Prisma.InputJsonObject,
       ];
     });
+  }
+
+  private extractFailedRateRows(
+    responsePayload: Prisma.JsonValue | null,
+    requestPayload: Prisma.JsonValue | null,
+  ) {
+    const response = this.readObject(responsePayload);
+    const rowResults = Array.isArray(response.row_results) ? response.row_results : [];
+    const failedRowKeys = new Set(
+      rowResults.flatMap((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+          return [];
+        }
+
+        const row = value as Record<string, Prisma.JsonValue>;
+        const status = this.readOptionalString(row.status);
+        const date = this.readOptionalString(row.date);
+        const externalRoomId = this.readOptionalString(row.external_room_id);
+        const externalRateId = this.readOptionalString(row.external_rate_id);
+        if (status !== 'FAILED' || !date || !externalRoomId || !externalRateId) {
+          return [];
+        }
+
+        return [`${date}::${externalRoomId}::${externalRateId}`];
+      }),
+    );
+
+    const request = this.readObject(requestPayload);
+    const rateRows = Array.isArray(request.rates) ? request.rates : [];
+
+    return rateRows.flatMap((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return [];
+      }
+
+      const row = value as Record<string, Prisma.JsonValue>;
+      const date = this.readOptionalString(row.date);
+      const externalRoomId = this.readOptionalString(row.external_room_id);
+      const externalRateId = this.readOptionalString(row.external_rate_id);
+      if (!date || !externalRoomId || !externalRateId || !failedRowKeys.has(`${date}::${externalRoomId}::${externalRateId}`)) {
+        return [];
+      }
+
+      return [row as Prisma.InputJsonObject];
+    });
+  }
+
+  private retryRatePriceModelPayload(requestPayload: Prisma.JsonValue | null) {
+    const request = this.readObject(requestPayload);
+    const priceModelId = this.readOptionalNumber(request.price_model_id);
+    return priceModelId ? { price_model_id: priceModelId } : {};
   }
 
   private readInventorySyncRowResult(value: Prisma.JsonValue) {

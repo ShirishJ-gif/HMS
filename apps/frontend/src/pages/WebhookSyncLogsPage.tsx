@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChannelSyncLog, ChannelSyncState, InventoryReconciliation } from '../api/types';
 import { formatConnectionLabel, SummaryTile, SyncStateCard, formatDateTime, formatInventorySnapshot, formatSignedNumber } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
-import { CustomSelect } from '../components/CustomSelect';
 import { secondaryBtn, Th, Td, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
 
 export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace }) {
@@ -39,12 +38,6 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
             </div>
             {selectedConnection && <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold ${connectionToneClass(connectionStatusTone)}`}>{selectedConnection.status}</span>}
           </div>
-          {workspace.zodomusConnections.length > 1 && (
-            <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-slate-600">OTA connection</span>
-              <CustomSelect disabled={workspace.zodomusConnections.length === 0} onChange={workspace.selectConnection} options={workspace.zodomusConnections.map((c) => ({ label: formatConnectionLabel(c), value: c.id }))} placeholder="Select connection" value={workspace.selectedConnectionId} />
-            </label>
-          )}
           {selectedConnection ? (
             <div className="flex flex-wrap gap-1.5">
               {[selectedConnection.property.code, selectedConnection.provider, providerSummary?.environment ?? 'Default'].map((tag) => (
@@ -150,6 +143,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
             />
             <div className="space-y-5">
               <InventoryReconciliationPanel workspace={workspace} />
+              <BackgroundJobHealthPanel workspace={workspace} />
               <WebhookEventsPanel failedCount={webhookFailedCount} processedCount={webhookProcessedCount} replayCount={webhookReplayCount} workspace={workspace} />
             </div>
           </div>
@@ -329,6 +323,7 @@ function InventoryReconciliationPanel({ workspace }: { workspace: ChannelWorkspa
           <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={workspace.inventoryReconciliationLoading || workspace.pendingAction === 'refresh-reconciliation'} onClick={() => void workspace.refreshInventoryReconciliation()} type="button">{workspace.pendingAction === 'refresh-reconciliation' ? 'Refreshing...' : 'Refresh'}</button>
           <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={!workspace.inventoryReconciliation?.compared_window || workspace.pendingAction === 'resync-reconciliation' || workspace.inventoryReconciliationLoading} onClick={() => void workspace.resyncInventoryDriftWindow()} type="button">{workspace.pendingAction === 'resync-reconciliation' ? 'Queueing...' : 'Re-sync'}</button>
           <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={workspace.latestInventorySyncLog?.status !== 'PARTIAL_FAILED' || workspace.pendingAction === 'retry-failed-inventory-rows' || workspace.inventoryReconciliationLoading} onClick={() => void workspace.retryFailedInventoryRows()} type="button">{workspace.pendingAction === 'retry-failed-inventory-rows' ? 'Queueing...' : 'Retry rows'}</button>
+          <button className={`${secondaryBtn} !text-xs !px-3 !py-1.5`} disabled={workspace.latestRateSyncLog?.status !== 'PARTIAL_FAILED' || workspace.pendingAction === 'retry-failed-rate-rows'} onClick={() => void workspace.retryFailedRateRows()} type="button">{workspace.pendingAction === 'retry-failed-rate-rows' ? 'Queueing...' : 'Retry rates'}</button>
         </div>
       </div>
       {workspace.inventoryReconciliationLoading && <LoadingMsg>Calculating current HMS inventory drift...</LoadingMsg>}
@@ -359,6 +354,56 @@ function InventoryReconciliationPanel({ workspace }: { workspace: ChannelWorkspa
           ) : <p className="text-xs text-slate-400">No inventory drift is currently detected for the latest successful sync window.</p>}
         </>
       )}
+    </div>
+  );
+}
+
+function BackgroundJobHealthPanel({ workspace }: { workspace: ChannelWorkspace }) {
+  const now = Date.now();
+  const pendingJobs = workspace.backgroundJobs.filter((job) => job.status === 'PENDING');
+  const processingJobs = workspace.backgroundJobs.filter((job) => job.status === 'PROCESSING');
+  const deadLetterJobs = workspace.backgroundJobs.filter((job) => job.status === 'DEAD_LETTER');
+  const stuckJobs = workspace.backgroundJobs.filter((job) => {
+    const updatedAt = new Date(job.updated_at).getTime();
+    return (job.status === 'PENDING' || job.status === 'PROCESSING') && Number.isFinite(updatedAt) && now - updatedAt > 10 * 60_000;
+  });
+  const healthTone = deadLetterJobs.length > 0 ? 'failed' : stuckJobs.length > 0 ? 'queued' : 'available';
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Worker health</p>
+          <h3 className="text-base font-bold text-slate-900">Background jobs</h3>
+        </div>
+        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold ${logToneClass(healthTone)}`}>
+          {deadLetterJobs.length > 0 ? 'Attention' : stuckJobs.length > 0 ? 'Delayed' : 'Healthy'}
+        </span>
+      </div>
+      {workspace.backgroundJobsLoading && <LoadingMsg>Loading background jobs...</LoadingMsg>}
+      {workspace.backgroundJobsError && <ErrorMsg>{workspace.backgroundJobsError}</ErrorMsg>}
+      <div className="grid grid-cols-2 gap-3">
+        {[{ label: 'Pending', value: pendingJobs.length }, { label: 'Processing', value: processingJobs.length }, { label: 'Dead letter', value: deadLetterJobs.length }, { label: 'Stuck >10m', value: stuckJobs.length }].map((item) => (
+          <div key={item.label} className="bg-slate-50 border border-slate-100 rounded-lg p-2.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">{item.label}</span>
+            <strong className="text-sm font-bold text-slate-900">{item.value}</strong>
+          </div>
+        ))}
+      </div>
+      {(deadLetterJobs.length > 0 || stuckJobs.length > 0) ? (
+        <div className="space-y-2">
+          {[...deadLetterJobs, ...stuckJobs].slice(0, 5).map((job) => (
+            <div key={job.id} className="border border-slate-100 rounded-lg p-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <strong className="text-xs text-slate-800">{job.type}</strong>
+                <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${logToneClass(mapTone(job.status))}`}>{job.status}</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">{formatDateTime(job.updated_at)} · attempts {job.attempts}/{job.max_attempts}</p>
+              {job.last_error && <p className="text-[11px] text-rose-600 mt-1 line-clamp-2">{job.last_error}</p>}
+            </div>
+          ))}
+        </div>
+      ) : <p className="text-xs text-slate-400">No stuck or dead-letter jobs for this workspace.</p>}
     </div>
   );
 }

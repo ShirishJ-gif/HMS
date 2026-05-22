@@ -69,7 +69,7 @@ export function ReservationsTimelinePage({ onBack }: { onBack?: () => void }) {
   const totalPages = reservationState.data?.meta.total_pages ?? 1;
   const rows = buildTimelineRows(displayGroups);
   const timeline = buildTimeline(dateWindow.from, dateWindow.to, rows, today);
-  const timelineGridTemplateColumns = `18rem repeat(${timeline.days.length}, 4.75rem)`;
+  const timelineDateGridTemplateColumns = `repeat(${Math.max(timeline.days.length, 1)}, 4.75rem)`;
   const bookedRows = rows.filter((row) => row.status === 'BOOKED').length;
   const checkedInRows = rows.filter((row) => row.status === 'CHECKED_IN').length;
   const revenue = displayGroups.reduce((sum, group) => sum + (group.total_amount ?? 0), 0);
@@ -195,29 +195,31 @@ export function ReservationsTimelinePage({ onBack }: { onBack?: () => void }) {
             </div>
             <span className="text-xs text-slate-400">Page {page} of {totalPages}</span>
           </div>
-          <div className="overflow-x-auto">
-            <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: timelineGridTemplateColumns }}>
-              <div className="px-4 py-2.5 text-xs font-bold text-slate-600 border-b border-r border-slate-100 bg-slate-50">Reservation room</div>
-              {timeline.days.map((day) => <div className="px-2 py-2.5 text-center border-b border-r border-slate-100 bg-slate-50 last:border-r-0" key={day.date}><strong className="text-[10px] font-bold text-slate-500 block">{day.day}</strong><span className="text-[10px] text-slate-400">{day.short}</span></div>)}
-            </div>
-            {rows.map((row) => (
-              <div className="min-w-max border-b border-slate-50 last:border-0 hover:bg-slate-50/60 transition-colors" key={row.id} style={{ display: 'grid', gridTemplateColumns: timelineGridTemplateColumns }}>
-                <div className="px-4 py-3 border-r border-slate-100">
+          <div className="grid grid-cols-[18rem_minmax(0,1fr)]">
+            <div>
+              <div className="px-4 py-2.5 min-h-[3.75rem] text-xs font-bold text-slate-600 border-b border-r border-slate-100 bg-slate-50 flex items-center">Reservation room</div>
+              {rows.map((row) => (
+                <div className="px-4 py-3 min-h-[4.75rem] border-b border-r border-slate-100 bg-white" key={row.id}>
                   <strong className="text-xs font-bold text-slate-900 block">{row.label}</strong>
                   <span className="text-[11px] text-slate-500 block">{row.secondary}</span>
                   <span className="text-[11px] text-slate-400">{row.detail}</span>
                 </div>
-                {timeline.days.map((day) => {
+              ))}
+            </div>
+            <div className="scrollbar-none overflow-x-auto overscroll-x-contain">
+              <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: timelineDateGridTemplateColumns }}>
+                {timeline.days.map((day) => <div className="px-2 py-2.5 min-h-[3.75rem] text-center border-b border-r border-slate-100 bg-slate-50 last:border-r-0" key={day.date}><strong className="text-[10px] font-bold text-slate-500 block">{day.day}</strong><span className="text-[10px] text-slate-400">{day.short}</span></div>)}
+                {rows.map((row) => timeline.days.map((day) => {
                   const occupied = day.date >= row.check_in_date && day.date < row.check_out_date;
                   const colorMap: Record<string, string> = { BOOKED: 'bg-sky-400', CHECKED_IN: 'bg-emerald-500', CHECKED_OUT: 'bg-slate-300', CANCELLED: 'bg-rose-400' };
                   return (
-                    <div className={`flex items-center justify-center border-r border-slate-50 last:border-r-0 ${occupied ? 'bg-indigo-50' : ''}`} key={`${row.id}-${day.date}`}>
+                    <div className={`min-h-[4.75rem] flex items-center justify-center border-b border-r border-slate-50 last:border-r-0 ${occupied ? 'bg-indigo-50' : 'bg-white'}`} key={`${row.id}-${day.date}`}>
                       {occupied && <div className={`h-1 w-1/3 rounded-full ${colorMap[row.status.toUpperCase()] ?? 'bg-slate-400'}`} />}
                     </div>
                   );
-                })}
+                }))}
               </div>
-            ))}
+            </div>
           </div>
         </div>
       ) : !reservationState.loading ? (

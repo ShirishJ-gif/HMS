@@ -1480,6 +1480,20 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
       where: { channelSyncLogId: syncLogId },
     });
 
+    const succeededRowResults = dedupedRowResults.filter((row) => row.status === 'SUCCEEDED');
+    if (succeededRowResults.length > 0) {
+      await inventorySyncRows.deleteMany({
+        where: {
+          channelConnectionId: connectionId,
+          status: 'FAILED',
+          OR: succeededRowResults.map((row) => ({
+            syncDate: new Date(`${row.date}T00:00:00.000Z`),
+            externalRoomId: row.external_room_id,
+          })),
+        },
+      });
+    }
+
     await inventorySyncRows.createMany({
       data: dedupedRowResults.map((row) => ({
         channelSyncLogId: syncLogId,

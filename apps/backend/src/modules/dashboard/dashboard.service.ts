@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { BookingStatus, PaymentStatus, RoomStatus } from '@prisma/client';
+import { BookingStatus, ChannelConnectionStatus, PaymentStatus, Prisma, RoomStatus } from '@prisma/client';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { propertyIdFilter } from '../auth/property-scope';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -12,6 +12,8 @@ export class DashboardService {
     const { startOfDay, endOfDay } = this.getAsiaKolkataDayWindow(referenceDate);
     const scopedPropertyId = propertyIdFilter(user);
     const serviceDate = this.formatAsiaKolkataDate(referenceDate);
+    const reservationGroupVisibilityWhere = this.reservationGroupVisibilityWhere();
+    const reservationRoomVisibilityWhere = this.reservationRoomVisibilityWhere();
 
     const [
       reservationGroupsToday,
@@ -26,6 +28,7 @@ export class DashboardService {
     ] = await Promise.all([
       this.prisma.reservationGroup.count({
         where: {
+          ...reservationGroupVisibilityWhere,
           propertyId: scopedPropertyId,
           createdAt: {
             gte: startOfDay,
@@ -37,6 +40,7 @@ export class DashboardService {
         where: {
           propertyId: scopedPropertyId,
           status: RoomStatus.OCCUPIED,
+          ...this.occupiedRoomVisibilityWhere(),
         },
       }),
       this.prisma.room.count({
@@ -50,7 +54,10 @@ export class DashboardService {
         },
         where: {
           paymentStatus: PaymentStatus.PAID,
-          reservationRoom: scopedPropertyId ? { propertyId: scopedPropertyId } : undefined,
+          reservationRoom: {
+            ...reservationRoomVisibilityWhere,
+            ...(scopedPropertyId ? { propertyId: scopedPropertyId } : {}),
+          },
           updatedAt: {
             gte: startOfDay,
             lt: endOfDay,
@@ -59,6 +66,7 @@ export class DashboardService {
       }),
       this.prisma.reservationRoom.count({
         where: {
+          ...reservationRoomVisibilityWhere,
           propertyId: scopedPropertyId,
           status: { in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN] },
           arrivalDate: new Date(`${serviceDate}T00:00:00.000Z`),
@@ -66,6 +74,7 @@ export class DashboardService {
       }),
       this.prisma.reservationRoom.count({
         where: {
+          ...reservationRoomVisibilityWhere,
           propertyId: scopedPropertyId,
           status: { in: [BookingStatus.CHECKED_IN, BookingStatus.CHECKED_OUT] },
           departureDate: new Date(`${serviceDate}T00:00:00.000Z`),
@@ -73,6 +82,7 @@ export class DashboardService {
       }),
       this.prisma.reservationGroup.count({
         where: {
+          ...reservationGroupVisibilityWhere,
           propertyId: scopedPropertyId,
           status: { in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN] },
         },
@@ -89,7 +99,10 @@ export class DashboardService {
         },
         where: {
           paymentStatus: { in: [PaymentStatus.PENDING, PaymentStatus.PARTIAL] },
-          reservationRoom: scopedPropertyId ? { propertyId: scopedPropertyId } : undefined,
+          reservationRoom: {
+            ...reservationRoomVisibilityWhere,
+            ...(scopedPropertyId ? { propertyId: scopedPropertyId } : {}),
+          },
         },
       }),
     ]);
@@ -117,6 +130,51 @@ export class DashboardService {
     const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
 
     return { startOfDay, endOfDay };
+  }
+
+  private reservationGroupVisibilityWhere(): Prisma.ReservationGroupWhereInput {
+    if (this.shouldShowDetachedOtaReservationHistory()) {
+      return {};
+    }
+
+    return {
+      OR: [
+        { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
+        { channelConnectionId: null, source: 'DIRECT' },
+      ],
+    };
+  }
+
+  private reservationRoomVisibilityWhere(): Prisma.ReservationRoomWhereInput {
+    if (this.shouldShowDetachedOtaReservationHistory()) {
+      return {};
+    }
+
+    return {
+      reservationGroup: this.reservationGroupVisibilityWhere(),
+    };
+  }
+
+  private occupiedRoomVisibilityWhere(): Prisma.RoomWhereInput {
+    if (this.shouldShowDetachedOtaReservationHistory()) {
+      return {};
+    }
+
+    return {
+      reservationRooms: {
+        some: {
+          status: BookingStatus.CHECKED_IN,
+          reservationGroup: this.reservationGroupVisibilityWhere(),
+        },
+      },
+    };
+  }
+
+  private shouldShowDetachedOtaReservationHistory() {
+    return (
+      process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY === 'true' ||
+      process.env.ZODOMUS_ENVIRONMENT?.trim() === 'production'
+    );
   }
 
   private formatAsiaKolkataDate(date: Date) {

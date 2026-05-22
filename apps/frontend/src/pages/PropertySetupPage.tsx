@@ -1,4 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { DayPicker } from '@daypicker/react';
+import '@daypicker/react/style.css';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { PricingRule, Property, RatePlan, RoomCategory } from '../api/types';
@@ -18,6 +20,7 @@ export function PropertySetupPage() {
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [editingPricingRuleId, setEditingPricingRuleId] = useState<string | null>(null);
+  const [openPricingRuleDatePicker, setOpenPricingRuleDatePicker] = useState<'start' | 'end' | null>(null);
   const pricingRuleFormRef = useRef<HTMLFormElement | null>(null);
   const [propertyForm, setPropertyForm] = useState(defaultPropertyForm);
   const [categoryForm, setCategoryForm] = useState(defaultCategoryForm);
@@ -70,6 +73,11 @@ export function PropertySetupPage() {
   }
   async function submitPricingRule(event: FormEvent) {
     event.preventDefault();
+    if (pricingRuleForm.type === 'DATE_RANGE' && (!pricingRuleForm.start_date || !pricingRuleForm.end_date)) {
+      setActionError('Start date and end date are required for date range pricing rules.');
+      setActionStatus(null);
+      return;
+    }
     await runAction(editingPricingRuleId ? 'update-pricing-rule' : 'create-pricing-rule', async () => {
       const payload = { property_id: pricingRuleForm.property_id, rate_plan_id: pricingRuleForm.rate_plan_id, name: pricingRuleForm.name, type: pricingRuleForm.type, adjustment_percent: pricingRuleForm.adjustment_percent, occupancy_threshold: pricingRuleForm.type === 'OCCUPANCY' && pricingRuleForm.occupancy_threshold ? Number(pricingRuleForm.occupancy_threshold) : undefined, start_date: pricingRuleForm.type === 'DATE_RANGE' ? pricingRuleForm.start_date || undefined : undefined, end_date: pricingRuleForm.type === 'DATE_RANGE' ? pricingRuleForm.end_date || undefined : undefined };
       if (editingPricingRuleId) { await api.put(`/pricing-rules/${editingPricingRuleId}`, payload); } else { await api.post('/pricing-rules', payload); }
@@ -218,11 +226,11 @@ export function PropertySetupPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.05fr)_minmax(20rem,1.1fr)] xl:grid-cols-[minmax(0,0.95fr)_minmax(22rem,1.05fr)] gap-5 items-stretch">
         <form className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full" onSubmit={submitCategory}>
           <SectionHeading eyebrow="Inventory" title="Create room category" />
-          <label className={labelCls}><span>Property</span><CustomSelect onChange={(v) => setCategoryForm({ ...categoryForm, property_id: v })} options={activeProperties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={categoryForm.property_id} /></label>
           <div className="grid grid-cols-2 gap-4">
+            <label className={labelCls}><span>Property</span><CustomSelect onChange={(v) => setCategoryForm({ ...categoryForm, property_id: v })} options={activeProperties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={categoryForm.property_id} /></label>
+            <label className={labelCls}><span>Max occupancy</span><input className={inputCls} min="1" onChange={(e) => setCategoryForm({ ...categoryForm, max_occupancy: e.target.value })} placeholder="3" required type="number" value={categoryForm.max_occupancy} /></label>
             <label className={labelCls}><span>Category name</span><input className={inputCls} onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })} placeholder="Deluxe" required value={categoryForm.name} /></label>
             <label className={labelCls}><span>Code</span><input className={inputCls} onChange={(e) => setCategoryForm({ ...categoryForm, code: e.target.value })} placeholder="DELUXE" required value={categoryForm.code} /></label>
-            <label className={labelCls}><span>Max occupancy</span><input className={inputCls} min="1" onChange={(e) => setCategoryForm({ ...categoryForm, max_occupancy: e.target.value })} placeholder="3" required type="number" value={categoryForm.max_occupancy} /></label>
             <label className={`${labelCls} col-span-2`}><span>Description</span><textarea className={`${inputCls} resize-none`} onChange={(e) => setCategoryForm({ ...categoryForm, description: e.target.value })} placeholder="Premium room with upgraded amenities" value={categoryForm.description} /></label>
           </div>
           <button className={primaryBtn} disabled={pendingAction === 'create-category'} type="submit">{pendingAction === 'create-category' ? 'Adding…' : 'Add category'}</button>
@@ -230,9 +238,9 @@ export function PropertySetupPage() {
 
         <form className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full" onSubmit={submitRatePlan}>
           <SectionHeading eyebrow="Rates" title="Create rate plan" />
-          <label className={labelCls}><span>Property</span><CustomSelect onChange={(v) => setRatePlanForm({ ...ratePlanForm, property_id: v })} options={activeProperties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={ratePlanForm.property_id} /></label>
-          <label className={labelCls}><span>Room category</span><CustomSelect onChange={(v) => setRatePlanForm({ ...ratePlanForm, room_category_id: v })} options={categories.filter((c) => !ratePlanForm.property_id || c.property_id === ratePlanForm.property_id).map((c) => ({ label: c.name, value: c.id }))} placeholder="Select category" value={ratePlanForm.room_category_id} /></label>
           <div className="grid grid-cols-2 gap-4">
+            <label className={labelCls}><span>Property</span><CustomSelect onChange={(v) => setRatePlanForm({ ...ratePlanForm, property_id: v })} options={activeProperties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={ratePlanForm.property_id} /></label>
+            <label className={labelCls}><span>Room category</span><CustomSelect onChange={(v) => setRatePlanForm({ ...ratePlanForm, room_category_id: v })} options={categories.filter((c) => !ratePlanForm.property_id || c.property_id === ratePlanForm.property_id).map((c) => ({ label: c.name, value: c.id }))} placeholder="Select category" value={ratePlanForm.room_category_id} /></label>
             <label className={labelCls}><span>Plan name</span><input className={inputCls} onChange={(e) => setRatePlanForm({ ...ratePlanForm, name: e.target.value })} placeholder="Deluxe Flexible" required value={ratePlanForm.name} /></label>
             <label className={labelCls}><span>Code</span><input className={inputCls} onChange={(e) => setRatePlanForm({ ...ratePlanForm, code: e.target.value })} placeholder="DELUXE-FLEX" required value={ratePlanForm.code} /></label>
             <label className={labelCls}><span>Base rate</span><input className={inputCls} min="0" onChange={(e) => setRatePlanForm({ ...ratePlanForm, base_rate: e.target.value })} placeholder="7500.00" required step="0.01" type="number" value={ratePlanForm.base_rate} /></label>
@@ -248,17 +256,30 @@ export function PropertySetupPage() {
           {editingPricingRuleId && <button className={secondaryBtn} onClick={cancelEditingPricingRule} type="button">Cancel editing</button>}
         </div>
         {editingPricingRuleId && <div className="flex gap-2 items-center bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-sm text-amber-700"><strong className="text-amber-800">Editing existing rule.</strong> Update the fields below and save.</div>}
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           <label className={labelCls}><span>Property</span><CustomSelect disabled={!!editingPricingRuleId} onChange={(v) => setPricingRuleForm({ ...pricingRuleForm, property_id: v, rate_plan_id: '' })} options={activeProperties.map((p) => ({ label: p.name, value: p.id }))} placeholder="Select property" value={pricingRuleForm.property_id} /></label>
           <label className={labelCls}><span>Rate plan</span><CustomSelect disabled={!!editingPricingRuleId} onChange={(v) => setPricingRuleForm({ ...pricingRuleForm, rate_plan_id: v })} options={ratePlans.filter((r) => !pricingRuleForm.property_id || r.property_id === pricingRuleForm.property_id).map((r) => ({ label: `${r.room_category.name} · ${r.name}`, value: r.id }))} placeholder="Select rate plan" value={pricingRuleForm.rate_plan_id} /></label>
           <label className={labelCls}><span>Rule name</span><input className={inputCls} onChange={(e) => setPricingRuleForm({ ...pricingRuleForm, name: e.target.value })} placeholder="Weekend surcharge" required value={pricingRuleForm.name} /></label>
-          <label className={labelCls}><span>Rule type</span><CustomSelect onChange={(v) => setPricingRuleForm({ ...pricingRuleForm, type: v, start_date: '', end_date: '', occupancy_threshold: '' })} options={[{ label: 'Weekend', value: 'WEEKEND' }, { label: 'Festival / date range', value: 'DATE_RANGE' }, { label: 'Occupancy surge', value: 'OCCUPANCY' }]} value={pricingRuleForm.type} /></label>
-          <label className={labelCls}><span>Adjustment %</span><input className={inputCls} min="0" onChange={(e) => setPricingRuleForm({ ...pricingRuleForm, adjustment_percent: e.target.value })} placeholder="20" required step="0.01" type="number" value={pricingRuleForm.adjustment_percent} /></label>
+          <label className={labelCls}><span>Rule type</span><CustomSelect onChange={(v) => { setPricingRuleForm({ ...pricingRuleForm, type: v, start_date: '', end_date: '', occupancy_threshold: '' }); setOpenPricingRuleDatePicker(null); }} options={[{ label: 'Weekend', value: 'WEEKEND' }, { label: 'Festival / date range', value: 'DATE_RANGE' }, { label: 'Occupancy surge', value: 'OCCUPANCY' }]} value={pricingRuleForm.type} /></label>
+          <label className={labelCls}><span>Adjustment %</span><input className={inputCls} onChange={(e) => setPricingRuleForm({ ...pricingRuleForm, adjustment_percent: e.target.value })} placeholder="20 or -10" required step="0.01" type="number" value={pricingRuleForm.adjustment_percent} /></label>
           {pricingRuleForm.type === 'DATE_RANGE' && (
-            <>
-              <label className={labelCls}><span>Start date</span><input className={inputCls} onChange={(e) => setPricingRuleForm({ ...pricingRuleForm, start_date: e.target.value })} required type="date" value={pricingRuleForm.start_date} /></label>
-              <label className={labelCls}><span>End date</span><input className={inputCls} onChange={(e) => setPricingRuleForm({ ...pricingRuleForm, end_date: e.target.value })} required type="date" value={pricingRuleForm.end_date} /></label>
-            </>
+            <div className="col-span-2 grid max-w-[27rem] grid-cols-2 gap-4">
+              <PricingRuleDatePickerField
+                label="Start date"
+                onChange={(value) => setPricingRuleForm({ ...pricingRuleForm, start_date: value })}
+                open={openPricingRuleDatePicker === 'start'}
+                setOpen={(open) => setOpenPricingRuleDatePicker(open ? 'start' : null)}
+                value={pricingRuleForm.start_date}
+              />
+              <PricingRuleDatePickerField
+                align="right"
+                label="End date"
+                onChange={(value) => setPricingRuleForm({ ...pricingRuleForm, end_date: value })}
+                open={openPricingRuleDatePicker === 'end'}
+                setOpen={(open) => setOpenPricingRuleDatePicker(open ? 'end' : null)}
+                value={pricingRuleForm.end_date}
+              />
+            </div>
           )}
           {pricingRuleForm.type === 'OCCUPANCY' && (
             <label className={labelCls}><span>Occupancy threshold %</span><input className={inputCls} max="100" min="1" onChange={(e) => setPricingRuleForm({ ...pricingRuleForm, occupancy_threshold: e.target.value })} placeholder="70" required type="number" value={pricingRuleForm.occupancy_threshold} /></label>
@@ -346,7 +367,7 @@ export function PropertySetupPage() {
                 <Td>{rule.property.name}</Td>
                 <Td><span className="font-medium text-slate-900 block">{rule.rate_plan.room_category.name} · {rule.rate_plan.name}</span><span className="text-xs text-slate-400 font-mono">{rule.rate_plan.code}</span></Td>
                 <Td className="font-medium text-slate-900">{rule.name}</Td>
-                <Td>+{rule.adjustment_percent}%</Td>
+                <Td>{formatAdjustmentPercent(rule.adjustment_percent)}</Td>
                 <Td className="text-xs">
                   {rule.type === 'WEEKEND' && 'Saturday / Sunday'}
                   {rule.type === 'DATE_RANGE' && `${rule.start_date} to ${rule.end_date}`}
@@ -416,6 +437,81 @@ function FileUploadBox({ files, id, inputKey, onFilesChange, onPrimaryIndexChang
         {files.length > 0 && <p className="px-1 pt-2 text-[11px] font-medium text-slate-400">Select one image as primary before uploading.</p>}
       </div>
     </div>
+  );
+}
+
+function PricingRuleDatePickerField({ align = 'left', label, onChange, open, setOpen, value }: {
+  align?: 'left' | 'right';
+  label: string;
+  onChange: (value: string) => void;
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  value: string;
+}) {
+  const selectedDate = parseDateValue(value);
+  return (
+    <div className={labelCls}>
+      <span>{label}</span>
+      <div className="relative">
+        <button
+          className="flex min-h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-left text-sm font-semibold text-slate-800 shadow-sm transition hover:border-slate-300 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 sm:max-w-[13rem]"
+          onClick={() => setOpen(!open)}
+          type="button"
+        >
+          <span>{value ? formatDatePickerLabel(value) : 'Pick a date'}</span>
+          <CalendarIcon className="h-4 w-4 text-slate-400" />
+        </button>
+        {open && (
+          <div className={`absolute top-[3rem] z-30 rounded-2xl border border-slate-200 bg-white p-3 shadow-xl ${align === 'right' ? 'right-0' : 'left-0'}`}>
+            <DayPicker
+              animate
+              className="hms-day-picker hms-day-picker-compact"
+              defaultMonth={selectedDate ?? new Date()}
+              fixedWeeks
+              mode="single"
+              onSelect={(date) => {
+                if (!date) return;
+                onChange(dateToInputValue(date));
+                setOpen(false);
+              }}
+              selected={selectedDate}
+              showOutsideDays
+              weekStartsOn={1}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatDatePickerLabel(value: string) {
+  return parseDateValue(value)?.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) ?? value;
+}
+
+function parseDateValue(value: string) {
+  if (!value) return undefined;
+  const [year, month, day] = value.split('-').map(Number);
+  if (!year || !month || !day) return undefined;
+  return new Date(year, month - 1, day);
+}
+
+function dateToInputValue(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatAdjustmentPercent(value: number) {
+  return `${value > 0 ? '+' : ''}${value}%`;
+}
+
+function CalendarIcon({ className = '' }: { className?: string }) {
+  return (
+    <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 24 24">
+      <path d="M7 3v3M17 3v3M4.5 9.5h15M6.5 5h11A2.5 2.5 0 0 1 20 7.5v10A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5v-10A2.5 2.5 0 0 1 6.5 5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
   );
 }
 

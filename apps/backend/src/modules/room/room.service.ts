@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { AuditAction, Prisma } from '@prisma/client';
+import { AuditAction, BookingStatus, Prisma } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginatedResponse, paginationParams } from '../../common/pagination/paginated-response';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -161,6 +161,24 @@ export class RoomService {
       }
 
       const existingRoom = await this.prisma.room.findUnique({ where: { id } });
+      if (!existingRoom) {
+        throw new NotFoundException('Room not found');
+      }
+
+      const activeOrFutureReservationRooms = await this.prisma.reservationRoom.count({
+        where: {
+          roomId: id,
+          status: { in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN] },
+          departureDate: { gt: this.todayUtcDate() },
+        },
+      });
+
+      if (activeOrFutureReservationRooms > 0) {
+        throw new ConflictException(
+          'Cannot delete this room because it has active or future reservation stays. Reassign or check out/cancel those stays first.',
+        );
+      }
+
       await this.prisma.room.delete({
         where: { id },
       });
@@ -184,6 +202,11 @@ export class RoomService {
     } catch (error) {
       this.handlePrismaError(error);
     }
+  }
+
+  private todayUtcDate() {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   }
 
   async findOutOfServicePeriods(roomId: string, user?: AuthenticatedUser) {

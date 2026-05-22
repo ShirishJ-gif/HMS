@@ -51,7 +51,7 @@ export function ReportsPage() {
     Promise.all([
       api.get<DashboardSummary>('/dashboard/summary'),
       fetchAllPages<Property>('/properties'),
-      fetchAllPages<ReservationGroup>('/bookings/feed'),
+      fetchAllPages<ReservationGroup>('/bookings/feed', { params: { include_cancelled: true } }),
       fetchAllPages<Billing>('/billings'),
       fetchAllPages<ChannelConnection>('/channels'),
     ])

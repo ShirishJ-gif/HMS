@@ -33,6 +33,7 @@ export class GuestService {
     const scopedPropertyId = propertyIdFilter(user);
     const search = query.search?.trim();
     const where: Prisma.GuestWhereInput = {
+      ...this.guestVisibilityWhere(),
       ...(scopedPropertyId ? { propertyId: scopedPropertyId } : {}),
       ...(search
         ? {
@@ -62,6 +63,26 @@ export class GuestService {
     ]);
 
     return paginatedResponse(guests.map((guest) => this.toGuestResponse(guest)), total, page, limit);
+  }
+
+  private guestVisibilityWhere(): Prisma.GuestWhereInput {
+    if (this.shouldShowDetachedOtaReservationHistory()) {
+      return {};
+    }
+
+    return {
+      NOT: {
+        idProof: 'CHANNEL_IMPORT',
+        address: 'Imported from Zodomus',
+      },
+    };
+  }
+
+  private shouldShowDetachedOtaReservationHistory() {
+    return (
+      process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY === 'true' ||
+      process.env.ZODOMUS_ENVIRONMENT?.trim() === 'production'
+    );
   }
 
   private toGuestResponse(guest: {

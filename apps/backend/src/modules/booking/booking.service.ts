@@ -2,6 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import {
   AuditAction,
   BookingStatus,
+  ChannelConnectionStatus,
   ChannelProvider,
   ChannelSyncType,
   HousekeepingPriority,
@@ -27,6 +28,7 @@ type ReservationGroupWithRelations = Prisma.ReservationGroupGetPayload<{
   include: {
     property: true;
     primaryGuest: true;
+    channelConnection: true;
     rooms: {
       include: {
         roomCategory: true;
@@ -224,6 +226,7 @@ export class BookingService {
             include: {
               property: true,
               primaryGuest: true,
+              channelConnection: true,
               rooms: {
                 include: {
                   roomCategory: true,
@@ -292,6 +295,7 @@ export class BookingService {
         include: {
           property: true,
           primaryGuest: true,
+          channelConnection: true,
           rooms: {
             include: {
               roomCategory: true,
@@ -328,6 +332,7 @@ export class BookingService {
         include: {
           property: true,
           primaryGuest: true,
+          channelConnection: true,
           rooms: {
             include: {
               roomCategory: true,
@@ -347,14 +352,16 @@ export class BookingService {
 
     const importedResponses = groups.map((group) => this.toReservationGroupResponse(group));
     const importedReservationIds = new Set(importedResponses.map((group) => group.external_reservation_id));
-    const providerOnlyResponses = await this.findProviderOnlyReservationFailures(
-      effectivePropertyId,
-      importedReservationIds,
-      search,
-      statusFilter,
-      includeCancelled,
-      dateWindow,
-    );
+    const providerOnlyResponses = this.shouldShowProviderOnlyReservationFailures()
+      ? await this.findProviderOnlyReservationFailures(
+          effectivePropertyId,
+          importedReservationIds,
+          search,
+          statusFilter,
+          includeCancelled,
+          dateWindow,
+        )
+      : [];
 
     const merged = [...importedResponses, ...providerOnlyResponses]
       .sort((left, right) => {
@@ -718,7 +725,7 @@ export class BookingService {
       external_reservation_id: group.externalReservationId,
       external_reservation_version: group.externalReservationVersion,
       external_status: group.externalStatus,
-      source: group.source,
+      source: this.reservationSourceLabel(group),
       currency: group.currency,
       total_amount: effectiveGroupTotalAmount,
       reservation_status: group.status,
@@ -775,6 +782,32 @@ export class BookingService {
         },
       })),
     };
+  }
+
+  private reservationSourceLabel(group: ReservationGroupWithRelations) {
+    return this.connectionSourceLabel(group.channelConnection) ?? group.source;
+  }
+
+  private connectionSourceLabel(
+    connection: {
+      id?: string | null;
+      propertyId?: string | null;
+      provider?: ChannelProvider | null;
+      name?: string | null;
+      credentials?: Prisma.JsonValue | null;
+    } | null,
+  ) {
+    if (!connection) {
+      return null;
+    }
+
+    if (connection.provider && connection.provider !== ChannelProvider.ZODOMUS) {
+      return connection.name || connection.provider;
+    }
+
+    const credentials = this.readObject(connection.credentials ?? null);
+    const otaName = this.firstString(credentials, 'ota_name');
+    return otaName ?? connection.name ?? connection.provider ?? null;
   }
 
   private async findProviderOnlyReservationFailures(
@@ -893,7 +926,7 @@ export class BookingService {
     includeCancelled = false,
     dateWindow?: { from?: Date; toExclusive?: Date },
   ): Prisma.ReservationGroupWhereInput {
-    return {
+    const where: Prisma.ReservationGroupWhereInput = {
       ...(propertyId ? { propertyId } : {}),
       ...(status ? { status } : includeCancelled ? {} : { status: { not: BookingStatus.CANCELLED } }),
       ...(dateWindow?.from || dateWindow?.toExclusive
@@ -906,19 +939,58 @@ export class BookingService {
             },
           }
         : {}),
-      ...(search
-        ? {
-            OR: [
-              { externalReservationId: { contains: search, mode: 'insensitive' } },
-              { property: { name: { contains: search, mode: 'insensitive' } } },
-              { primaryGuest: { name: { contains: search, mode: 'insensitive' } } },
-              { rooms: { some: { guestName: { contains: search, mode: 'insensitive' } } } },
-              { rooms: { some: { externalRoomId: { contains: search, mode: 'insensitive' } } } },
-              { rooms: { some: { roomCategory: { name: { contains: search, mode: 'insensitive' } } } } },
-            ],
-          }
-        : {}),
     };
+
+    const andFilters: Prisma.ReservationGroupWhereInput[] = [];
+    const visibilityWhere = this.reservationFeedConnectionVisibilityWhere();
+    if (Object.keys(visibilityWhere).length > 0) {
+      andFilters.push(visibilityWhere);
+    }
+
+    if (search) {
+      andFilters.push({
+        OR: [
+          { externalReservationId: { contains: search, mode: 'insensitive' } },
+          { property: { name: { contains: search, mode: 'insensitive' } } },
+          { primaryGuest: { name: { contains: search, mode: 'insensitive' } } },
+          { rooms: { some: { guestName: { contains: search, mode: 'insensitive' } } } },
+          { rooms: { some: { externalRoomId: { contains: search, mode: 'insensitive' } } } },
+          { rooms: { some: { roomCategory: { name: { contains: search, mode: 'insensitive' } } } } },
+        ],
+      });
+    }
+
+    return andFilters.length > 0 ? { ...where, AND: andFilters } : where;
+  }
+
+  private reservationFeedConnectionVisibilityWhere(): Prisma.ReservationGroupWhereInput {
+    if (this.shouldShowDetachedOtaReservationHistory()) {
+      return {};
+    }
+
+    return {
+      OR: [
+        { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
+        {
+          channelConnectionId: null,
+          source: 'DIRECT',
+        },
+      ],
+    };
+  }
+
+  private shouldShowDetachedOtaReservationHistory() {
+    return (
+      process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY === 'true' ||
+      process.env.ZODOMUS_ENVIRONMENT?.trim() === 'production'
+    );
+  }
+
+  private shouldShowProviderOnlyReservationFailures() {
+    return (
+      process.env.SHOW_PROVIDER_ONLY_RESERVATION_FAILURES === 'true' ||
+      process.env.ZODOMUS_ENVIRONMENT?.trim() === 'production'
+    );
   }
 
   private reservationFeedDateWindow(dateFrom?: string, dateTo?: string) {
@@ -1022,7 +1094,7 @@ export class BookingService {
       external_reservation_version:
         this.firstString(reservationRecord, 'modifiedAt', 'modified_at', 'updated_at', 'version') ?? null,
       external_status: this.firstStringOrNumber(reservationRecord, 'status')?.toString() ?? null,
-      source: 'ZODOMUS',
+      source: this.connectionSourceLabel(input.connection) ?? 'ZODOMUS',
       currency: this.firstString(reservationRecord, 'currencyCode', 'currency_code', 'currency') ?? null,
       total_amount: totalAmount,
       reservation_status: this.mapExternalBookingStatus(this.firstStringOrNumber(reservationRecord, 'status') ?? '1'),
