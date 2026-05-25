@@ -504,6 +504,7 @@ export class ZodomusChannelAdapter {
       channelId: Number(connectionConfig.channel_code),
       propertyId: payload.external_hotel_id,
       priceModelId: payload.price_model_id,
+      ...(payload.token ? { token: payload.token } : {}),
     });
 
     return {

@@ -13,6 +13,19 @@ export class WebhookController {
   constructor(private readonly webhookService: WebhookService) {}
 
   @Public()
+  @Post('webhooks/telegram')
+  async ingestTelegram(@Body() body: Record<string, unknown>) {
+    const chatId = this.telegramChatId(body);
+    const text = this.telegramMessageText(body);
+
+    if (chatId && text && ['/start', 'hi'].includes(text.trim().toLowerCase())) {
+      await this.replyWithTelegramChatId(chatId);
+    }
+
+    return { ok: true };
+  }
+
+  @Public()
   @Post('webhooks/zodomus')
   async ingestZodomus(
     @Body() body: Record<string, unknown>,
@@ -44,5 +57,39 @@ export class WebhookController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   findAll(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationQueryDto) {
     return this.webhookService.findAll(query, user);
+  }
+
+  private telegramChatId(body: Record<string, unknown>) {
+    const message = this.readObject(body.message);
+    const chat = this.readObject(message?.chat);
+    const id = chat?.id;
+    return typeof id === 'number' || typeof id === 'string' ? String(id) : null;
+  }
+
+  private telegramMessageText(body: Record<string, unknown>) {
+    const message = this.readObject(body.message);
+    const text = message?.text;
+    return typeof text === 'string' ? text : null;
+  }
+
+  private async replyWithTelegramChatId(chatId: string) {
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (!botToken) return;
+
+    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: `Your Telegram chat ID is ${chatId}`,
+        disable_web_page_preview: true,
+      }),
+    });
+  }
+
+  private readObject(value: unknown) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
   }
 }

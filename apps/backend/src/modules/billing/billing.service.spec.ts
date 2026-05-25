@@ -10,7 +10,7 @@ describe('BillingService', () => {
   };
   const prisma = {
     $transaction: jest.fn(),
-    billing: { findMany: jest.fn(), findUnique: jest.fn(), findUniqueOrThrow: jest.fn(), update: jest.fn() },
+    billing: { findMany: jest.fn(), count: jest.fn(), findUnique: jest.fn(), findUniqueOrThrow: jest.fn(), update: jest.fn() },
   };
 
   const property = {
@@ -174,6 +174,29 @@ describe('BillingService', () => {
     ).resolves.toMatchObject({
       id: paidBilling.id,
       payment_status: PaymentStatus.PAID,
+    });
+  });
+
+  it('omits detached invoices from invoice list responses', async () => {
+    prisma.$transaction.mockResolvedValue([[], 0]);
+
+    await expect(service.findAll({ page: 1, limit: 25 })).resolves.toMatchObject({
+      data: [],
+      meta: {
+        total: 0,
+      },
+    });
+    expect(prisma.billing.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [{ reservationRoomId: { not: null } }],
+        },
+      }),
+    );
+    expect(prisma.billing.count).toHaveBeenCalledWith({
+      where: {
+        AND: [{ reservationRoomId: { not: null } }],
+      },
     });
   });
 

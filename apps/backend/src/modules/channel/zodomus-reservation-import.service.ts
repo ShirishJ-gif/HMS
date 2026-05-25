@@ -1358,11 +1358,11 @@ export class ZodomusReservationImportService {
         null,
       guest_name: this.firstString(record, 'guestName', 'guest_name') ?? defaultGuestName,
       adults:
-        this.firstNumber(record, 'numberOfAdults', 'adults') ??
-        this.sumGuestCount(record, true),
+        this.sumGuestCount(record, true) ??
+        this.firstNumber(record, 'numberOfAdults', 'adults'),
       children:
-        this.firstNumber(record, 'numberOfChildren', 'numberOChildren', 'children') ??
-        this.sumGuestCount(record, false),
+        this.sumGuestCount(record, false) ??
+        this.firstNumber(record, 'numberOfChildren', 'numberOChildren', 'children'),
       raw_payload: JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue,
     };
   }

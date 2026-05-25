@@ -33,6 +33,7 @@ export type ChannelPropertyActionPayload = {
   external_hotel_id?: string | null;
   credentials?: unknown;
   price_model_id?: number;
+  token?: string;
   rooms?: unknown;
 };
 

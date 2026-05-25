@@ -20,25 +20,36 @@ export type OwnerReservationNotificationPayload = {
 };
 
 export type CheckInReminderPayload = ReservationConfirmationPayload;
+export type OwnerReservationChangePayload = OwnerReservationNotificationPayload;
 
 type WhatsAppMessage = {
   to: string;
   template: string;
   body: string;
   buttons?: Array<{ id: string; title: string }>;
+  telegramText?: string;
 };
 
-type WhatsAppProvider = 'mock' | 'cloud_api';
+type NotificationProvider = 'mock' | 'cloud_api' | 'telegram';
 
 @Injectable()
 export class WhatsAppNotificationService {
   private readonly logger = new Logger(WhatsAppNotificationService.name);
-  private readonly provider = (process.env.WHATSAPP_PROVIDER ?? 'mock') as WhatsAppProvider;
+  private readonly provider = (process.env.NOTIFICATION_PROVIDER ?? process.env.WHATSAPP_PROVIDER ?? 'mock') as NotificationProvider;
 
   async sendReservationConfirmation(payload: ReservationConfirmationPayload) {
     await this.safeSend({
       to: payload.phone,
       template: 'reservation_confirmation',
+      telegramText: [
+        '✅ Reservation confirmed',
+        '',
+        `👤 Guest: ${payload.guestName}`,
+        `📞 Phone: ${payload.phone}`,
+        `🛏️ Room: ${payload.roomNumber}`,
+        '',
+        `📅 Stay: ${this.formatDate(payload.checkInDate)} to ${this.formatDate(payload.checkOutDate)}`,
+      ].join('\n'),
       body: `Reservation confirmed for ${payload.guestName}. Room ${payload.roomNumber}, ${this.formatDate(
         payload.checkInDate,
       )} to ${this.formatDate(payload.checkOutDate)}.`,
@@ -54,6 +65,17 @@ export class WhatsAppNotificationService {
     await this.safeSend({
       to: payload.ownerPhone,
       template: 'owner_reservation_notification',
+      telegramText: [
+        '🏨 New reservation',
+        payload.propertyName,
+        '',
+        `👤 Guest: ${payload.guestName}`,
+        `📞 Guest phone: ${payload.guestPhone}`,
+        `🛏️ Room type: ${payload.roomCategoryName}`,
+        '',
+        `📅 Stay: ${this.formatDate(payload.checkInDate)} to ${this.formatDate(payload.checkOutDate)}`,
+        `💰 Total: INR ${payload.totalAmount}`,
+      ].join('\n'),
       body: `New reservation at ${payload.propertyName}: ${payload.guestName} (${payload.guestPhone}) reserved ${
         payload.roomCategoryName
       } from ${this.formatDate(payload.checkInDate)} to ${this.formatDate(payload.checkOutDate)}. Total: INR ${
@@ -66,10 +88,76 @@ export class WhatsAppNotificationService {
     });
   }
 
+  async sendOwnerReservationModifiedNotification(payload: OwnerReservationChangePayload) {
+    if (!payload.ownerPhone) {
+      this.logger.warn(`Owner reservation modified notification skipped for ${payload.propertyName}: property phone is missing`);
+      return;
+    }
+
+    await this.safeSend({
+      to: payload.ownerPhone,
+      template: 'owner_reservation_modified',
+      telegramText: [
+        '✏️ Reservation modified',
+        payload.propertyName,
+        '',
+        `👤 Guest: ${payload.guestName}`,
+        `📞 Guest phone: ${payload.guestPhone}`,
+        `🛏️ Room type: ${payload.roomCategoryName}`,
+        '',
+        `📅 Stay: ${this.formatDate(payload.checkInDate)} to ${this.formatDate(payload.checkOutDate)}`,
+        `💰 Total: INR ${payload.totalAmount}`,
+      ].join('\n'),
+      body: `Reservation modified at ${payload.propertyName}: ${payload.guestName} (${payload.guestPhone}) now has ${
+        payload.roomCategoryName
+      } from ${this.formatDate(payload.checkInDate)} to ${this.formatDate(payload.checkOutDate)}. Total: INR ${
+        payload.totalAmount
+      }.`,
+    });
+  }
+
+  async sendOwnerReservationCancelledNotification(payload: OwnerReservationChangePayload) {
+    if (!payload.ownerPhone) {
+      this.logger.warn(`Owner reservation cancelled notification skipped for ${payload.propertyName}: property phone is missing`);
+      return;
+    }
+
+    await this.safeSend({
+      to: payload.ownerPhone,
+      template: 'owner_reservation_cancelled',
+      telegramText: [
+        '❌ Reservation cancelled',
+        payload.propertyName,
+        '',
+        `👤 Guest: ${payload.guestName}`,
+        `📞 Guest phone: ${payload.guestPhone}`,
+        `🛏️ Room type: ${payload.roomCategoryName}`,
+        '',
+        `📅 Stay: ${this.formatDate(payload.checkInDate)} to ${this.formatDate(payload.checkOutDate)}`,
+        `💰 Previous total: INR ${payload.totalAmount}`,
+      ].join('\n'),
+      body: `Reservation cancelled at ${payload.propertyName}: ${payload.guestName} (${payload.guestPhone}), ${
+        payload.roomCategoryName
+      }, ${this.formatDate(payload.checkInDate)} to ${this.formatDate(payload.checkOutDate)}. Previous total: INR ${
+        payload.totalAmount
+      }.`,
+    });
+  }
+
   async sendCheckInReminder(payload: CheckInReminderPayload) {
     await this.safeSend({
       to: payload.phone,
       template: 'check_in_reminder',
+      telegramText: [
+        '🔔 Check-in reminder',
+        '',
+        `👤 Guest: ${payload.guestName}`,
+        `📞 Phone: ${payload.phone}`,
+        `🛏️ Room: ${payload.roomNumber}`,
+        '',
+        `📅 Check-in: ${this.formatDate(payload.checkInDate)}`,
+        `📅 Check-out: ${this.formatDate(payload.checkOutDate)}`,
+      ].join('\n'),
       body: `Reminder for ${payload.guestName}: check-in for room ${payload.roomNumber} is on ${this.formatDate(
         payload.checkInDate,
       )}.`,
@@ -81,7 +169,7 @@ export class WhatsAppNotificationService {
       await this.sendMessage(message);
     } catch (error) {
       this.logger.error(
-        `WhatsApp ${message.template} failed for ${message.to}: ${
+        `${this.provider} ${message.template} failed for ${message.to}: ${
           error instanceof Error ? error.message : 'Unknown notification error'
         }`,
       );
@@ -91,6 +179,11 @@ export class WhatsAppNotificationService {
   private async sendMessage(message: WhatsAppMessage) {
     if (this.provider === 'cloud_api') {
       await this.sendCloudApiMessage(message);
+      return;
+    }
+
+    if (this.provider === 'telegram') {
+      await this.sendTelegramMessage(message);
       return;
     }
 
@@ -164,6 +257,55 @@ export class WhatsAppNotificationService {
 
   private normalizePhone(phone: string) {
     return phone.replace(/[^\d]/g, '');
+  }
+
+  private async sendTelegramMessage(message: WhatsAppMessage) {
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const chatIds = this.telegramChatIdsFor(message.template);
+
+    if (!botToken || chatIds.length === 0) {
+      throw new Error('TELEGRAM_BOT_TOKEN and a Telegram chat id are required when NOTIFICATION_PROVIDER=telegram');
+    }
+
+    const text = message.telegramText ?? message.body;
+
+    for (const chatId of chatIds) {
+      const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text,
+          disable_web_page_preview: true,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Telegram API returned ${response.status} for chat ${chatId}: ${body}`);
+      }
+    }
+  }
+
+  private telegramChatIdsFor(template: string) {
+    if (template === 'owner_reservation_notification' || template === 'owner_reservation_modified' || template === 'owner_reservation_cancelled') {
+      return this.parseTelegramChatIds(process.env.TELEGRAM_OWNER_CHAT_IDS || process.env.TELEGRAM_OWNER_CHAT_ID || process.env.TELEGRAM_DEFAULT_CHAT_ID);
+    }
+
+    if (template === 'reservation_confirmation' || template === 'check_in_reminder') {
+      return this.parseTelegramChatIds(process.env.TELEGRAM_GUEST_CHAT_IDS || process.env.TELEGRAM_GUEST_CHAT_ID || process.env.TELEGRAM_DEFAULT_CHAT_ID);
+    }
+
+    return this.parseTelegramChatIds(process.env.TELEGRAM_DEFAULT_CHAT_ID);
+  }
+
+  private parseTelegramChatIds(value: string | undefined) {
+    return (value ?? '')
+      .split(',')
+      .map((chatId) => chatId.trim())
+      .filter((chatId) => chatId.length > 0);
   }
 
   private formatDate(date: Date) {

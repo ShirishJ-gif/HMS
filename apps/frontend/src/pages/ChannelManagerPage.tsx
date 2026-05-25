@@ -11,6 +11,10 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
   const [providerEventConfirmOpen, setProviderEventConfirmOpen] = useState(false);
   const setupStatus = workspace.persistedSetupStatus;
   const selectedConnection = workspace.selectedConnection;
+  const isAirbnbConnection = Boolean(
+    selectedConnection?.provider_config_summary?.channel_id === '3' ||
+      selectedConnection?.provider_config_summary?.ota_name?.toLowerCase().includes('airbnb'),
+  );
   const hasSelectedConnection = Boolean(selectedConnection);
   const catalogIsLoaded = Boolean(setupStatus?.catalog_loaded);
   const hasRoomMappings = Boolean(selectedConnection && selectedConnection.room_mappings.length > 0);
@@ -299,7 +303,6 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                 </div>
               )}
 
-              {/* Provider IDs panel */}
               <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Provider IDs</p>
@@ -336,6 +339,87 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                   <p className={`text-[11px] rounded-lg px-3 py-2 border ${canRunFinalPropertyCheck ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-500'}`}>{propertyCheckBlocker}</p>
                 </div>
                 {workspace.providerPriceModelsError && <p className="text-xs text-slate-400">Using fallback price model labels: {workspace.providerPriceModelsError}</p>}
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Certification testing</p>
+                  <h3 className="text-base font-bold text-slate-900">Extra API checks</h3>
+                  <p className="text-xs text-slate-500 mt-1 leading-relaxed">Use this only for provider certification and debugging. The normal setup flow remains in Provider IDs above.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'provider-channels'} onClick={() => void workspace.fetchProviderChannels()} type="button">Get channels</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'provider-price-models'} onClick={() => void workspace.fetchProviderPriceModels()} type="button">Get price models</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'property-check'} onClick={() => void workspace.runPropertyCheck()} type="button">Check property</button>
+                  <button className={secondaryBtn} disabled={!workspace.canLoadCatalog || workspace.pendingAction === 'load-provider-catalog'} onClick={() => void workspace.loadProviderCatalog()} type="button">Get room-rates</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'provider-availability'} onClick={() => void workspace.fetchProviderAvailability()} type="button">Get availability</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'inventory-sync'} onClick={() => void workspace.runInventorySync()} type="button">Post availability</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'rates-sync'} onClick={() => void workspace.runRatesSync()} type="button">Post rates</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'availability-multiple-sync'} onClick={() => void workspace.runAvailabilityMultipleSync()} type="button">Availability multiple</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'rates-multiple-sync'} onClick={() => void workspace.runRatesMultipleSync()} type="button">Rates multiple</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'provider-reservations-summary'} onClick={() => void workspace.fetchReservationSummary()} type="button">Reservation summary</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'provider-reservations-queue'} onClick={() => void workspace.fetchReservationQueue()} type="button">Reservation queue</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'reservation-import-sync'} onClick={() => void workspace.runReservationImportSync()} type="button">Import bookings sync</button>
+                </div>
+
+                {isAirbnbConnection && (
+                  <div className="space-y-3 rounded-xl border border-sky-100 bg-sky-50/50 p-3.5">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-sky-500 mb-0.5">Airbnb only</p>
+                      <p className="text-xs text-sky-700 leading-relaxed">Use these after Airbnb host activation returns a token and client ID.</p>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <label className={labelCls}>
+                        <span>Airbnb token</span>
+                        <input className={inputCls} onChange={(e) => workspace.setAirbnbToken(e.target.value)} placeholder="From host activation response" value={workspace.airbnbToken} />
+                      </label>
+                      <label className={labelCls}>
+                        <span>Airbnb client ID</span>
+                        <input className={inputCls} onChange={(e) => workspace.setAirbnbClientId(e.target.value)} placeholder="From host activation response" value={workspace.airbnbClientId} />
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                      <button className={secondaryBtn} disabled={!workspace.selectedConnection || workspace.pendingAction === 'airbnb-host-activation'} onClick={() => void workspace.activateAirbnbHost()} type="button">Airbnb host activation</button>
+                      <button className={secondaryBtn} disabled={!workspace.selectedConnection || !workspace.airbnbToken.trim() || !workspace.airbnbClientId.trim() || workspace.pendingAction === 'airbnb-oauth2-tests'} onClick={() => void workspace.activateAirbnbOauthTest()} type="button">Open Airbnb auth URL</button>
+                      <button className={secondaryBtn} disabled={!workspace.selectedConnection || !workspace.airbnbToken.trim() || workspace.pendingAction === 'airbnb-host-status'} onClick={() => void workspace.fetchAirbnbHostStatus()} type="button">Airbnb host status</button>
+                      <button className={secondaryBtn} disabled={!workspace.selectedConnection || !workspace.airbnbToken.trim() || workspace.pendingAction === 'airbnb-host-info'} onClick={() => void workspace.fetchAirbnbHostInfo()} type="button">Airbnb host info</button>
+                      <button className={secondaryBtn} disabled={!workspace.selectedConnection || !workspace.airbnbToken.trim() || workspace.pendingAction === 'airbnb-listings'} onClick={() => void workspace.fetchAirbnbListings()} type="button">Airbnb listings</button>
+                      <button className={secondaryBtn} disabled={!workspace.selectedConnection || !workspace.airbnbToken.trim() || workspace.pendingAction === 'airbnb-host-cancellation'} onClick={() => void workspace.cancelAirbnbHost()} type="button">Airbnb host cancellation</button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto_auto] gap-2 items-end pt-2 border-t border-slate-100">
+                  <label className={labelCls}>
+                    <span>Reservation ID for detail/card tests</span>
+                    <input className={inputCls} onChange={(e) => workspace.setProviderReservationId(e.target.value)} placeholder="Reservation ID from queue" value={workspace.providerReservationId} />
+                  </label>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || !workspace.providerReservationId.trim() || workspace.pendingAction === 'provider-reservation-detail'} onClick={() => void workspace.fetchProviderReservationDetail()} type="button">Get reservation</button>
+                  <button className={secondaryBtn} disabled={!workspace.selectedConnection || !workspace.providerReservationId.trim() || workspace.pendingAction === 'provider-reservation-card'} onClick={() => void workspace.fetchProviderReservationCard()} type="button">Get card data</button>
+                </div>
+
+                {workspace.certificationResponse && (
+                  <div className="pt-2 border-t border-slate-100">
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Last response</p>
+                      <span className="text-[11px] font-bold text-slate-500">{workspace.certificationResponse.label}</span>
+                    </div>
+                    {isAuthUrlResponse(workspace.certificationResponse.payload) && (
+                      <a
+                        className="mb-2 block break-all rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800 hover:bg-sky-100"
+                        href={workspace.certificationResponse.payload.auth_url}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        {workspace.certificationResponse.payload.auth_url}
+                      </a>
+                    )}
+                    <pre className="max-h-80 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 text-[11px] leading-relaxed text-slate-100">
+                      {JSON.stringify(workspace.certificationResponse.payload, null, 2)}
+                    </pre>
+                  </div>
+                )}
               </div>
 
               {/* Automation controls + Admin tools */}
@@ -593,4 +677,13 @@ function describeProviderReservationEvent(value: string) {
   if (value === 'modified') return 'Replays an update for an existing imported reservation using the reservation ID you provide.';
   if (value === 'cancelled') return 'Triggers a provider-side cancellation for the reservation ID so HMS can reconcile the imported stay.';
   return 'Sends a provider-side test event and syncs the resulting reservation state back into HMS.';
+}
+
+function isAuthUrlResponse(payload: unknown): payload is { auth_url: string } {
+  return Boolean(
+    payload &&
+      typeof payload === 'object' &&
+      'auth_url' in payload &&
+      typeof (payload as { auth_url?: unknown }).auth_url === 'string',
+  );
 }

@@ -52,6 +52,40 @@ describe('ZodomusReservationImportService helpers', () => {
     expect(resolved?.toString()).toBe('520');
   });
 
+  it('prefers guestCount totals over zero-valued provider adult and child summary fields', () => {
+    const service = new ZodomusReservationImportService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const room = (service as any).normalizeReservationRoom(
+      {
+        id: '4501',
+        roomReservationId: '4576600',
+        arrivalDate: '2026-10-17',
+        departureDate: '2026-10-18',
+        numberOfAdults: 0,
+        numberOChildren: 0,
+        guestCount: [
+          { adult: 1, age: 0, count: 2 },
+          { adult: 0, age: 5, count: 1 },
+          { adult: 0, age: 7, count: 1 },
+        ],
+        prices: [{ rateId: '45991', price: '130' }],
+      },
+      0,
+      '7169132',
+      'John Mendes',
+      { currencyCode: 'EUR' },
+    );
+
+    expect(room.adults).toBe(2);
+    expect(room.children).toBe(2);
+  });
+
   it('rejects provider cancellation for checked-in imported stays', () => {
     const service = new ZodomusReservationImportService(
       {} as never,

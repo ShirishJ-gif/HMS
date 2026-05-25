@@ -792,6 +792,8 @@ describe('ChannelService reservation summary backfill', () => {
 
 describe('ChannelService connection removal cleanup', () => {
   it('deletes imported reservations and releases active inventory before removing the OTA connection', async () => {
+    const previousEnvironment = process.env.ZODOMUS_ENVIRONMENT;
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
     const connection = {
       id: 'connection-1',
       propertyId: 'property-1',
@@ -828,7 +830,11 @@ describe('ChannelService connection removal cleanup', () => {
         deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       billing: {
-        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([{ id: 'billing-1', _count: { payments: 1 } }]),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      paymentTransaction: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       inventoryCalendar: {
         findUnique: jest
@@ -878,7 +884,17 @@ describe('ChannelService connection removal cleanup', () => {
       {} as never,
     );
 
-    const result = await service.deleteConnection(connection.id);
+    let result!: Awaited<ReturnType<ChannelService['deleteConnection']>>;
+
+    try {
+      result = await service.deleteConnection(connection.id);
+    } finally {
+      if (previousEnvironment === undefined) {
+        delete process.env.ZODOMUS_ENVIRONMENT;
+      } else {
+        process.env.ZODOMUS_ENVIRONMENT = previousEnvironment;
+      }
+    }
 
     expect(tx.reservationGroup.findMany).toHaveBeenCalledWith({
       where: { channelConnectionId: connection.id },
@@ -914,6 +930,33 @@ describe('ChannelService connection removal cleanup', () => {
       },
     });
     expect(tx.inventoryCalendar.update).toHaveBeenCalledTimes(2);
+    expect(tx.billing.findMany).toHaveBeenCalledWith({
+      where: {
+        reservationRoom: {
+          is: {
+            reservationGroupId: { in: ['reservation-group-1'] },
+          },
+        },
+      },
+      select: {
+        id: true,
+        _count: {
+          select: {
+            payments: true,
+          },
+        },
+      },
+    });
+    expect(tx.billing.deleteMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['billing-1'] },
+      },
+    });
+    expect(tx.paymentTransaction.deleteMany).toHaveBeenCalledWith({
+      where: {
+        billingId: { in: ['billing-1'] },
+      },
+    });
     expect(tx.reservationGroup.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: ['reservation-group-1'] } },
     });
@@ -935,6 +978,8 @@ describe('ChannelService connection removal cleanup', () => {
         metadata: expect.objectContaining({
           reservation_groups_deleted: 1,
           reservation_rooms_deleted: 1,
+          billing_records_deleted: 1,
+          billing_payment_transactions_deleted: 1,
           imported_guests_deleted: 1,
           active_room_nights_released: 2,
         }),
@@ -946,6 +991,8 @@ describe('ChannelService connection removal cleanup', () => {
       reservation_cleanup: {
         reservation_groups_deleted: 1,
         reservation_rooms_deleted: 1,
+        billing_records_deleted: 1,
+        billing_payment_transactions_deleted: 1,
         imported_guests_deleted: 1,
         active_room_nights_released: 2,
       },

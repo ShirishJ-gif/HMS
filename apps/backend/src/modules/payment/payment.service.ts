@@ -29,6 +29,7 @@ export class PaymentService {
     const search = query.search?.trim();
     const where: Prisma.PaymentTransactionWhereInput = {
       AND: [
+        { billing: { reservationRoomId: { not: null } } },
         ...(scopedPropertyId ? [{ billing: { reservationRoom: { propertyId: scopedPropertyId } } } satisfies Prisma.PaymentTransactionWhereInput] : []),
         ...(search
           ? [

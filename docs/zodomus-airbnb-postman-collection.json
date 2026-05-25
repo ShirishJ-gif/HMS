@@ -1,0 +1,1066 @@
+{
+  "info": {
+    "_postman_id": "9c9f1c8d-9d13-4d93-bf51-7bc586f1d4b5",
+    "name": "Zodomus Airbnb APIs Only",
+    "description": "Airbnb-only Zodomus API requests for host authorization, host/listing lookup, listing create/update/status workflow, Airbnb availability/rates multiple, and host cancellation.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "basic",
+    "basic": [
+      {
+        "key": "username",
+        "value": "{{api_user}}",
+        "type": "string"
+      },
+      {
+        "key": "password",
+        "value": "{{api_password}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://api.zodomus.com"
+    },
+    {
+      "key": "api_user",
+      "value": ""
+    },
+    {
+      "key": "api_password",
+      "value": ""
+    },
+    {
+      "key": "channel_id",
+      "value": "3"
+    },
+    {
+      "key": "property_id",
+      "value": ""
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "client_id",
+      "value": ""
+    },
+    {
+      "key": "redirect_uri_test",
+      "value": "https://api.zodomus.com/airbnb-webhook-redirect-test"
+    },
+    {
+      "key": "redirect_uri_production",
+      "value": "https://api.zodomus.com/airbnb-webhook-redirect"
+    },
+    {
+      "key": "scope",
+      "value": "property_management,messages_read,messages_write"
+    },
+    {
+      "key": "room_id",
+      "value": ""
+    },
+    {
+      "key": "rate_id",
+      "value": ""
+    },
+    {
+      "key": "photo_id",
+      "value": ""
+    },
+    {
+      "key": "image_base64",
+      "value": ""
+    },
+    {
+      "key": "currency",
+      "value": "EUR"
+    },
+    {
+      "key": "date_from",
+      "value": "2026-07-01"
+    },
+    {
+      "key": "date_to",
+      "value": "2026-08-01"
+    }
+  ],
+  "item": [
+    {
+      "name": "01 - POST Airbnb host activation",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const json = pm.response.json();",
+              "if (json.token) pm.collectionVariables.set('token', String(json.token));",
+              "if (json.client_id) pm.collectionVariables.set('client_id', String(json.client_id));"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\"\n}"
+        },
+        "url": "{{base_url}}/airbnb-host-activation"
+      }
+    },
+    {
+      "name": "02 - Open Host Authorization URL - Sandbox",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/airbnb-oauth2-tests?client_id={{client_id}}&redirect_uri={{redirect_uri_test}}&scope={{scope}}&state={{token}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "airbnb-oauth2-tests"
+          ],
+          "query": [
+            {
+              "key": "client_id",
+              "value": "{{client_id}}"
+            },
+            {
+              "key": "redirect_uri",
+              "value": "{{redirect_uri_test}}"
+            },
+            {
+              "key": "scope",
+              "value": "{{scope}}"
+            },
+            {
+              "key": "state",
+              "value": "{{token}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "03 - Open Host Authorization URL - Production",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "https://www.airbnb.com/oauth2/auth?client_id={{client_id}}&redirect_uri={{redirect_uri_production}}&scope={{scope}}&state={{token}}",
+          "protocol": "https",
+          "host": [
+            "www",
+            "airbnb",
+            "com"
+          ],
+          "path": [
+            "oauth2",
+            "auth"
+          ],
+          "query": [
+            {
+              "key": "client_id",
+              "value": "{{client_id}}"
+            },
+            {
+              "key": "redirect_uri",
+              "value": "{{redirect_uri_production}}"
+            },
+            {
+              "key": "scope",
+              "value": "{{scope}}"
+            },
+            {
+              "key": "state",
+              "value": "{{token}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "04 - GET Airbnb host status",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/airbnb-host-status?token={{token}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "airbnb-host-status"
+          ],
+          "query": [
+            {
+              "key": "token",
+              "value": "{{token}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "05 - GET Airbnb host info",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/airbnb-host-info?token={{token}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "airbnb-host-info"
+          ],
+          "query": [
+            {
+              "key": "token",
+              "value": "{{token}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "06 - GET Airbnb listings",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/airbnb-listings?token={{token}}&_limit=50",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "airbnb-listings"
+          ],
+          "query": [
+            {
+              "key": "token",
+              "value": "{{token}}"
+            },
+            {
+              "key": "_limit",
+              "value": "50"
+            },
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}",
+              "disabled": true
+            },
+            {
+              "key": "hasAvailability",
+              "value": "false",
+              "disabled": true
+            },
+            {
+              "key": "excludeActive",
+              "value": "true",
+              "disabled": true
+            },
+            {
+              "key": "excludeCohostedListings",
+              "value": "true",
+              "disabled": true
+            },
+            {
+              "key": "_cursor",
+              "value": "",
+              "disabled": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "07 - POST Airbnb availability multiple",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"pnaModel\": \"STANDARD\",\n  \"roomIds\": [\n    {\n      \"roomId\": \"{{room_id}}\",\n      \"dateFrom\": \"{{date_from}}\",\n      \"dateTo\": \"{{date_to}}\",\n      \"availability\": 1\n    }\n  ]\n}"
+        },
+        "url": "{{base_url}}/availability-multiple"
+      }
+    },
+    {
+      "name": "08 - POST Airbnb rates multiple",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"pnaModel\": \"STANDARD\",\n  \"roomIds\": [\n    {\n      \"roomId\": \"{{room_id}}\",\n      \"rateId\": \"{{rate_id}}\",\n      \"dateFrom\": \"{{date_from}}\",\n      \"dateTo\": \"{{date_to}}\",\n      \"currencyCode\": \"{{currency}}\",\n      \"prices\": {\n        \"price\": \"100\"\n      },\n      \"closed\": 0,\n      \"minimumStay\": 1,\n      \"maximumStay\": 30\n    }\n  ]\n}"
+        },
+        "url": "{{base_url}}/rates-multiple"
+      }
+    },
+    {
+      "name": "09 - POST Airbnb host cancellation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"{{token}}\"\n}"
+        },
+        "url": "{{base_url}}/airbnb-host-cancellation"
+      }
+    },
+    {
+      "name": "10 - POST Airbnb listings - Step 1 create listing",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const json = pm.response.json();",
+              "const listing = json && json.response && json.response.listing;",
+              "if (listing && listing.idStr) pm.collectionVariables.set('property_id', String(listing.idStr));",
+              "else if (listing && listing.id) pm.collectionVariables.set('property_id', String(listing.id));"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Create a new listing on Airbnb. Step 1 only sends the listing name because it is the only possible field at this stage. The response listing id is saved to the collection property_id variable.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"token\": \"{{token}}\",\n  \"name\": \"Casa de teste em Lumiar A Lisboa\"\n}"
+        },
+        "url": "{{base_url}}/airbnb-listings"
+      },
+      "response": [
+        {
+          "name": "200 Ok - created listing",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channelId\": 3,\n  \"token\": \"830639493333\",\n  \"name\": \"Casa de teste em Lumiar A Lisboa\"\n}"
+            },
+            "url": "{{base_url}}/airbnb-listings"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2022-03-15 11:13:57\"\n  },\n  \"response\": {\n    \"listing\": {\n      \"id\": 583058915570813422,\n      \"name\": \"Casa de teste em Lumiar A Lisboa\",\n      \"propertyTypeGroup\": null,\n      \"propertyTypeCategory\": null,\n      \"roomTypeCategory\": null,\n      \"bedrooms\": null,\n      \"bathrooms\": null,\n      \"beds\": null,\n      \"amenityCategories\": [],\n      \"checkInOption\": null,\n      \"listingApprovalStatus\": {\n        \"statusCategory\": \"new\",\n        \"notes\": null\n      },\n      \"hasAvailability\": false,\n      \"permitOrTaxId\": null,\n      \"apt\": null,\n      \"street\": null,\n      \"city\": null,\n      \"state\": null,\n      \"zipcode\": null,\n      \"countryCode\": null,\n      \"lat\": null,\n      \"lng\": null,\n      \"userDefinedLocation\": false,\n      \"directions\": \"\",\n      \"personCapacity\": 1,\n      \"listingCurrency\": null,\n      \"listingPrice\": null,\n      \"synchronizationCategory\": \"sync_undecided\",\n      \"bathroomShared\": null,\n      \"bathroomSharedWithCategory\": null,\n      \"commonSpacesShared\": null,\n      \"commonSpacesSharedWithCategory\": null,\n      \"totalInventoryCount\": null,\n      \"propertyExternalId\": null,\n      \"listingNickname\": null,\n      \"tier\": \"marketplace\",\n      \"displayExactLocationToGuest\": false,\n      \"houseManual\": null,\n      \"wifiNetwork\": null,\n      \"wifiPassword\": null,\n      \"amenities\": [],\n      \"ratePlanEnabled\": null,\n      \"listingViews\": null,\n      \"listingImportId\": null,\n      \"idStr\": \"583058915570813422\"\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "11 - POST Airbnb listings - Step 2 update listing",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Update the Airbnb listing using the id received from Step 1 as propertyId. Set hasAvailability to true to trigger Airbnb review and put the listing online if all checks pass.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"token\": \"{{token}}\",\n  \"propertyId\": \"{{property_id}}\",\n  \"name\": \"House Love Lisboa\",\n  \"hasAvailability\": true,\n  \"propertyTypeGroup\": \"apartments\",\n  \"propertyTypeCategory\": \"apartment\",\n  \"roomTypeCategory\": \"entire_home\",\n  \"bedrooms\": 3,\n  \"bathrooms\": 2,\n  \"beds\": 3,\n  \"apt\": \"2Dto\",\n  \"street\": \"Rua Abel salazar Nr 36\",\n  \"city\": \"Lisboa\",\n  \"state\": \"LIsboa\",\n  \"zipcode\": \"1600\",\n  \"countryCode\": \"PT\",\n  \"lat\": 38.76818733546169,\n  \"lng\": -9.168172917197381,\n  \"personCapacity\": \"10\",\n  \"listingCurrency\": \"EUR\",\n  \"listingPrice\": 100,\n  \"synchronizationCategory\": \"sync_all\"\n}"
+        },
+        "url": "{{base_url}}/airbnb-listings"
+      },
+      "response": [
+        {
+          "name": "200 Ok - updated listing",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channelId\": 3,\n  \"token\": \"83063949044\",\n  \"propertyId\": \"583058915570813422\",\n  \"name\": \"House Love Lisboa\",\n  \"hasAvailability\": true,\n  \"propertyTypeGroup\": \"apartments\",\n  \"propertyTypeCategory\": \"apartment\",\n  \"roomTypeCategory\": \"entire_home\",\n  \"bedrooms\": 3,\n  \"bathrooms\": 2,\n  \"beds\": 3,\n  \"apt\": \"2Dto\",\n  \"street\": \"Rua Abel salazar Nr 36\",\n  \"city\": \"Lisboa\",\n  \"state\": \"LIsboa\",\n  \"zipcode\": \"1600\",\n  \"countryCode\": \"PT\",\n  \"lat\": 38.76818733546169,\n  \"lng\": -9.168172917197381,\n  \"personCapacity\": \"10\",\n  \"listingCurrency\": \"EUR\",\n  \"listingPrice\": 100,\n  \"synchronizationCategory\": \"sync_all\"\n}"
+            },
+            "url": "{{base_url}}/airbnb-listings"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2022-03-07 03:55:51\"\n  },\n  \"response\": []\n}"
+        }
+      ]
+    },
+    {
+      "name": "12 - POST Airbnb listings - Step 3 change listing status",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Change listing status. hasAvailability true triggers review and can list the property if checks pass; hasAvailability false unlists it. To connect or disconnect API sync, send synchronizationCategory as sync_all or none.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"token\": \"{{token}}\",\n  \"propertyId\": \"{{property_id}}\",\n  \"hasAvailability\": true\n}"
+        },
+        "url": "{{base_url}}/airbnb-listings"
+      }
+    },
+    {
+      "name": "13 - POST Airbnb listings delete",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Delete one listing from Airbnb.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"propertyId\": \"{{property_id}}\"\n}"
+        },
+        "url": "{{base_url}}/airbnb-listings-delete"
+      },
+      "response": [
+        {
+          "name": "200 Ok - deleted listing",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"propertyId\": 22323322\n}"
+            },
+            "url": "{{base_url}}/airbnb-listings-delete"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2021-08-31 01:02:59\"\n  },\n  \"response\": {\n    \"listing\": {\n      \"id\": 51224597,\n      \"name\": \"Apartamento em Telheiras , Lisboa\",\n      \"propertyTypeGroup\": \"apartments\",\n      \"propertyTypeCategory\": \"condominium\",\n      \"roomTypeCategory\": \"entire_home\",\n      \"bedrooms\": 3\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "14 - POST Airbnb listing descriptions",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Update listing descriptions from a listing.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"locale\": \"en\",\n  \"summary\": \"Updated Summary\"\n}"
+        },
+        "url": "{{base_url}}/airbnb-listing-descriptions"
+      },
+      "response": [
+        {
+          "name": "200 Ok - updated listing description",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channelId\": 3,\n  \"propertyId\": 51224597,\n  \"locale\": \"en\",\n  \"summary\": \"Updated Summary\"\n}"
+            },
+            "url": "{{base_url}}/airbnb-listing-descriptions"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2022-03-16 04:29:36\"\n  },\n  \"response\": {\n    \"listingDescription\": null\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "15 - POST Airbnb listing descriptions delete",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Delete listing descriptions.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"locale\": \"es\"\n}"
+        },
+        "url": "{{base_url}}/airbnb-listing-descriptions-delete"
+      },
+      "response": [
+        {
+          "name": "200 Ok - deleted listing description",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channelId\": 3,\n  \"propertyId\": 51224597,\n  \"locale\": \"es\"\n}"
+            },
+            "url": "{{base_url}}/airbnb-listing-descriptions-delete"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2022-03-16 04:30:00\"\n  },\n  \"response\": {\n    \"listingDescription\": null\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "16 - GET Airbnb listing descriptions",
+      "request": {
+        "method": "GET",
+        "description": "Get listing descriptions.",
+        "url": {
+          "raw": "{{base_url}}/airbnb-listing-descriptions?propertyId={{property_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "airbnb-listing-descriptions"
+          ],
+          "query": [
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            }
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "200 Ok - listing descriptions",
+          "originalRequest": {
+            "method": "GET",
+            "url": "{{base_url}}/airbnb-listing-descriptions?propertyId=51224597"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2021-08-31 12:44:33\"\n  },\n  \"response\": {\n    \"listingDescriptions\": [\n      {\n        \"access\": null,\n        \"description\": \"Zona nobre de Lisboa\",\n        \"houseRules\": null,\n        \"interaction\": null,\n        \"locale\": \"pt\",\n        \"machineTranslated\": false,\n        \"name\": \"Apartamento em Telheiras , Lisboa\",\n        \"neighborhoodOverview\": null,\n        \"notes\": null,\n        \"space\": null,\n        \"summary\": \"Zona nobre de Lisboa\",\n        \"transit\": null,\n        \"listingId\": 51224597,\n        \"listingIdStr\": \"51224597\"\n      }\n    ]\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "17 - POST Airbnb listing photos",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const json = pm.response.json();",
+              "const photo = json && json.response && json.response.listingPhoto;",
+              "if (photo && photo.id) pm.collectionVariables.set('photo_id', String(photo.id));"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Update listing photos. Each photo must be larger than 50 KB and smaller than 25 MB. All photos will be auto-cropped. The image field must contain the image contents as a base64 string.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"filename\": \"image1.jpeg\",\n  \"contentType\": \"image/jpeg\",\n  \"category\": \"listing\",\n  \"caption\": \"Living space\",\n  \"image\": \"{{image_base64}}\"\n}"
+        },
+        "url": "{{base_url}}/airbnb-listing-photos"
+      },
+      "response": [
+        {
+          "name": "200 Ok - updated listing photo",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channelId\": 3,\n  \"propertyId\": 51224597,\n  \"filename\": \"image1.jpeg\",\n  \"contentType\": \"image/jpeg\",\n  \"category\": \"listing\",\n  \"caption\": \"Living space\",\n  \"image\": \"45urjthyyyeue...\"\n}"
+            },
+            "url": "{{base_url}}/airbnb-listing-photos"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2022-03-16 04:40:39\"\n  },\n  \"response\": {\n    \"listingPhoto\": {\n      \"id\": \"51224597_1361904022\",\n      \"listingId\": 51224597,\n      \"caption\": \"Living space\",\n      \"extraLargeUrl\": \"https://a0.muscache.com/im/pictures/prohost-api/Hosting-51224597/original/ea554ff8-17f7-4df3-b1cf-3f8012d39270.jpeg?aki_policy=x_large\",\n      \"extraMediumUrl\": \"https://a0.muscache.com/im/pictures/prohost-api/Hosting-51224597/original/ea554ff8-17f7-4df3-b1cf-3f8012d39270.jpeg?aki_policy=x_medium\",\n      \"largeUrl\": \"https://a0.muscache.com/im/pictures/prohost-api/Hosting-51224597/original/ea554ff8-17f7-4df3-b1cf-3f8012d39270.jpeg?aki_policy=large\",\n      \"smallUrl\": \"https://a0.muscache.com/im/pictures/prohost-api/Hosting-51224597/original/ea554ff8-17f7-4df3-b1cf-3f8012d39270.jpeg?aki_policy=small\",\n      \"thumbnailUrl\": \"https://a0.muscache.com/im/pictures/prohost-api/Hosting-51224597/original/ea554ff8-17f7-4df3-b1cf-3f8012d39270.jpeg?aki_policy=x_small\",\n      \"sortOrder\": 3,\n      \"category\": \"LISTING\",\n      \"roomId\": null,\n      \"amenity\": null,\n      \"listingIdStr\": \"51224597\",\n      \"roomIdStr\": null\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "18 - POST Airbnb listing photos delete",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Delete listing photos.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channelId\": {{channel_id}},\n  \"propertyId\": \"{{property_id}}\",\n  \"photoId\": \"{{photo_id}}\"\n}"
+        },
+        "url": "{{base_url}}/airbnb-listing-photos-delete"
+      },
+      "response": [
+        {
+          "name": "200 Ok - deleted listing photo",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"channelId\": 3,\n  \"propertyId\": 51224597,\n  \"photoId\": \"51224597_1227144119\"\n}"
+            },
+            "url": "{{base_url}}/airbnb-listing-photos-delete"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2022-03-16 04:42:16\"\n  },\n  \"response\": {\n    \"listingPhoto\": {\n      \"id\": \"51224597_1225170425\",\n      \"listingId\": 51224597,\n      \"caption\": \"\",\n      \"extraLargeUrl\": \"https://a0.muscache.com/im/pictures/d40cd239-0bc1-4b1f-8072-e687eff6fd2b.jpg?aki_policy=x_large\",\n      \"extraMediumUrl\": \"https://a0.muscache.com/im/pictures/d40cd239-0bc1-4b1f-8072-e687eff6fd2b.jpg?aki_policy=x_medium\",\n      \"largeUrl\": \"https://a0.muscache.com/im/pictures/d40cd239-0bc1-4b1f-8072-e687eff6fd2b.jpg?aki_policy=large\",\n      \"smallUrl\": \"https://a0.muscache.com/im/pictures/d40cd239-0bc1-4b1f-8072-e687eff6fd2b.jpg?aki_policy=small\",\n      \"thumbnailUrl\": \"https://a0.muscache.com/im/pictures/d40cd239-0bc1-4b1f-8072-e687eff6fd2b.jpg?aki_policy=x_small\",\n      \"sortOrder\": 1,\n      \"category\": \"LISTING\",\n      \"roomId\": null,\n      \"amenity\": null,\n      \"listingIdStr\": \"51224597\",\n      \"roomIdStr\": null\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "19 - GET Airbnb listing photos",
+      "request": {
+        "method": "GET",
+        "description": "Get listing photos.",
+        "url": {
+          "raw": "{{base_url}}/airbnb-listing-photos?propertyId={{property_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "airbnb-listing-photos"
+          ],
+          "query": [
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            }
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "200 Ok - listing photos",
+          "originalRequest": {
+            "method": "GET",
+            "url": "{{base_url}}/airbnb-listing-photos?propertyId=51224597"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2021-08-31 12:49:10\"\n  },\n  \"response\": {\n    \"listingPhotos\": [\n      {\n        \"id\": \"51224597_1225170425\",\n        \"listingId\": 51224597,\n        \"caption\": \"\",\n        \"extraLargeUrl\": \"https://a0.muscache.com/im/pictures/d40cd239-0bc1-4b1f-8072-e687eff6fd2b.jpg?aki_policy=x_large\",\n        \"extraMediumUrl\": \"https://a0.muscache.com/im/pictures/d40cd239-0bc1-4b1f-8072-e687eff6fd2b.jpg?aki_policy=x_medium\",\n        \"largeUrl\": \"https://a0.muscache.com/im/pictures/d40cd239-0bc1-4b1f-8072-e687eff6fd2b.jpg?aki_policy=large\",\n        \"smallUrl\": \"https://a0.muscache.com/im/pictures/d40cd239-0bc1-4b1f-8072-e687eff6fd2b.jpg?aki_policy=small\",\n        \"thumbnailUrl\": \"https://a0.muscache.com/im/pictures/d40cd239-0bc1-4b1f-8072-e687eff6fd2b.jpg?aki_policy=x_small\",\n        \"sortOrder\": 1,\n        \"category\": \"LISTING\",\n        \"roomId\": null,\n        \"amenity\": null,\n        \"listingIdStr\": \"51224597\",\n        \"roomIdStr\": null\n      },\n      {\n        \"id\": \"51224597_1227142417\",\n        \"listingId\": 51224597,\n        \"caption\": \"Living space\",\n        \"extraLargeUrl\": \"https://a0.muscache.com/im/pictures/prohost-api/Hosting-51224597/original/1a9f1fdb-2466-4234-9198-9adf0e07710a.jpeg?aki_policy=x_large\",\n        \"extraMediumUrl\": \"https://a0.muscache.com/im/pictures/prohost-api/Hosting-51224597/original/1a9f1fdb-2466-4234-9198-9adf0e07710a.jpeg?aki_policy=x_medium\",\n        \"largeUrl\": \"https://a0.muscache.com/im/pictures/prohost-api/Hosting-51224597/original/1a9f1fdb-2466-4234-9198-9adf0e07710a.jpeg?aki_policy=large\",\n        \"smallUrl\": \"https://a0.muscache.com/im/pictures/prohost-api/Hosting-51224597/original/1a9f1fdb-2466-4234-9198-9adf0e07710a.jpeg?aki_policy=small\",\n        \"thumbnailUrl\": \"https://a0.muscache.com/im/pictures/prohost-api/Hosting-51224597/original/1a9f1fdb-2466-4234-9198-9adf0e07710a.jpeg?aki_policy=x_small\",\n        \"sortOrder\": 2,\n        \"category\": \"LISTING\",\n        \"roomId\": null,\n        \"amenity\": null,\n        \"listingIdStr\": \"51224597\",\n        \"roomIdStr\": null\n      }\n    ]\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "20 - POST Airbnb listing rooms",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Update listing room information.",
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": "{{base_url}}/airbnb-listing-rooms"
+      }
+    },
+    {
+      "name": "21 - POST Airbnb listing rooms delete",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Delete listing room information.",
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": "{{base_url}}/airbnb-listing-rooms-delete"
+      }
+    },
+    {
+      "name": "22 - GET Airbnb listing rooms",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const json = pm.response.json();",
+              "const rooms = json && json.response && json.response.listingRooms;",
+              "const firstRoom = Array.isArray(rooms) ? rooms[0] : rooms;",
+              "if (firstRoom && firstRoom.idStr) pm.collectionVariables.set('room_id', String(firstRoom.idStr));",
+              "else if (firstRoom && firstRoom.id) pm.collectionVariables.set('room_id', String(firstRoom.id));"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "description": "Get listing room information.",
+        "url": {
+          "raw": "{{base_url}}/airbnb-listing-rooms?propertyId={{property_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "airbnb-listing-rooms"
+          ],
+          "query": [
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            }
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "200 Ok - listing rooms",
+          "originalRequest": {
+            "method": "GET",
+            "url": "{{base_url}}/airbnb-listing-rooms?propertyId=51224597"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2021-08-31 12:56:08\"\n  },\n  \"response\": {\n    \"listingRooms\": [\n      {\n        \"beds\": [\n          {\n            \"quantity\": 1,\n            \"type\": \"single_bed\"\n          }\n        ],\n        \"id\": 152202088,\n        \"listingId\": 51224597,\n        \"roomAmenities\": [],\n        \"roomNumber\": 2,\n        \"roomType\": \"bedroom\",\n        \"idStr\": \"152202088\",\n        \"listingIdStr\": \"51224597\"\n      },\n      {\n        \"beds\": [\n          {\n            \"quantity\": 1,\n            \"type\": \"double_bed\"\n          },\n          {\n            \"quantity\": 2,\n            \"type\": \"single_bed\"\n          }\n        ],\n        \"id\": 152202086,\n        \"listingId\": 51224597,\n        \"roomAmenities\": [\n          {\n            \"quantity\": 1,\n            \"type\": \"en_suite_bathroom\"\n          }\n        ],\n        \"roomNumber\": 1,\n        \"roomType\": \"bedroom\",\n        \"idStr\": \"152202086\",\n        \"listingIdStr\": \"51224597\"\n      }\n    ]\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "23 - POST Airbnb availability rules",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Create or update availability rules. propertyId and pnaModel are mandatory; remaining fields are optional.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"propertyId\": \"{{property_id}}\",\n  \"pnaModel\": \"STANDARD\",\n  \"defaultMinNights\": 1,\n  \"defaultMaxNights\": 20,\n  \"bookingLeadTime\": {\n    \"hours\": 4,\n    \"allowRequestToBook\": 0\n  },\n  \"maxDaysNotice\": {\n    \"days\": 270\n  },\n  \"seasonalMinNights\": {\n    \"startDate\": \"2025-01-01\",\n    \"endDate\": \"2025-02-01\",\n    \"minNights\": 2\n  },\n  \"turnoverDays\": 2,\n  \"dayOfWeekCheckIn\": [\n    {\n      \"dayOfWeek\": 0\n    },\n    {\n      \"dayOfWeek\": 1\n    },\n    {\n      \"dayOfWeek\": 2\n    },\n    {\n      \"dayOfWeek\": 3\n    },\n    {\n      \"dayOfWeek\": 4\n    },\n    {\n      \"dayOfWeek\": 5\n    },\n    {\n      \"dayOfWeek\": 6\n    }\n  ],\n  \"dayOfWeekCheckOut\": [\n    {\n      \"dayOfWeek\": 0\n    },\n    {\n      \"dayOfWeek\": 1\n    },\n    {\n      \"dayOfWeek\": 2\n    },\n    {\n      \"dayOfWeek\": 3\n    },\n    {\n      \"dayOfWeek\": 4\n    },\n    {\n      \"dayOfWeek\": 5\n    },\n    {\n      \"dayOfWeek\": 6\n    }\n  ],\n  \"allowRtbAboveMaxNights\": false,\n  \"dayOfWeekMinNights\": [\n    {\n      \"dayOfWeek\": 1,\n      \"minNights\": 2\n    }\n  ]\n}"
+        },
+        "url": "{{base_url}}/airbnb-availability-rules"
+      },
+      "response": [
+        {
+          "name": "200 Ok - availability rules updated",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"propertyId\": 51224597,\n  \"pnaModel\": \"STANDARD\"\n}"
+            },
+            "url": "{{base_url}}/airbnb-availability-rules"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2024-08-31 12:33:15\"\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "24 - GET Airbnb availability rules",
+      "request": {
+        "method": "GET",
+        "description": "Get availability rules.",
+        "url": {
+          "raw": "{{base_url}}/airbnb-availability-rules?propertyId={{property_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "airbnb-availability-rules"
+          ],
+          "query": [
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            }
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "200 Ok - availability rules",
+          "originalRequest": {
+            "method": "GET",
+            "url": "{{base_url}}/airbnb-availability-rules?propertyId=51224597"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2024-08-31 12:33:15\"\n  },\n  \"response\": {\n    \"availabilityRule\": {\n      \"bookingLeadTime\": {\n        \"hours\": 4,\n        \"allowRequestToBook\": 0\n      },\n      \"dayOfWeekCheckIn\": [\n        {\n          \"dayOfWeek\": 0\n        },\n        {\n          \"dayOfWeek\": 1\n        },\n        {\n          \"dayOfWeek\": 2\n        },\n        {\n          \"dayOfWeek\": 3\n        },\n        {\n          \"dayOfWeek\": 4\n        },\n        {\n          \"dayOfWeek\": 5\n        },\n        {\n          \"dayOfWeek\": 6\n        }\n      ],\n      \"dayOfWeekCheckOut\": [\n        {\n          \"dayOfWeek\": 0\n        },\n        {\n          \"dayOfWeek\": 1\n        },\n        {\n          \"dayOfWeek\": 2\n        },\n        {\n          \"dayOfWeek\": 3\n        },\n        {\n          \"dayOfWeek\": 4\n        },\n        {\n          \"dayOfWeek\": 5\n        },\n        {\n          \"dayOfWeek\": 6\n        }\n      ],\n      \"dayOfWeekMinNights\": [],\n      \"defaultMaxNights\": 1125,\n      \"defaultMinNights\": 1,\n      \"maxDaysNotice\": {\n        \"days\": 270\n      },\n      \"minDaysNotice\": {\n        \"days\": -1\n      },\n      \"turnoverDays\": {\n        \"days\": 0\n      },\n      \"seasonalMinNights\": null,\n      \"allowRtbAboveMaxNights\": false\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "25 - POST Airbnb pricing settings",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Create or update pricing settings.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"propertyId\": \"{{property_id}}\",\n  \"pnaModel\": \"STANDARD\",\n  \"listingCurrency\": \"USD\",\n  \"defaultDailyPrice\": 100,\n  \"weekendPrice\": 100,\n  \"guestsIncluded\": 0,\n  \"pricePerExtraPerson\": 0,\n  \"passThroughTaxesCollectionType\": \"INELIGIBLE\",\n  \"standardFees\": [\n    {\n      \"feeType\": \"PASS_THROUGH_RESORT_FEE\",\n      \"offline\": true,\n      \"amountType\": \"percent\",\n      \"amount\": 50000,\n      \"feeUnitType\": \"PER_KILOWATT_HOUR\",\n      \"chargeType\": \"PER_GROUP\",\n      \"chargePeriod\": \"PER_BOOKING\"\n    }\n  ],\n  \"passThroughTaxes\": [\n    {\n      \"taxType\": \"pass_through_hotel_tax\",\n      \"amount\": 90,\n      \"amountType\": \"percent_per_reservation\",\n      \"taxableBase\": [\n        \"basePrice\"\n      ],\n      \"businessTaxId\": \"string\",\n      \"noBusinessTaxIdDeclaration\": true,\n      \"totRegistrationId\": \"string\",\n      \"noTotRegistrationIdDeclaration\": true,\n      \"attestation\": true,\n      \"longTermStayExemption\": 0,\n      \"onlyFirstNightsExemption\": 0,\n      \"maxCapPersonPerNight\": 0\n    }\n  ],\n  \"defaultPricingRules\": [\n    {\n      \"ruleType\": \"STAYED_AT_LEAST_X_DAYS\",\n      \"priceChange\": -15.53,\n      \"priceChangeType\": \"PERCENT\",\n      \"thresholdOne\": 0\n    }\n  ]\n}"
+        },
+        "url": "{{base_url}}/airbnb-pricing-settings"
+      },
+      "response": [
+        {
+          "name": "200 Ok - pricing settings updated",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"propertyId\": 51224597,\n  \"pnaModel\": \"STANDARD\",\n  \"listingCurrency\": \"USD\",\n  \"defaultDailyPrice\": 100\n}"
+            },
+            "url": "{{base_url}}/airbnb-pricing-settings"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2024-08-31 12:56:08\"\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "26 - GET Airbnb pricing settings",
+      "request": {
+        "method": "GET",
+        "description": "Get pricing settings.",
+        "url": {
+          "raw": "{{base_url}}/airbnb-pricing-settings?propertyId={{property_id}}&pnaModel=STANDARD",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "airbnb-pricing-settings"
+          ],
+          "query": [
+            {
+              "key": "propertyId",
+              "value": "{{property_id}}"
+            },
+            {
+              "key": "pnaModel",
+              "value": "STANDARD"
+            }
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "200 Ok - pricing settings",
+          "originalRequest": {
+            "method": "GET",
+            "url": "{{base_url}}/airbnb-pricing-settings?propertyId=51224597&pnaModel=STANDARD"
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"status\": {\n    \"returnCode\": 200,\n    \"returnMessage\": \"Ok\",\n    \"channelLogId\": \"\",\n    \"channelOtherMessages\": \"\",\n    \"timestamp\": \"2021-08-31 12:56:08\"\n  },\n  \"response\": {\n    \"listingCurrency\": \"USD\",\n    \"defaultDailyPrice\": 100,\n    \"weekendPrice\": 100,\n    \"guestsIncluded\": 0,\n    \"pricePerExtraPerson\": 0,\n    \"passThroughTaxesCollectionType\": \"INELIGIBLE\",\n    \"standardFees\": [\n      {\n        \"feeType\": \"PASS_THROUGH_RESORT_FEE\",\n        \"offline\": true,\n        \"amountType\": \"percent\",\n        \"amount\": 50000,\n        \"feeUnitType\": \"PER_KILOWATT_HOUR\",\n        \"chargeType\": \"PER_GROUP\",\n        \"chargePeriod\": \"PER_BOOKING\"\n      }\n    ],\n    \"passThroughTaxes\": [\n      {\n        \"taxType\": \"pass_through_hotel_tax\",\n        \"amount\": 90,\n        \"amountType\": \"percent_per_reservation\",\n        \"taxableBase\": [\n          \"basePrice\"\n        ],\n        \"businessTaxId\": \"string\",\n        \"noBusinessTaxIdDeclaration\": true,\n        \"totRegistrationId\": \"string\",\n        \"noTotRegistrationIdDeclaration\": true,\n        \"attestation\": true,\n        \"longTermStayExemption\": 0,\n        \"onlyFirstNightsExemption\": 0,\n        \"maxCapPersonPerNight\": 0\n      }\n    ],\n    \"defaultPricingRules\": [\n      {\n        \"ruleType\": \"STAYED_AT_LEAST_X_DAYS\",\n        \"priceChange\": -15.53,\n        \"priceChangeType\": \"PERCENT\",\n        \"thresholdOne\": 0\n      }\n    ]\n  }\n}"
+        }
+      ]
+    }
+  ]
+}

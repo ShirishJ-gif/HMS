@@ -32,6 +32,7 @@ import { SaveChannelMappingsBatchDto } from './dto/save-channel-mappings-batch.d
 import { SetupZodomusChannelDto } from './dto/setup-zodomus-channel.dto';
 import { SyncChannelDto } from './dto/sync-channel.dto';
 import { UpdateChannelAutomationDto } from './dto/update-channel-automation.dto';
+import { AirbnbOauthTestDto } from './dto/airbnb-oauth-test.dto';
 import { InventorySyncPayloadService } from './inventory-sync-payload.service';
 import { RateSyncPayloadService } from './rate-sync-payload.service';
 import {
@@ -39,6 +40,7 @@ import {
   readZodomusConnectionConfig,
   ZodomusOtaKey,
 } from './providers/zodomus.types';
+import { ZodomusClient } from './providers/zodomus-client';
 import { ZodomusReservationImportService } from './zodomus-reservation-import.service';
 
 type InventorySnapshotRow = {
@@ -69,6 +71,8 @@ type DbClient = PrismaService | Prisma.TransactionClient;
 type ImportedReservationCleanupSummary = {
   reservation_groups_deleted: number;
   reservation_rooms_deleted: number;
+  billing_records_deleted: number;
+  billing_payment_transactions_deleted: number;
   imported_guests_deleted: number;
   active_room_nights_released: number;
 };
@@ -274,35 +278,39 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         external_hotel_id: dto.external_hotel_id,
         credentials: {
           ota_key: dto.ota_key,
+          setup_status: {
+            checked: false,
+            activated: false,
+            catalog_loaded: false,
+            rooms_activated: false,
+            ready: false,
+            disconnected: false,
+            price_model_id: priceModelId,
+          },
         },
       },
       user,
     );
 
-    const account = await this.getProviderAccount(createdConnection.id, user);
-    const channels = await this.getProviderChannels(createdConnection.id, user);
-    const activation = await this.activateProviderProperty(createdConnection.id, priceModelId, user);
-    const propertyCheck = await this.checkProviderProperty(createdConnection.id, user);
-    const catalog = await this.fetchProviderCatalog(createdConnection.id, user);
     const connection = await this.getConnectionResponse(createdConnection.id);
 
     return {
       connection,
-      catalog,
+      catalog: null,
       setup_status: {
-        checked: true,
-        activated: true,
-        catalog_loaded: true,
+        checked: false,
+        activated: false,
+        catalog_loaded: false,
         rooms_activated: false,
-        ready: Boolean(connection.provider_config_summary?.setup_status?.ready),
+        ready: false,
         price_model_id: priceModelId,
         ota_name: connectionConfig.ota_name,
       },
       provider_responses: {
-        account,
-        channels,
-        property_check: propertyCheck,
-        activation,
+        account: null,
+        channels: null,
+        property_check: null,
+        activation: null,
       },
     };
   }
@@ -534,7 +542,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     return response;
   }
 
-  async activateProviderProperty(connectionId: string, priceModelId: number, user?: AuthenticatedUser) {
+  async activateProviderProperty(connectionId: string, priceModelId: number, user?: AuthenticatedUser, token?: string) {
     const connection = await this.prisma.channelConnection.findUnique({
       where: { id: connectionId },
     });
@@ -555,6 +563,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       external_hotel_id: connection.externalHotelId,
       credentials: connection.credentials,
       price_model_id: priceModelId,
+      token,
     });
 
     await this.auditLogService.record({
@@ -678,6 +687,116 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       external_hotel_id: connection.externalHotelId,
       credentials: connection.credentials,
     });
+  }
+
+  async activateAirbnbHost(connectionId: string, user?: AuthenticatedUser) {
+    const { client, channelId, propertyId } = await this.zodomusCertificationClient(connectionId, user);
+    return client.activateAirbnbHost({ channelId, propertyId });
+  }
+
+  async activateAirbnbOauthTest(connectionId: string, dto: AirbnbOauthTestDto, user?: AuthenticatedUser) {
+    const { client, channelId, propertyId } = await this.zodomusCertificationClient(connectionId, user);
+    return client.activateAirbnbOauthTest({
+      channelId,
+      propertyId,
+      ...(dto.token ? { token: dto.token } : {}),
+      ...(dto.client_id ? { client_id: dto.client_id } : {}),
+    });
+  }
+
+  async getAirbnbHostStatus(connectionId: string, token: string | undefined, user?: AuthenticatedUser) {
+    const { client } = await this.zodomusCertificationClient(connectionId, user);
+    const trimmedToken = token?.trim();
+    if (!trimmedToken) {
+      throw new BadRequestException('Airbnb token is required to check host status.');
+    }
+
+    return client.getAirbnbHostStatus({
+      token: trimmedToken,
+    });
+  }
+
+  async getAirbnbHostInfo(connectionId: string, token: string | undefined, user?: AuthenticatedUser) {
+    const { client } = await this.zodomusCertificationClient(connectionId, user);
+    const trimmedToken = token?.trim();
+    if (!trimmedToken) {
+      throw new BadRequestException('Airbnb token is required to get host info.');
+    }
+
+    return client.getAirbnbHostInfo({
+      token: trimmedToken,
+    });
+  }
+
+  async cancelAirbnbHost(connectionId: string, token: string, user?: AuthenticatedUser) {
+    await this.zodomusCertificationClient(connectionId, user);
+    return new ZodomusClient(readZodomusAppCredentials()).cancelAirbnbHost({ token });
+  }
+
+  async getAirbnbListings(connectionId: string, user?: AuthenticatedUser) {
+    const { client, propertyId } = await this.zodomusCertificationClient(connectionId, user);
+    return client.getAirbnbListings({
+      propertyId,
+      _limit: '50',
+    });
+  }
+
+  async getAirbnbListingsWithToken(connectionId: string, token: string | undefined, user?: AuthenticatedUser) {
+    const { client } = await this.zodomusCertificationClient(connectionId, user);
+    const trimmedToken = token?.trim();
+    if (!trimmedToken) {
+      throw new BadRequestException('Airbnb token is required to get listings.');
+    }
+
+    return client.getAirbnbListings({
+      token: trimmedToken,
+      _limit: '50',
+    });
+  }
+
+  async getProviderAvailability(connectionId: string, user?: AuthenticatedUser) {
+    const { client, channelId, propertyId } = await this.zodomusCertificationClient(connectionId, user);
+    return client.getAvailability({
+      channelId: channelId.toString(),
+      propertyId,
+    });
+  }
+
+  async pushProviderAvailabilityMultiple(connectionId: string, dto: SyncChannelDto, user?: AuthenticatedUser) {
+    const connection = await this.findAccessibleConnectionForSync(connectionId, user);
+    const { client, channelId, propertyId } = this.zodomusClientForConnection(connection);
+    const payload = await this.buildSyncPayload(connection, { ...dto, sync_type: ChannelSyncType.INVENTORY });
+    const inventoryRows = Array.isArray((payload as { inventory?: unknown }).inventory)
+      ? ((payload as { inventory: Array<Record<string, unknown>> }).inventory)
+      : [];
+
+    const body = {
+      channelId,
+      propertyId,
+      ...(channelId === 3 ? { pnaModel: 'STANDARD' } : {}),
+      roomIds: this.availabilityMultipleLines(inventoryRows, channelId),
+    };
+
+    return client.pushAvailabilityMultiple(body);
+  }
+
+  async pushProviderRatesMultiple(connectionId: string, dto: SyncChannelDto, user?: AuthenticatedUser) {
+    const connection = await this.findAccessibleConnectionForSync(connectionId, user);
+    const { client, channelId, propertyId } = this.zodomusClientForConnection(connection);
+    const payload = await this.buildSyncPayload(connection, { ...dto, sync_type: ChannelSyncType.RATES });
+    const rateRows = Array.isArray((payload as { rates?: unknown }).rates)
+      ? ((payload as { rates: Array<Record<string, unknown>> }).rates)
+      : [];
+    const priceModelId = Number((payload as { price_model_id?: unknown }).price_model_id ?? 1);
+
+    const body = {
+      channelId,
+      propertyId,
+      ...(channelId === 3 ? { pnaModel: 'STANDARD' } : {}),
+      roomIds: this.ratesMultipleLines(rateRows, channelId, priceModelId),
+    };
+
+    return client.pushRatesMultiple(body);
   }
 
   async getProviderReservationsQueue(connectionId: string, user?: AuthenticatedUser) {
@@ -929,6 +1048,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       return {
         reservation_groups_deleted: 0,
         reservation_rooms_deleted: 0,
+        billing_records_deleted: 0,
+        billing_payment_transactions_deleted: 0,
         imported_guests_deleted: 0,
         active_room_nights_released: 0,
       };
@@ -940,7 +1061,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         reservationGroups.flatMap((group) => (group.primaryGuestId ? [group.primaryGuestId] : [])),
       ),
     );
-    const billingCount = await tx.billing.count({
+    const billings = await tx.billing.findMany({
       where: {
         reservationRoom: {
           is: {
@@ -948,13 +1069,41 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
           },
         },
       },
+      select: {
+        id: true,
+        _count: {
+          select: {
+            payments: true,
+          },
+        },
+      },
     });
+    const billingsWithPayments = billings.filter((billing) => billing._count.payments > 0);
+    const allowTestPaymentCleanup = process.env.ZODOMUS_ENVIRONMENT?.trim() === 'sandbox';
 
-    if (billingCount > 0) {
+    if (billingsWithPayments.length > 0 && !allowTestPaymentCleanup) {
       throw new ConflictException(
-        'Cannot remove OTA connection because imported reservations have billing records. Void or detach billing first.',
+        'Cannot remove OTA connection because imported reservations have payment transactions. Refund or void payments first.',
       );
     }
+
+    const billingIds = billings.map((billing) => billing.id);
+    const deletedPaymentTransactions =
+      billingIds.length > 0 && allowTestPaymentCleanup
+        ? await tx.paymentTransaction.deleteMany({
+            where: {
+              billingId: { in: billingIds },
+            },
+          })
+        : { count: 0 };
+    const deletedBillings =
+      billingIds.length > 0
+        ? await tx.billing.deleteMany({
+            where: {
+              id: { in: billingIds },
+            },
+          })
+        : { count: 0 };
 
     const activeStatuses = new Set<BookingStatus>([BookingStatus.BOOKED, BookingStatus.CHECKED_IN]);
     const releaseCounts = new Map<string, { propertyId: string; roomCategoryId: string; stayDate: Date; roomCount: number }>();
@@ -1026,6 +1175,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     return {
       reservation_groups_deleted: reservationGroups.length,
       reservation_rooms_deleted: reservationGroups.reduce((total, group) => total + group.rooms.length, 0),
+      billing_records_deleted: deletedBillings.count,
+      billing_payment_transactions_deleted: deletedPaymentTransactions.count,
       imported_guests_deleted: deletedGuests.count,
       active_room_nights_released: Array.from(releaseCounts.values()).reduce(
         (total, release) => total + release.roomCount,
@@ -1957,6 +2108,226 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       from: from.toISOString().slice(0, 10),
       to: to.toISOString().slice(0, 10),
     };
+  }
+
+  private async findAccessibleConnectionForSync(connectionId: string, user?: AuthenticatedUser) {
+    const connection = await this.prisma.channelConnection.findUnique({
+      where: { id: connectionId },
+      include: {
+        property: true,
+        roomMappings: { include: { roomCategory: true } },
+        rateMappings: { include: { ratePlan: { include: { roomCategory: true } } } },
+      },
+    });
+
+    if (!connection) {
+      throw new NotFoundException('Channel connection not found');
+    }
+
+    assertCanAccessProperty(user, connection.propertyId);
+    return connection;
+  }
+
+  private async zodomusCertificationClient(connectionId: string, user?: AuthenticatedUser) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.zodomusClientForConnection(connection);
+  }
+
+  private zodomusClientForConnection(connection: { provider: ChannelProvider; externalHotelId: string | null; credentials: Prisma.JsonValue | null }) {
+    if (connection.provider !== ChannelProvider.ZODOMUS) {
+      throw new BadRequestException('This certification API is currently supported only for Zodomus connections.');
+    }
+
+    const appCredentials = readZodomusAppCredentials();
+    const connectionConfig = readZodomusConnectionConfig(connection.credentials);
+    const propertyId = this.requiredExternalHotelId(connection.externalHotelId);
+
+    return {
+      client: new ZodomusClient(appCredentials),
+      channelId: Number(connectionConfig.channel_code),
+      propertyId,
+    };
+  }
+
+  private requiredExternalHotelId(value: string | null) {
+    if (!value?.trim()) {
+      throw new BadRequestException('Zodomus property ID is required for this provider call.');
+    }
+
+    return value.trim();
+  }
+
+  private nextDate(value: string) {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException(`Invalid date: ${value}`);
+    }
+
+    date.setUTCDate(date.getUTCDate() + 1);
+    return date.toISOString().slice(0, 10);
+  }
+
+  private availabilityMultipleLines(rows: Array<Record<string, unknown>>, channelId: number) {
+    const sortedRows = rows
+      .map((row) => ({
+        roomId: String(row.external_room_id),
+        date: String(row.date),
+        availability: Number(row.available ?? 0),
+        stopSell: Boolean(row.stop_sell),
+        closedToArrival: Boolean(row.closed_to_arrival),
+        closedToDeparture: Boolean(row.closed_to_departure),
+      }))
+      .sort((left, right) => {
+        const roomCompare = left.roomId.localeCompare(right.roomId);
+        return roomCompare === 0 ? left.date.localeCompare(right.date) : roomCompare;
+      });
+
+    const lines: Array<{
+      roomId: string;
+      dateFrom: string;
+      dateTo: string;
+      availability: number | string;
+      stopSell: number;
+      closedToArrival: number;
+      closedToDeparture: number;
+    }> = [];
+
+    for (const row of sortedRows) {
+      const previous = lines[lines.length - 1];
+      if (
+        previous &&
+        previous.roomId === row.roomId &&
+        previous.availability === row.availability &&
+        previous.stopSell === (row.stopSell ? 1 : 0) &&
+        previous.closedToArrival === (row.closedToArrival ? 1 : 0) &&
+        previous.closedToDeparture === (row.closedToDeparture ? 1 : 0) &&
+        previous.dateTo === row.date
+      ) {
+        previous.dateTo = this.nextDate(row.date);
+        continue;
+      }
+
+      lines.push({
+        roomId: row.roomId,
+        dateFrom: row.date,
+        dateTo: this.nextDate(row.date),
+        availability: channelId === 2 ? row.availability.toString() : row.availability,
+        stopSell: row.stopSell ? 1 : 0,
+        closedToArrival: row.closedToArrival ? 1 : 0,
+        closedToDeparture: row.closedToDeparture ? 1 : 0,
+      });
+    }
+
+    return lines;
+  }
+
+  private ratesMultipleLines(rows: Array<Record<string, unknown>>, channelId: number, priceModelId: number) {
+    return rows.map((row) => {
+      const closed = row.closed ? '1' : '0';
+      const baseLine = {
+        roomId: String(row.external_room_id),
+        dateFrom: String(row.date),
+        dateTo: this.nextDate(String(row.date)),
+        currencyCode: String(row.currency),
+        rateId: String(row.external_rate_id),
+        prices: this.ratesMultiplePrices(row, channelId, priceModelId),
+        closed: channelId === 3 ? (row.closed ? 1 : 0) : closed,
+      };
+
+      if (channelId === 3) {
+        return {
+          ...baseLine,
+          minimumStay: Number(row.min_stay ?? 1),
+          maximumStay: Number(row.max_stay ?? 31),
+        };
+      }
+
+      return {
+        ...baseLine,
+        closedToArrival: row.closed_to_arrival ? '1' : '0',
+        closedToDeparture: row.closed_to_departure ? '1' : '0',
+        minimumStay: String(row.min_stay ?? 1),
+        maximumStay: String(row.max_stay ?? 31),
+      };
+    });
+  }
+
+  private ratesMultiplePrices(row: Record<string, unknown>, channelId: number, priceModelId: number) {
+    const baseRate = Number(row.base_rate ?? 0).toFixed(2);
+    const maxOccupancy = Number(row.room_category_max_occupancy ?? 1);
+    const pricingConfig = this.readObject(row.pricing_config);
+    const singlePrice = this.optionalPrice(pricingConfig.single_price);
+
+    if (channelId === 2 && priceModelId === 3) {
+      const configuredPrices = this.readArray(pricingConfig.occupancy_prices ?? pricingConfig.prices)
+        .map((item) => {
+          const record = this.readObject(item);
+          const guests = this.optionalPositiveInteger(record.guests);
+          const price = this.optionalPrice(record.price);
+          return guests && price ? { guests: guests.toString(), price } : null;
+        })
+        .filter((item): item is { guests: string; price: string } => item !== null);
+
+      if (configuredPrices.length > 0) {
+        return configuredPrices;
+      }
+
+      return Array.from({ length: Math.max(maxOccupancy, 1) }, (_, index) => ({
+        guests: (index + 1).toString(),
+        price: baseRate,
+      }));
+    }
+
+    if (channelId === 2 && priceModelId === 4) {
+      return { price: baseRate };
+    }
+
+    if (channelId === 3) {
+      return { price: baseRate };
+    }
+
+    if (maxOccupancy <= 1) {
+      return { price: baseRate };
+    }
+
+    return {
+      price: baseRate,
+      priceSingle: singlePrice ?? baseRate,
+    };
+  }
+
+  private optionalPrice(value: unknown) {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return value.toFixed(2);
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number.parseFloat(value);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return parsed.toFixed(2);
+      }
+    }
+
+    return null;
+  }
+
+  private readArray(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : [];
+  }
+
+  private optionalPositiveInteger(value: unknown) {
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+      return value;
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isInteger(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    return null;
   }
 
   private async buildSyncPayload(

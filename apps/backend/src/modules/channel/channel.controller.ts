@@ -6,6 +6,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { ChannelService } from './channel.service';
 import { ActivateChannelPropertyDto } from './dto/activate-channel-property.dto';
+import { AirbnbHostCancellationDto } from './dto/airbnb-host-cancellation.dto';
+import { AirbnbOauthTestDto } from './dto/airbnb-oauth-test.dto';
 import { CreateTestReservationDto } from './dto/create-test-reservation.dto';
 import { CreateChannelConnectionDto } from './dto/create-channel-connection.dto';
 import { CreateChannelRateMappingDto } from './dto/create-channel-rate-mapping.dto';
@@ -102,6 +104,88 @@ export class ChannelController {
     return this.channelService.getProviderPriceModels(id, user);
   }
 
+  @Post(':id/airbnb-host-activation')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  activateAirbnbHost(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.channelService.activateAirbnbHost(id, user);
+  }
+
+  @Post(':id/airbnb-oauth2-tests')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  activateAirbnbOauthTest(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AirbnbOauthTestDto,
+  ) {
+    return this.channelService.activateAirbnbOauthTest(id, dto, user);
+  }
+
+  @Get(':id/airbnb-host-status')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  getAirbnbHostStatus(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('token') token?: string,
+  ) {
+    return this.channelService.getAirbnbHostStatus(id, token, user);
+  }
+
+  @Post(':id/airbnb-host-cancellation')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  cancelAirbnbHost(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AirbnbHostCancellationDto,
+  ) {
+    return this.channelService.cancelAirbnbHost(id, dto.token, user);
+  }
+
+  @Get(':id/airbnb-host-info')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  getAirbnbHostInfo(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('token') token?: string,
+  ) {
+    return this.channelService.getAirbnbHostInfo(id, token, user);
+  }
+
+  @Get(':id/airbnb-listings')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  getAirbnbListings(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('token') token?: string,
+  ) {
+    return this.channelService.getAirbnbListingsWithToken(id, token, user);
+  }
+
+  @Get(':id/provider-availability')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  getProviderAvailability(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.channelService.getProviderAvailability(id, user);
+  }
+
+  @Post(':id/availability-multiple')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  pushProviderAvailabilityMultiple(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SyncChannelDto,
+  ) {
+    return this.channelService.pushProviderAvailabilityMultiple(id, dto, user);
+  }
+
+  @Post(':id/rates-multiple')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  pushProviderRatesMultiple(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SyncChannelDto,
+  ) {
+    return this.channelService.pushProviderRatesMultiple(id, dto, user);
+  }
+
   @Post(':id/property-check')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   checkProviderProperty(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
@@ -115,7 +199,7 @@ export class ChannelController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ActivateChannelPropertyDto,
   ) {
-    return this.channelService.activateProviderProperty(id, dto.price_model_id, user);
+    return this.channelService.activateProviderProperty(id, dto.price_model_id, user, dto.token);
   }
 
   @Post(':id/rooms-activate')

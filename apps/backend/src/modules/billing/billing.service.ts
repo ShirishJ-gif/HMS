@@ -90,6 +90,7 @@ export class BillingService {
     const search = query.search?.trim();
     const where: Prisma.BillingWhereInput = {
       AND: [
+        { reservationRoomId: { not: null } },
         ...(scopedPropertyId ? [{ reservationRoom: { propertyId: scopedPropertyId } } satisfies Prisma.BillingWhereInput] : []),
         ...(search
           ? [

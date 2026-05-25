@@ -568,7 +568,7 @@ export type ChannelProviderActionResponse = {
 
 export type ZodomusSetupResponse = {
   connection: ChannelConnection;
-  catalog: ChannelProviderCatalog;
+  catalog: ChannelProviderCatalog | null;
   setup_status: {
     checked: boolean;
     activated: boolean;

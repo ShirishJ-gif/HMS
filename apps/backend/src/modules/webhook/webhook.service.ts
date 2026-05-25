@@ -46,13 +46,21 @@ export class WebhookService {
       this.extractHeader(headers, 'x-webhook-signature') ??
       this.extractHeader(headers, 'x-webhook-key') ??
       this.extractHeader(headers, 'x-api-key') ??
-      this.extractHeader(headers, 'authorization');
+      this.extractHeader(headers, 'authorization') ??
+      this.readString(payload.webhookKey) ??
+      this.readString(payload.webhook_key);
     this.verifySignature(domain, provider, signature, rawPayload);
 
     const eventType =
-      this.readString(payload.event_type) ?? this.extractHeader(headers, 'x-event-type') ?? 'unknown';
+      this.readString(payload.event_type) ??
+      this.zodomusPayloadEventType(provider, payload) ??
+      this.extractHeader(headers, 'x-event-type') ??
+      'unknown';
     const externalEventId =
-      this.readString(payload.event_id) ?? this.extractHeader(headers, 'x-event-id') ?? undefined;
+      this.readString(payload.event_id) ??
+      this.readString(payload.notificationTypeId) ??
+      this.extractHeader(headers, 'x-event-id') ??
+      undefined;
     const propertyId = this.readUuid(payload.property_id);
     const dedupeKey = externalEventId
       ? `${domain}:${provider}:${externalEventId}`
@@ -240,6 +248,27 @@ export class WebhookService {
 
   private readString(value: unknown) {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  }
+
+  private zodomusPayloadEventType(provider: string, payload: Record<string, unknown>) {
+    if (provider !== 'zodomus') {
+      return undefined;
+    }
+
+    const notificationType = this.readString(payload.notificationType);
+    const notificationSubtype = this.readString(payload.notificationSubtype);
+    if (notificationType) {
+      return notificationSubtype
+        ? `airbnb_notification_${notificationType}_${notificationSubtype}`
+        : `airbnb_notification_${notificationType}`;
+    }
+
+    if (this.readString(payload.reservationId) || this.readString(payload.reservation_id)) {
+      const status = this.readString(payload.reservationstatus) ?? this.readString(payload.reservation_status);
+      return status ? `reservation_${status.toLowerCase()}` : 'reservation';
+    }
+
+    return undefined;
   }
 
   private readUuid(value: unknown) {

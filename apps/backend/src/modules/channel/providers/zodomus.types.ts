@@ -6,6 +6,7 @@ export type ZodomusOtaKey = 'BOOKING_COM' | 'EXPEDIA' | 'AIRBNB';
 export type ZodomusAppCredentials = {
   api_user: string;
   api_password: string;
+  credit_card_api_password?: string;
   environment: ZodomusEnvironment;
 };
 
@@ -54,6 +55,7 @@ export function readZodomusAppCredentials(env: NodeJS.ProcessEnv = process.env):
   return {
     api_user: apiUser,
     api_password: apiPassword,
+    credit_card_api_password: env.ZODOMUS_CREDIT_CARD_API_PASSWORD?.trim() || undefined,
     environment,
   };
 }

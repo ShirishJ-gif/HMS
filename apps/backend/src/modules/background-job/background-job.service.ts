@@ -32,6 +32,7 @@ import { ZodomusReservationImportService } from '../channel/zodomus-reservation-
 import { MetricsService } from '../metrics/metrics.service';
 import {
   CheckInReminderPayload,
+  OwnerReservationChangePayload,
   OwnerReservationNotificationPayload,
   ReservationConfirmationPayload,
   WhatsAppNotificationService,
@@ -325,12 +326,12 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     propertyId: string;
     importSummary: Prisma.InputJsonObject;
   }) {
-    await this.queueImportedReservationNotifications(
-      input.propertyId,
-      this.readStringArray(
-        this.readObject(input.importSummary as unknown as Prisma.JsonValue).created_reservation_group_ids,
-      ),
-    );
+    const importSummary = this.readObject(input.importSummary as unknown as Prisma.JsonValue);
+    await this.queueImportedReservationNotifications(input.propertyId, {
+      created: this.readStringArray(importSummary.created_reservation_group_ids),
+      updated: this.readStringArray(importSummary.updated_reservation_group_ids),
+      cancelled: this.readStringArray(importSummary.cancelled_reservation_group_ids),
+    });
     await this.queueInventoryFanoutAfterReservationImport(
       input.sourceConnectionId,
       input.propertyId,
@@ -736,6 +737,16 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
           this.readOwnerBookingNotificationPayload(payload),
         );
         break;
+      case 'owner_reservation_modified':
+        await this.whatsappNotificationService.sendOwnerReservationModifiedNotification(
+          this.readOwnerReservationChangePayload(payload),
+        );
+        break;
+      case 'owner_reservation_cancelled':
+        await this.whatsappNotificationService.sendOwnerReservationCancelledNotification(
+          this.readOwnerReservationChangePayload(payload),
+        );
+        break;
       case 'check_in_reminder':
         await this.whatsappNotificationService.sendCheckInReminder(
           this.readCheckInReminderPayload(payload),
@@ -748,14 +759,23 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     this.metricsService.recordNotificationSend(template, 'sent');
   }
 
-  private async queueImportedReservationNotifications(propertyId: string, reservationGroupIds: string[]) {
-    if (reservationGroupIds.length === 0) {
+  private async queueImportedReservationNotifications(
+    propertyId: string,
+    reservationGroupIds: { created: string[]; updated: string[]; cancelled: string[] },
+  ) {
+    const eventByGroupId = new Map<string, 'created' | 'updated' | 'cancelled'>();
+    for (const id of reservationGroupIds.created) eventByGroupId.set(id, 'created');
+    for (const id of reservationGroupIds.updated) eventByGroupId.set(id, 'updated');
+    for (const id of reservationGroupIds.cancelled) eventByGroupId.set(id, 'cancelled');
+    const groupIds = [...eventByGroupId.keys()];
+
+    if (groupIds.length === 0) {
       return;
     }
 
     const groups = await this.prisma.reservationGroup.findMany({
       where: {
-        id: { in: reservationGroupIds },
+        id: { in: groupIds },
       },
       include: {
         property: true,
@@ -770,6 +790,11 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     });
 
     for (const group of groups) {
+      const event = eventByGroupId.get(group.id);
+      if (!event) {
+        continue;
+      }
+
       const guestPhone = group.primaryGuest?.phone;
       const guestName = group.primaryGuest?.name ?? 'Imported guest';
       const roomSummary = this.describeImportedReservationRooms(group.rooms);
@@ -783,33 +808,41 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      if (guestPhone) {
-        await this.enqueue({
-          type: BackgroundJobType.NOTIFICATION_SEND,
-          propertyId,
-          dedupeKey: `notification:imported-reservation-confirmation:${group.id}`,
-          entityType: 'reservation_group',
-          entityId: group.id,
-          payload: {
-            template: 'reservation_confirmation',
-            guest_name: guestName,
-            phone: guestPhone,
-            room_number: roomSummary,
-            check_in_date: firstArrival.toISOString(),
-            check_out_date: lastDeparture.toISOString(),
-          },
-          maxAttempts: 3,
-        });
-      }
+      // OTA guest confirmations are intentionally not sent by HMS; the OTA owns
+      // confirmation wording, pricing, policies, and cancellation terms.
+      // Notification flow:
+      // - OTA reservation imported: owner/admin alert only.
+      // - Direct HMS booking created: guest confirmation can be sent by HMS.
+      // - Before check-in: guest reminder.
+      // - OTA modification/cancellation/import failure: owner/admin action alert.
+      // if (guestPhone) {
+      //   await this.enqueue({
+      //     type: BackgroundJobType.NOTIFICATION_SEND,
+      //     propertyId,
+      //     dedupeKey: `notification:imported-reservation-confirmation:${group.id}`,
+      //     entityType: 'reservation_group',
+      //     entityId: group.id,
+      //     payload: {
+      //       template: 'reservation_confirmation',
+      //       guest_name: guestName,
+      //       phone: guestPhone,
+      //       room_number: roomSummary,
+      //       check_in_date: firstArrival.toISOString(),
+      //       check_out_date: lastDeparture.toISOString(),
+      //     },
+      //     maxAttempts: 3,
+      //   });
+      // }
 
+      const notificationConfig = this.importedReservationOwnerNotificationConfig(event);
       await this.enqueue({
         type: BackgroundJobType.NOTIFICATION_SEND,
         propertyId,
-        dedupeKey: `notification:imported-owner-reservation:${group.id}`,
+        dedupeKey: `notification:${notificationConfig.dedupePrefix}:${group.id}`,
         entityType: 'reservation_group',
         entityId: group.id,
         payload: {
-          template: 'owner_reservation_notification',
+          template: notificationConfig.template,
           owner_phone: group.property.phone,
           property_name: group.property.name,
           guest_name: guestName,
@@ -822,6 +855,27 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
         maxAttempts: 3,
       });
     }
+  }
+
+  private importedReservationOwnerNotificationConfig(event: 'created' | 'updated' | 'cancelled') {
+    if (event === 'updated') {
+      return {
+        template: 'owner_reservation_modified',
+        dedupePrefix: 'imported-owner-reservation-modified',
+      };
+    }
+
+    if (event === 'cancelled') {
+      return {
+        template: 'owner_reservation_cancelled',
+        dedupePrefix: 'imported-owner-reservation-cancelled',
+      };
+    }
+
+    return {
+      template: 'owner_reservation_notification',
+      dedupePrefix: 'imported-owner-reservation',
+    };
   }
 
   private async queueInventoryFanoutAfterReservationImport(
@@ -1399,6 +1453,12 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
       checkOutDate: this.readDate(payload.check_out_date, 'check_out_date'),
       totalAmount: Number(this.requiredString(payload.total_amount, 'total_amount')),
     };
+  }
+
+  private readOwnerReservationChangePayload(
+    payload: Record<string, Prisma.JsonValue>,
+  ): OwnerReservationChangePayload {
+    return this.readOwnerBookingNotificationPayload(payload);
   }
 
   private readCheckInReminderPayload(

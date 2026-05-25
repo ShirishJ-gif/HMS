@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { api, getApiErrorMessage } from '../../api/client';
 import { fetchAllPages } from '../../api/pagination';
 import {
@@ -45,6 +45,8 @@ type UseChannelWorkspaceOptions = {
 
 type ChannelWorkspaceCache = {
   automationEnabled: boolean;
+  airbnbClientId: string;
+  airbnbToken: string;
   backgroundJobs: BackgroundJob[];
   backgroundJobsError: string | null;
   catalogConnectionId: string;
@@ -89,6 +91,7 @@ type ChannelWorkspaceCache = {
 const channelWorkspaceCacheBySession = new Map<string, ChannelWorkspaceCache>();
 const diagnosticsCacheUpdatedAtByKey = new Map<string, number>();
 const diagnosticsCacheTtlMs = 60_000;
+const statusAutoClearMs = 5000;
 const selectedConnectionStorageKey = 'hms_selected_channel_connection_id';
 
 function readPersistedSelectedConnectionId() {
@@ -115,6 +118,8 @@ function persistSelectedConnectionId(connectionId: string) {
 function buildEmptyWorkspaceCache(enabled: boolean): ChannelWorkspaceCache {
   return {
     automationEnabled: true,
+    airbnbClientId: '',
+    airbnbToken: '',
     backgroundJobs: [],
     backgroundJobsError: null,
     catalogConnectionId: '',
@@ -201,6 +206,25 @@ function defaultPriceModelIdForOta(otaKey: ZodomusOtaKey) {
   return 4;
 }
 
+function buildAirbnbAuthorizationUrl(input: { clientId: string; environment: 'production' | 'sandbox'; token: string }) {
+  const baseUrl =
+    input.environment === 'production'
+      ? 'https://www.airbnb.com/oauth2/auth'
+      : 'https://api.zodomus.com/airbnb-oauth2-tests';
+  const redirectUri =
+    input.environment === 'production'
+      ? 'https://api.zodomus.com/airbnb-webhook-redirect'
+      : 'https://api.zodomus.com/airbnb-webhook-redirect-test';
+  const params = new URLSearchParams({
+    client_id: input.clientId,
+    redirect_uri: redirectUri,
+    scope: 'property_management,messages_read,messages_write',
+    state: input.token,
+  });
+
+  return `${baseUrl}?${params.toString()}`;
+}
+
 function normalizePriceModelId(value: string) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
@@ -271,9 +295,16 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   const [catalogConnectionId, setCatalogConnectionId] = useState(() => cachedState.catalogConnectionId);
   const [catalogLoaded, setCatalogLoaded] = useState(() => cachedState.catalogLoaded);
   const [status, setStatus] = useState<string | null>(() => cachedState.status);
+  const statusAutoClearTimerRef = useRef<number | null>(null);
   const [error, setError] = useState<string | null>(() => cachedState.error);
+  const [certificationResponse, setCertificationResponse] = useState<{
+    label: string;
+    payload: unknown;
+  } | null>(null);
   const [loading, setLoading] = useState(() => cachedState.loading);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [airbnbToken, setAirbnbToken] = useState(() => cachedState.airbnbToken);
+  const [airbnbClientId, setAirbnbClientId] = useState(() => cachedState.airbnbClientId);
   const [automationEnabled, setAutomationEnabled] = useState(() => cachedState.automationEnabled);
   const [inventoryInterval, setInventoryInterval] = useState(() => cachedState.inventoryInterval);
   const [ratesInterval, setRatesInterval] = useState(() => cachedState.ratesInterval);
@@ -312,6 +343,29 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   const selectedConnection = zodomusConnections.find((connection) => connection.id === selectedConnectionId) ?? null;
   const selectedPropertyId = selectedConnection?.property_id ?? propertyId;
   const selectedProperty = properties.find((property) => property.id === propertyId) ?? null;
+
+  useEffect(() => {
+    if (statusAutoClearTimerRef.current != null) {
+      window.clearTimeout(statusAutoClearTimerRef.current);
+      statusAutoClearTimerRef.current = null;
+    }
+
+    if (!status) {
+      return;
+    }
+
+    statusAutoClearTimerRef.current = window.setTimeout(() => {
+      setStatus(null);
+      statusAutoClearTimerRef.current = null;
+    }, statusAutoClearMs);
+
+    return () => {
+      if (statusAutoClearTimerRef.current != null) {
+        window.clearTimeout(statusAutoClearTimerRef.current);
+        statusAutoClearTimerRef.current = null;
+      }
+    };
+  }, [status]);
   const selectedOtaLabel = zodomusOtaOptions.find((option) => option.key === zodomusOtaKey)?.label ?? 'OTA';
   const persistedSetupStatus = selectedConnection?.provider_config_summary?.setup_status ?? null;
   const automationSummary = selectedConnection?.provider_config_summary?.automation ?? null;
@@ -556,6 +610,8 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setStatus(nextState.status);
     setError(nextState.error);
     setLoading(nextState.loading);
+    setAirbnbToken(nextState.airbnbToken);
+    setAirbnbClientId(nextState.airbnbClientId);
     setAutomationEnabled(nextState.automationEnabled);
     setInventoryInterval(nextState.inventoryInterval);
     setRatesInterval(nextState.ratesInterval);
@@ -626,6 +682,8 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   useEffect(() => {
     channelWorkspaceCacheBySession.set(resolvedSessionKey, {
       automationEnabled,
+      airbnbClientId,
+      airbnbToken,
       backgroundJobs,
       backgroundJobsError,
       catalogConnectionId,
@@ -668,6 +726,8 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     });
   }, [
     automationEnabled,
+    airbnbClientId,
+    airbnbToken,
     backgroundJobs,
     backgroundJobsError,
     catalogConnectionId,
@@ -799,6 +859,10 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     } finally {
       setPendingAction(null);
     }
+  }
+
+  function rememberCertificationResponse(label: string, payload: unknown) {
+    setCertificationResponse({ label, payload });
   }
 
   async function loadInventoryReconciliation(connectionId: string) {
@@ -959,12 +1023,148 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       });
       setSelectedConnectionId(response.data.connection.id);
       setProviderCatalog(response.data.catalog);
-      setCatalogConnectionId(response.data.connection.id);
+      setCatalogConnectionId(response.data.catalog ? response.data.connection.id : '');
       setCatalogLoaded(response.data.setup_status.catalog_loaded);
       setZodomusPropertyId('');
-      setStatus(`${selectedProperty ? selectedProperty.name : 'Property'} connected to ${selectedOtaLabel}.`);
+      setStatus(`${selectedProperty ? selectedProperty.name : 'Property'} connection saved for ${selectedOtaLabel}. Run certification steps next.`);
       await loadData();
       setSelectedConnectionId(response.data.connection.id);
+    });
+  }
+
+  async function fetchProviderChannels() {
+    if (!selectedConnection) return;
+    await runAction('provider-channels', async () => {
+      const response = await api.get(`/channels/${selectedConnection.id}/provider-channels`);
+      rememberCertificationResponse('Get channels', response.data);
+      setStatus('Zodomus channels fetched.');
+    });
+  }
+
+  async function fetchProviderPriceModels() {
+    if (!selectedConnection) return;
+    await runAction('provider-price-models', async () => {
+      const response = await api.get<ChannelProviderPriceModels>(`/channels/${selectedConnection.id}/provider-price-models`);
+      const models = extractPriceModels(response.data);
+      setProviderPriceModels(models.length > 0 ? models : fallbackZodomusPriceModels);
+      rememberCertificationResponse('Get price models', response.data);
+      setStatus('Zodomus price models fetched.');
+    });
+  }
+
+  async function activateAirbnbHost() {
+    if (!selectedConnection) return;
+    await runAction('airbnb-host-activation', async () => {
+      const response = await api.post(`/channels/${selectedConnection.id}/airbnb-host-activation`);
+      rememberCertificationResponse('Airbnb host activation', response.data);
+      setStatus('Airbnb host activation request sent.');
+    });
+  }
+
+  async function activateAirbnbOauthTest() {
+    if (!selectedConnection) return;
+    const token = airbnbToken.trim();
+    const clientId = airbnbClientId.trim();
+    if (!token || !clientId) {
+      setError('Airbnb token and client ID are required to open the authorization URL.');
+      return;
+    }
+
+    await runAction('airbnb-oauth2-tests', async () => {
+      const environment = selectedConnection.provider_config_summary?.environment === 'production' ? 'production' : 'sandbox';
+      const authUrl = buildAirbnbAuthorizationUrl({
+        clientId,
+        environment,
+        token,
+      });
+      rememberCertificationResponse('Airbnb authorization URL', {
+        auth_url: authUrl,
+        client_id: clientId,
+        environment,
+        redirect_uri:
+          environment === 'production'
+            ? 'https://api.zodomus.com/airbnb-webhook-redirect'
+            : 'https://api.zodomus.com/airbnb-webhook-redirect-test',
+        scope: 'property_management,messages_read,messages_write',
+        state: token,
+      });
+      window.open(authUrl, '_blank', 'noopener,noreferrer');
+      setStatus('Airbnb authorization URL opened.');
+    });
+  }
+
+  async function fetchAirbnbHostStatus() {
+    if (!selectedConnection) return;
+    const token = airbnbToken.trim();
+    if (!token) {
+      setError('Airbnb token is required to check host status.');
+      return;
+    }
+
+    await runAction('airbnb-host-status', async () => {
+      const response = await api.get(`/channels/${selectedConnection.id}/airbnb-host-status`, {
+        params: { token },
+      });
+      rememberCertificationResponse('Airbnb host status', response.data);
+      setStatus('Airbnb host status fetched.');
+    });
+  }
+
+  async function fetchAirbnbHostInfo() {
+    if (!selectedConnection) return;
+    const token = airbnbToken.trim();
+    if (!token) {
+      setError('Airbnb token is required to get host info.');
+      return;
+    }
+
+    await runAction('airbnb-host-info', async () => {
+      const response = await api.get(`/channels/${selectedConnection.id}/airbnb-host-info`, {
+        params: { token },
+      });
+      rememberCertificationResponse('Airbnb host info', response.data);
+      setStatus('Airbnb host info fetched.');
+    });
+  }
+
+  async function cancelAirbnbHost() {
+    if (!selectedConnection) return;
+    const token = airbnbToken.trim();
+    if (!token) {
+      setError('Airbnb token is required to cancel host activation.');
+      return;
+    }
+
+    await runAction('airbnb-host-cancellation', async () => {
+      const response = await api.post(`/channels/${selectedConnection.id}/airbnb-host-cancellation`, { token });
+      rememberCertificationResponse('Airbnb host cancellation', response.data);
+      setStatus('Airbnb host cancellation request sent.');
+    });
+  }
+
+  async function fetchAirbnbListings() {
+    if (!selectedConnection) return;
+    const token = airbnbToken.trim();
+    if (!token) {
+      setError('Airbnb token is required to get listings.');
+      return;
+    }
+
+    await runAction('airbnb-listings', async () => {
+      const response = await api.get(`/channels/${selectedConnection.id}/airbnb-listings`, {
+        params: { token },
+      });
+      rememberCertificationResponse('Airbnb listings', response.data);
+      setStatus('Airbnb listings fetched.');
+    });
+  }
+
+  async function fetchProviderAvailability() {
+    if (!selectedConnection) return;
+    await runAction('provider-availability', async () => {
+      const response = await api.get(`/channels/${selectedConnection.id}/provider-availability`);
+      rememberCertificationResponse('Get availability', response.data);
+      setStatus('Availability fetched from Zodomus.');
     });
   }
 
@@ -973,6 +1173,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     await runAction('load-provider-catalog', async () => {
       const response = await api.get<ChannelProviderCatalog>(`/channels/${selectedConnection.id}/provider-catalog`);
       setProviderCatalog(response.data);
+      rememberCertificationResponse('Get rooms & rates', response.data);
       setCatalogConnectionId(selectedConnection.id);
       setCatalogLoaded(true);
       setStatus('Room and rate IDs loaded.');
@@ -1036,7 +1237,8 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   async function activateMappedRooms() {
     if (!selectedConnection) return;
     await runAction('activate-mapped-rooms', async () => {
-      await api.post(`/channels/${selectedConnection.id}/rooms-activate`);
+      const response = await api.post(`/channels/${selectedConnection.id}/rooms-activate`);
+      rememberCertificationResponse('Activate rooms/rates', response.data);
       setStatus('Mapped rooms and rates activated in Zodomus. Run property check before syncing.');
       await loadData();
       setSelectedConnectionId(selectedConnection.id);
@@ -1046,7 +1248,8 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   async function runPropertyCheck() {
     if (!selectedConnection) return;
     await runAction('property-check', async () => {
-      await api.post(`/channels/${selectedConnection.id}/property-check`);
+      const response = await api.post(`/channels/${selectedConnection.id}/property-check`);
+      rememberCertificationResponse('Property check', response.data);
       setStatus('Property check completed.');
       await loadData();
       setSelectedConnectionId(selectedConnection.id);
@@ -1057,12 +1260,106 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     if (!selectedConnection) return;
     if (!window.confirm(`Re-activate ${selectedConnection.name} in Zodomus? Use this when provider-side onboarding or approval has changed.`)) return;
     await runAction('property-activate', async () => {
-      await api.post(`/channels/${selectedConnection.id}/property-activate`, {
+      const isAirbnb =
+        selectedConnection.provider_config_summary?.channel_id === '3' ||
+        selectedConnection.provider_config_summary?.ota_name?.toLowerCase().includes('airbnb');
+      const response = await api.post(`/channels/${selectedConnection.id}/property-activate`, {
         price_model_id: propertyActivationPriceModelId,
+        ...(isAirbnb && airbnbToken.trim() ? { token: airbnbToken.trim() } : {}),
       });
+      rememberCertificationResponse('Activate property', response.data);
       setStatus('Property activation request sent to Zodomus.');
       await loadData();
       setSelectedConnectionId(selectedConnection.id);
+    });
+  }
+
+  async function fetchReservationSummary() {
+    if (!selectedConnection) return;
+    await runAction('provider-reservations-summary', async () => {
+      const response = await api.get(`/channels/${selectedConnection.id}/provider-reservations-summary`);
+      rememberCertificationResponse('Reservation summary', response.data);
+      setStatus('Reservation summary fetched from Zodomus.');
+    });
+  }
+
+  async function fetchReservationQueue() {
+    if (!selectedConnection) return;
+    await runAction('provider-reservations-queue', async () => {
+      const response = await api.get(`/channels/${selectedConnection.id}/provider-reservations-queue`);
+      rememberCertificationResponse('Reservation queue', response.data);
+      setStatus('Reservation queue fetched from Zodomus.');
+    });
+  }
+
+  async function fetchProviderReservationDetail() {
+    if (!selectedConnection) return;
+    const trimmedReservationId = providerReservationId.trim();
+    if (!trimmedReservationId) {
+      setError('Reservation ID is required to fetch reservation detail.');
+      return;
+    }
+
+    await runAction('provider-reservation-detail', async () => {
+      const response = await api.get(`/channels/${selectedConnection.id}/provider-reservations/${encodeURIComponent(trimmedReservationId)}`);
+      rememberCertificationResponse('Get reservation', response.data);
+      setStatus(`Reservation ${trimmedReservationId} detail fetched from Zodomus.`);
+    });
+  }
+
+  async function fetchProviderReservationCard() {
+    if (!selectedConnection) return;
+    const trimmedReservationId = providerReservationId.trim();
+    if (!trimmedReservationId) {
+      setError('Reservation ID is required to fetch reservation card data.');
+      return;
+    }
+
+    await runAction('provider-reservation-card', async () => {
+      const response = await api.get(`/channels/${selectedConnection.id}/provider-reservations/${encodeURIComponent(trimmedReservationId)}/card`);
+      rememberCertificationResponse('Get card data', response.data);
+      setStatus(`Reservation ${trimmedReservationId} card data fetched from Zodomus.`);
+    });
+  }
+
+  async function runReservationImportSync() {
+    if (!selectedConnection) return;
+    await runAction('reservation-import-sync', async () => {
+      const response = await api.post(`/channels/${selectedConnection.id}/sync`, {
+        sync_type: 'BOOKINGS',
+      });
+      rememberCertificationResponse('Import bookings sync', response.data);
+      await loadData();
+      await loadSyncLogs(selectedConnection.id);
+      setStatus('Queued reservation import sync.');
+    });
+  }
+
+  async function runAvailabilityMultipleSync() {
+    if (!selectedConnection) return;
+    const syncWindow = buildSyncWindow(Number(syncWindowDays));
+    await runAction('availability-multiple-sync', async () => {
+      const response = await api.post(`/channels/${selectedConnection.id}/availability-multiple`, {
+        sync_type: 'INVENTORY',
+        from: syncWindow.from,
+        to: syncWindow.to,
+      });
+      rememberCertificationResponse('Post availability multiple', response.data);
+      setStatus(`Posted availability-multiple for ${syncWindow.from} to ${syncWindow.to}.`);
+    });
+  }
+
+  async function runRatesMultipleSync() {
+    if (!selectedConnection) return;
+    const syncWindow = buildSyncWindow(Number(syncWindowDays));
+    await runAction('rates-multiple-sync', async () => {
+      const response = await api.post(`/channels/${selectedConnection.id}/rates-multiple`, {
+        sync_type: 'RATES',
+        from: syncWindow.from,
+        to: syncWindow.to,
+      });
+      rememberCertificationResponse('Post rates multiple', response.data);
+      setStatus(`Posted rates-multiple for ${syncWindow.from} to ${syncWindow.to}.`);
     });
   }
 
@@ -1135,11 +1432,12 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     if (!selectedConnection) return;
     const syncWindow = buildSyncWindow(Number(syncWindowDays));
     await runAction('inventory-sync', async () => {
-      await api.post(`/channels/${selectedConnection.id}/sync`, {
+      const response = await api.post(`/channels/${selectedConnection.id}/sync`, {
         sync_type: 'INVENTORY',
         from: syncWindow.from,
         to: syncWindow.to,
       });
+      rememberCertificationResponse('Post availability', response.data);
       await loadData();
       await loadInventoryReconciliation(selectedConnection.id);
       await loadInventoryRowResults(selectedConnection.id);
@@ -1152,11 +1450,12 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     if (!selectedConnection) return;
     const syncWindow = buildSyncWindow(Number(syncWindowDays));
     await runAction('rates-sync', async () => {
-      await api.post(`/channels/${selectedConnection.id}/sync`, {
+      const response = await api.post(`/channels/${selectedConnection.id}/sync`, {
         sync_type: 'RATES',
         from: syncWindow.from,
         to: syncWindow.to,
       });
+      rememberCertificationResponse('Post rates', response.data);
       await loadData();
       await loadSyncLogs(selectedConnection.id);
       setStatus(`Queued rates sync for ${syncWindow.from} to ${syncWindow.to}.`);
@@ -1300,7 +1599,11 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
 
   return {
     automationEnabled,
+    airbnbClientId,
+    airbnbToken,
     activateMappedRooms,
+    activateAirbnbHost,
+    activateAirbnbOauthTest,
     backfillExistingReservations,
     backgroundJobs,
     backgroundJobsError,
@@ -1308,11 +1611,13 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     canActivateMappedRooms,
     canLoadCatalog,
     canMap,
+    cancelAirbnbHost,
     catalogConnectionId,
     catalogLoaded,
     catalogRates,
     catalogRooms,
     categories,
+    certificationResponse,
     channelWarnings,
     connections,
     createConnection,
@@ -1324,6 +1629,16 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     externalRateId,
     externalRateRoomId,
     externalRoomId,
+    fetchAirbnbHostInfo,
+    fetchAirbnbHostStatus,
+    fetchAirbnbListings,
+    fetchProviderChannels,
+    fetchProviderAvailability,
+    fetchProviderPriceModels,
+    fetchProviderReservationCard,
+    fetchProviderReservationDetail,
+    fetchReservationQueue,
+    fetchReservationSummary,
     filteredCatalogRates,
     fullSyncWindowDays,
     hasCatalogRates,
@@ -1368,6 +1683,9 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     runFullRatesSync,
     runPropertyCheck,
     runRatesSync,
+    runReservationImportSync,
+    runAvailabilityMultipleSync,
+    runRatesMultipleSync,
     refreshInventoryReconciliation,
     reservationImportInterval,
     resumeConnection,
@@ -1385,6 +1703,8 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     selectedRoomMappingForRatePlan,
     selectConnection,
     setAutomationEnabled,
+    setAirbnbClientId,
+    setAirbnbToken,
     setCatalogConnectionId,
     setCatalogLoaded,
     setExternalRateId,

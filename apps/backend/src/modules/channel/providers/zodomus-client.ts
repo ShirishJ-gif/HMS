@@ -7,6 +7,7 @@ type ZodomusRequestOptions = {
   method?: HttpMethod;
   path: string;
   body?: unknown;
+  password?: string;
 };
 
 export class ZodomusClient {
@@ -35,6 +36,39 @@ export class ZodomusClient {
     });
   }
 
+  async activateAirbnbHost(body: Record<string, string | number>) {
+    return this.request({ method: 'POST', path: '/airbnb-host-activation', body });
+  }
+
+  async activateAirbnbOauthTest(body: Record<string, string | number>) {
+    return this.request({ method: 'POST', path: '/airbnb-oauth2-tests', body });
+  }
+
+  async cancelAirbnbHost(body: Record<string, string | number>) {
+    return this.request({ method: 'POST', path: '/airbnb-host-cancellation', body });
+  }
+
+  async getAirbnbHostStatus(query?: Record<string, string>) {
+    const search = new URLSearchParams(query).toString();
+    return this.request({
+      path: search ? `/airbnb-host-status?${search}` : '/airbnb-host-status',
+    });
+  }
+
+  async getAirbnbHostInfo(query?: Record<string, string>) {
+    const search = new URLSearchParams(query).toString();
+    return this.request({
+      path: search ? `/airbnb-host-info?${search}` : '/airbnb-host-info',
+    });
+  }
+
+  async getAirbnbListings(query?: Record<string, string>) {
+    const search = new URLSearchParams(query).toString();
+    return this.request({
+      path: search ? `/airbnb-listings?${search}` : '/airbnb-listings',
+    });
+  }
+
   async checkProperty(body: Record<string, string | number>) {
     return this.request({ method: 'POST', path: '/property-check', body });
   }
@@ -55,8 +89,23 @@ export class ZodomusClient {
     return this.request({ method: 'POST', path: '/availability', body });
   }
 
+  async getAvailability(query?: Record<string, string>) {
+    const search = new URLSearchParams(query).toString();
+    return this.request({
+      path: search ? `/availability?${search}` : '/availability',
+    });
+  }
+
+  async pushAvailabilityMultiple(body: unknown) {
+    return this.request({ method: 'POST', path: '/availability-multiple', body });
+  }
+
   async pushRates(body: unknown) {
     return this.request({ method: 'POST', path: '/rates', body });
+  }
+
+  async pushRatesMultiple(body: unknown) {
+    return this.request({ method: 'POST', path: '/rates-multiple', body });
   }
 
   async pushDerivedRates(body: unknown) {
@@ -80,7 +129,8 @@ export class ZodomusClient {
   async getReservationCC(query?: Record<string, string>) {
     const search = new URLSearchParams(query).toString();
     return this.request({
-      path: search ? `/reservationCC?${search}` : '/reservationCC',
+      path: search ? `/reservations-cc?${search}` : '/reservations-cc',
+      password: this.credentials.credit_card_api_password ?? this.credentials.api_password,
     });
   }
 
@@ -95,10 +145,10 @@ export class ZodomusClient {
     return this.request({ method: 'POST', path: '/reservations-createtest', body });
   }
 
-  private async request({ method = 'GET', path, body }: ZodomusRequestOptions) {
+  private async request({ method = 'GET', path, body, password }: ZodomusRequestOptions) {
     const response = await fetch(`${this.baseUrl()}${path}`, {
       method,
-      headers: this.headers(body !== undefined),
+      headers: this.headers(body !== undefined, password),
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(15000),
     });
@@ -114,9 +164,9 @@ export class ZodomusClient {
     return payload;
   }
 
-  private headers(hasBody: boolean) {
+  private headers(hasBody: boolean, password = this.credentials.api_password) {
     const encoded = Buffer.from(
-      `${this.credentials.api_user}:${this.credentials.api_password}`,
+      `${this.credentials.api_user}:${password}`,
       'utf8',
     ).toString('base64');
 

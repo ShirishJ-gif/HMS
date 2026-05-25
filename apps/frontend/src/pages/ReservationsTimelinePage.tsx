@@ -197,23 +197,23 @@ export function ReservationsTimelinePage({ onBack }: { onBack?: () => void }) {
           </div>
           <div className="grid grid-cols-[18rem_minmax(0,1fr)]">
             <div>
-              <div className="px-4 py-2.5 min-h-[3.75rem] text-xs font-bold text-slate-600 border-b border-r border-slate-100 bg-slate-50 flex items-center">Reservation room</div>
+              <div className="px-4 py-2.5 h-[3.75rem] text-xs font-bold text-slate-600 border-b border-r border-slate-100 bg-slate-50 flex items-center">Reservation room</div>
               {rows.map((row) => (
-                <div className="px-4 py-3 min-h-[4.75rem] border-b border-r border-slate-100 bg-white" key={row.id}>
-                  <strong className="text-xs font-bold text-slate-900 block">{row.label}</strong>
-                  <span className="text-[11px] text-slate-500 block">{row.secondary}</span>
-                  <span className="text-[11px] text-slate-400">{row.detail}</span>
+                <div className="px-4 py-3 h-[5rem] border-b border-r border-slate-100 bg-white overflow-hidden" key={row.id}>
+                  <strong className="text-xs font-bold text-slate-900 block truncate">{row.label}</strong>
+                  <span className="text-[11px] text-slate-500 block truncate">{row.secondary}</span>
+                  <span className="text-[11px] text-slate-400 block truncate">{row.detail}</span>
                 </div>
               ))}
             </div>
             <div className="scrollbar-none overflow-x-auto overscroll-x-contain">
               <div className="min-w-max" style={{ display: 'grid', gridTemplateColumns: timelineDateGridTemplateColumns }}>
-                {timeline.days.map((day) => <div className="px-2 py-2.5 min-h-[3.75rem] text-center border-b border-r border-slate-100 bg-slate-50 last:border-r-0" key={day.date}><strong className="text-[10px] font-bold text-slate-500 block">{day.day}</strong><span className="text-[10px] text-slate-400">{day.short}</span></div>)}
+                {timeline.days.map((day) => <div className="px-2 py-2.5 h-[3.75rem] text-center border-b border-r border-slate-100 bg-slate-50 last:border-r-0" key={day.date}><strong className="text-[10px] font-bold text-slate-500 block">{day.day}</strong><span className="text-[10px] text-slate-400">{day.short}</span></div>)}
                 {rows.map((row) => timeline.days.map((day) => {
                   const occupied = day.date >= row.check_in_date && day.date < row.check_out_date;
                   const colorMap: Record<string, string> = { BOOKED: 'bg-sky-400', CHECKED_IN: 'bg-emerald-500', CHECKED_OUT: 'bg-slate-300', CANCELLED: 'bg-rose-400' };
                   return (
-                    <div className={`min-h-[4.75rem] flex items-center justify-center border-b border-r border-slate-50 last:border-r-0 ${occupied ? 'bg-indigo-50' : 'bg-white'}`} key={`${row.id}-${day.date}`}>
+                    <div className={`h-[5rem] flex items-center justify-center border-b border-r border-slate-50 last:border-r-0 ${occupied ? 'bg-indigo-50' : 'bg-white'}`} key={`${row.id}-${day.date}`}>
                       {occupied && <div className={`h-1 w-1/3 rounded-full ${colorMap[row.status.toUpperCase()] ?? 'bg-slate-400'}`} />}
                     </div>
                   );

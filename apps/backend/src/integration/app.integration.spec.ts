@@ -502,23 +502,22 @@ describe('App integration', () => {
       },
     });
 
-    await (backgroundJobService as any).queueImportedReservationNotifications(propertyAId, [importedGroup.id]);
+    await (backgroundJobService as any).queueImportedReservationNotifications(propertyAId, {
+      created: [importedGroup.id],
+      updated: [],
+      cancelled: [],
+    });
 
     const queuedJobs = await prisma.backgroundJob.findMany({
       where: {
         propertyId: propertyAId,
         type: 'NOTIFICATION_SEND',
-        dedupeKey: {
-          in: [
-            `notification:imported-reservation-confirmation:${importedGroup.id}`,
-            `notification:imported-owner-reservation:${importedGroup.id}`,
-          ],
-        },
+        dedupeKey: `notification:imported-owner-reservation:${importedGroup.id}`,
       },
       orderBy: { dedupeKey: 'asc' },
     });
 
-    expect(queuedJobs).toHaveLength(2);
+    expect(queuedJobs).toHaveLength(1);
     expect(queuedJobs.every((job) => job.status === 'PENDING')).toBe(true);
 
     expect(await backgroundJobService.processDueJobs()).toBeGreaterThan(0);
@@ -530,7 +529,7 @@ describe('App integration', () => {
       orderBy: { dedupeKey: 'asc' },
     });
 
-    expect(processedJobs).toHaveLength(2);
+    expect(processedJobs).toHaveLength(1);
     expect(processedJobs.every((job) => job.status === 'SUCCEEDED')).toBe(true);
   });
 
