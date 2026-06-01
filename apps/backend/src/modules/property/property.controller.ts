@@ -23,6 +23,7 @@ import { CreateRatePlanDto } from './dto/create-rate-plan.dto';
 import { CreateRoomCategoryDto } from './dto/create-room-category.dto';
 import { UpdatePricingRuleDto } from './dto/update-pricing-rule.dto';
 import { UpdatePropertyStatusDto } from './dto/update-property-status.dto';
+import { UpdateRoomCategoryDto } from './dto/update-room-category.dto';
 import { PropertyService } from './property.service';
 
 @Controller()
@@ -50,6 +51,12 @@ export class PropertyController {
   @Roles(UserRole.SUPER_ADMIN)
   updatePropertyStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdatePropertyStatusDto) {
     return this.propertyService.updatePropertyStatus(id, dto);
+  }
+
+  @Delete('properties/:id')
+  @Roles(UserRole.SUPER_ADMIN)
+  removeProperty(@Param('id', ParseUUIDPipe) id: string) {
+    return this.propertyService.removeProperty(id);
   }
 
   @Post('properties/:id/images')
@@ -81,6 +88,22 @@ export class PropertyController {
     return this.propertyService.findRoomCategories(query, user);
   }
 
+  @Put('room-categories/:id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  updateRoomCategory(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() updateRoomCategoryDto: UpdateRoomCategoryDto,
+  ) {
+    return this.propertyService.updateRoomCategory(id, updateRoomCategoryDto, user);
+  }
+
+  @Delete('room-categories/:id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  removeRoomCategory(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.propertyService.removeRoomCategory(id, user);
+  }
+
   @Post('room-categories/:id/images')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   @UseInterceptors(FileInterceptor('image', { dest: 'uploads/room-categories' }))
@@ -102,6 +125,12 @@ export class PropertyController {
   @Get('rate-plans')
   findRatePlans(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationQueryDto) {
     return this.propertyService.findRatePlans(query, user);
+  }
+
+  @Delete('rate-plans/:id')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  removeRatePlan(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.propertyService.removeRatePlan(id, user);
   }
 
   @Post('pricing-rules')

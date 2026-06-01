@@ -165,6 +165,21 @@ describe('RoomService', () => {
     });
   });
 
+  it('prevents marking an occupied room as available while a guest is checked in', async () => {
+    prisma.room.findUnique.mockResolvedValue({
+      ...roomRecord(),
+      status: RoomStatus.OCCUPIED,
+    });
+    prisma.reservationRoom.count.mockResolvedValue(1);
+
+    await expect(service.update(roomRecord().id, { status: RoomStatus.AVAILABLE })).rejects.toThrow(
+      'Check out the guest from the Operations Board first.',
+    );
+
+    expect(prisma.room.update).not.toHaveBeenCalled();
+    expect(backgroundJobService.queueInventorySyncsForProperty).not.toHaveBeenCalled();
+  });
+
   it('prevents deleting rooms with dependent reservation stays', async () => {
     prisma.room.findUnique.mockResolvedValue(roomRecord());
     prisma.reservationRoom.count.mockResolvedValue(1);

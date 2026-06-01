@@ -11,8 +11,10 @@ export type PaginatedResponse<T> = {
   };
 };
 
-export function unwrapList<T>(response: T[] | PaginatedResponse<T>) {
-  return Array.isArray(response) ? response : response.data;
+export function unwrapList<T>(response: T[] | PaginatedResponse<T>): T[] {
+  if (Array.isArray(response)) return response;
+  if (response?.data == null) return [];
+  return Array.isArray(response.data) ? response.data : [];
 }
 
 const defaultPageLimit = 100;

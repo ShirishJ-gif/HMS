@@ -12,12 +12,15 @@ import { CreateTestReservationDto } from './dto/create-test-reservation.dto';
 import { CreateChannelConnectionDto } from './dto/create-channel-connection.dto';
 import { CreateChannelRateMappingDto } from './dto/create-channel-rate-mapping.dto';
 import { CreateChannelRoomMappingDto } from './dto/create-channel-room-mapping.dto';
+import { GetProviderAvailabilityQueryDto } from './dto/get-provider-availability-query.dto';
 import { SaveChannelMappingsBatchDto } from './dto/save-channel-mappings-batch.dto';
 import { SetupZodomusChannelDto } from './dto/setup-zodomus-channel.dto';
 import { SyncChannelDto } from './dto/sync-channel.dto';
 import { UpdateChannelAutomationDto } from './dto/update-channel-automation.dto';
 import { UpdateChannelMappingActivationDto } from './dto/update-channel-mapping-activation.dto';
 import { UpdateChannelRatePricingConfigDto } from './dto/update-channel-rate-pricing-config.dto';
+import { UpdateChannelRateMappingDto } from './dto/update-channel-rate-mapping.dto';
+import { UpdateChannelRoomMappingDto } from './dto/update-channel-room-mapping.dto';
 
 @Controller('channels')
 export class ChannelController {
@@ -162,8 +165,12 @@ export class ChannelController {
 
   @Get(':id/provider-availability')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
-  getProviderAvailability(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
-    return this.channelService.getProviderAvailability(id, user);
+  getProviderAvailability(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: GetProviderAvailabilityQueryDto,
+  ) {
+    return this.channelService.getProviderAvailability(id, query, user);
   }
 
   @Post(':id/availability-multiple')
@@ -268,6 +275,48 @@ export class ChannelController {
     @Body() dto: CreateChannelRateMappingDto,
   ) {
     return this.channelService.createRateMapping(id, dto, user);
+  }
+
+  @Patch(':id/room-mappings/:mappingId')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  updateRoomMapping(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('mappingId', ParseUUIDPipe) mappingId: string,
+    @Body() dto: UpdateChannelRoomMappingDto,
+  ) {
+    return this.channelService.updateRoomMapping(id, mappingId, dto, user);
+  }
+
+  @Delete(':id/room-mappings/:mappingId')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  deleteRoomMapping(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('mappingId', ParseUUIDPipe) mappingId: string,
+  ) {
+    return this.channelService.deleteRoomMapping(id, mappingId, user);
+  }
+
+  @Patch(':id/rate-mappings/:mappingId')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  updateRateMapping(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('mappingId', ParseUUIDPipe) mappingId: string,
+    @Body() dto: UpdateChannelRateMappingDto,
+  ) {
+    return this.channelService.updateRateMapping(id, mappingId, dto, user);
+  }
+
+  @Delete(':id/rate-mappings/:mappingId')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  deleteRateMapping(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('mappingId', ParseUUIDPipe) mappingId: string,
+  ) {
+    return this.channelService.deleteRateMapping(id, mappingId, user);
   }
 
   @Patch(':id/rate-mappings/:mappingId/pricing-config')

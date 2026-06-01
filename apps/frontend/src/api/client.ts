@@ -1,6 +1,11 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { AuthResponse } from './types';
-import { clearStoredSession, getStoredAccessToken, getStoredRefreshToken, storeAuthSession } from './session';
+import {
+  clearStoredSession,
+  getStoredAccessToken,
+  getStoredRefreshToken,
+  storeAuthSession,
+} from './session';
 
 const requestIdHeader = 'x-request-id';
 type RetryableRequestConfig = InternalAxiosRequestConfig & { _retry?: boolean };
@@ -122,9 +127,35 @@ function isAuthRequest(url?: string) {
   return (
     url.includes('/auth/login') ||
     url.includes('/auth/refresh') ||
+    url.includes('/auth/logout') ||
     url.includes('/auth/bootstrap') ||
     url.includes('/auth/password-reset/')
   );
+}
+
+export async function logoutSession() {
+  const accessToken = getStoredAccessToken();
+  const refreshToken = getStoredRefreshToken();
+  clearStoredSession();
+
+  try {
+    if (accessToken && refreshToken) {
+      await axios.post(
+        '/auth/logout',
+        { refresh_token: refreshToken },
+        {
+          baseURL: api.defaults.baseURL,
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+    }
+  } catch {
+    // Logout must not leave the UI in an authenticated state just because
+    // the server-side revoke request failed or the token had already expired.
+  }
 }
 
 async function refreshAccessToken() {

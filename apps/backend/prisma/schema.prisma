@@ -565,6 +565,7 @@ model HousekeepingTask {
   priority    HousekeepingPriority @default(NORMAL)
   notes       String?              @db.Text
   dueDate     DateTime?            @map("due_date") @db.Date
+  completedAt DateTime?            @map("completed_at")
   property    Property             @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   room        Room                 @relation(fields: [roomId], references: [id], onDelete: Restrict)
   reservationRoom ReservationRoom? @relation(fields: [reservationRoomId], references: [id], onDelete: SetNull)
@@ -576,6 +577,7 @@ model HousekeepingTask {
   @@index([reservationRoomId])
   @@index([status])
   @@index([dueDate])
+  @@index([completedAt])
   @@map("housekeeping_tasks")
 }
 

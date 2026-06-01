@@ -708,8 +708,9 @@ export class BookingService {
   }
 
   private toReservationGroupResponse(group: ReservationGroupWithRelations) {
-    const roomArrivalDates = group.rooms.map((room) => room.arrivalDate.toISOString().slice(0, 10)).sort();
-    const roomDepartureDates = group.rooms.map((room) => room.departureDate.toISOString().slice(0, 10)).sort();
+    const roomsForStayWindow = this.roomsForStayWindow(group.rooms);
+    const roomArrivalDates = roomsForStayWindow.map((room) => room.arrivalDate.toISOString().slice(0, 10)).sort();
+    const roomDepartureDates = roomsForStayWindow.map((room) => room.departureDate.toISOString().slice(0, 10)).sort();
     const storedGroupTotalAmount = group.totalAmount == null ? null : Number(group.totalAmount);
     const summedRoomTotalAmount = group.rooms.reduce((sum, room) => sum + (room.totalAmount == null ? 0 : Number(room.totalAmount)), 0);
     const effectiveGroupTotalAmount =
@@ -912,7 +913,8 @@ export class BookingService {
     group: ReservationGroupResponse,
     dateWindow: { from?: Date; toExclusive?: Date },
   ) {
-    return group.rooms.some((room) => {
+    const roomsForWindow = this.responseRoomsForStayWindow(group.rooms);
+    return roomsForWindow.some((room) => {
       const arrival = this.parseFeedDateOnly(room.arrival_date);
       const departure = this.parseFeedDateOnly(room.departure_date);
       return (!dateWindow.toExclusive || arrival < dateWindow.toExclusive) && (!dateWindow.from || departure > dateWindow.from);
@@ -933,6 +935,7 @@ export class BookingService {
         ? {
             rooms: {
               some: {
+                ...(includeCancelled || status === BookingStatus.CANCELLED ? {} : { status: { not: BookingStatus.CANCELLED } }),
                 ...(dateWindow.toExclusive ? { arrivalDate: { lt: dateWindow.toExclusive } } : {}),
                 ...(dateWindow.from ? { departureDate: { gt: dateWindow.from } } : {}),
               },
@@ -991,6 +994,16 @@ export class BookingService {
       process.env.SHOW_PROVIDER_ONLY_RESERVATION_FAILURES === 'true' ||
       process.env.ZODOMUS_ENVIRONMENT?.trim() === 'production'
     );
+  }
+
+  private roomsForStayWindow<T extends { status: BookingStatus }>(rooms: T[]) {
+    const nonCancelledRooms = rooms.filter((room) => room.status !== BookingStatus.CANCELLED);
+    return nonCancelledRooms.length > 0 ? nonCancelledRooms : rooms;
+  }
+
+  private responseRoomsForStayWindow<T extends { reservation_status: BookingStatus }>(rooms: T[]) {
+    const nonCancelledRooms = rooms.filter((room) => room.reservation_status !== BookingStatus.CANCELLED);
+    return nonCancelledRooms.length > 0 ? nonCancelledRooms : rooms;
   }
 
   private reservationFeedDateWindow(dateFrom?: string, dateTo?: string) {

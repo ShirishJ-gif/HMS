@@ -104,6 +104,21 @@ export class RoomService {
         assertCanAccessProperty(user, updateRoomDto.property_id);
       }
 
+      if (updateRoomDto.status === 'AVAILABLE' && existingRoom.status === 'OCCUPIED') {
+        const checkedInStayCount = await this.prisma.reservationRoom.count({
+          where: {
+            roomId: id,
+            status: BookingStatus.CHECKED_IN,
+          },
+        });
+
+        if (checkedInStayCount > 0) {
+          throw new ConflictException(
+            'Cannot mark an occupied room as available while a guest is checked in. Check out the guest from the Operations Board first.',
+          );
+        }
+      }
+
       const room = await this.prisma.room.update({
         where: { id },
         data: {

@@ -168,11 +168,11 @@ export class WhatsAppNotificationService {
     try {
       await this.sendMessage(message);
     } catch (error) {
+      const messageText = error instanceof Error ? error.message : 'Unknown notification error';
       this.logger.error(
-        `${this.provider} ${message.template} failed for ${message.to}: ${
-          error instanceof Error ? error.message : 'Unknown notification error'
-        }`,
+        `${this.provider} ${message.template} failed for ${message.to}: ${messageText}`,
       );
+      throw error;
     }
   }
 

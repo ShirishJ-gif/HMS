@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChannelSyncLog, ChannelSyncState, InventoryReconciliation } from '../api/types';
 import { formatConnectionLabel, SummaryTile, SyncStateCard, formatDateTime, formatInventorySnapshot, formatSignedNumber } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
-import { secondaryBtn, Th, Td, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
+import { PageHeader, NoteStrip, secondaryBtn, Th, Td, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
 
 export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace }) {
   const syncLogsPerPage = 8;
@@ -24,13 +24,12 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
 
   return (
     <section className="space-y-5">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-amber-500 mb-1">Integrations</p>
-          <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Connection diagnostics</h2>
-          <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-2xl">Follow one OTA connection from sync health through recent attempts, row-level failures, inventory drift, and the property-scoped webhook ledger.</p>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-4 space-y-3 min-w-[16rem]">
+      <PageHeader
+        eyebrow="Integrations"
+        title="Connection diagnostics"
+        subtitle="Follow one OTA connection from sync health through recent attempts, row-level failures, inventory drift, and the property-scoped webhook ledger."
+      />
+      <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 w-full max-w-xs">
           <div className="flex items-start justify-between gap-2">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">OTA connection</p>
@@ -46,7 +45,6 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
             </div>
           ) : <p className="text-xs text-slate-400">Choose a saved Zodomus connection to inspect sync health and webhook intake.</p>}
         </div>
-      </div>
 
       {workspace.loading && <LoadingMsg>Loading channel diagnostics...</LoadingMsg>}
       {workspace.error && <ErrorMsg>{workspace.error}</ErrorMsg>}
@@ -62,7 +60,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.07fr)_minmax(21rem,0.93fr)] gap-5 items-stretch">
-            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Workspace</p>
                 <h3 className="text-base font-bold text-slate-900">Connection snapshot</h3>
@@ -86,7 +84,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
               </div>
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full">
+            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 h-full">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Operations</p>
                 <h3 className="text-base font-bold text-slate-900">Manual sync runbook</h3>
@@ -106,7 +104,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.08fr)_minmax(23rem,0.82fr)] gap-5 items-stretch">
-            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full">
+            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 h-full">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Operations</p>
@@ -149,7 +147,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
           </div>
         </>
       ) : (
-        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-8 text-center">
+        <div className="bg-white border border-slate-200 rounded-xl p-8 text-center">
           <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-1">Connection</p>
           <h3 className="text-base font-bold text-slate-900 mb-2">Choose a workspace</h3>
           <p className="text-sm text-slate-500">Select a saved OTA connection to load its sync health, row analytics, drift checks, and webhook ledger.</p>
@@ -161,7 +159,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
 
 function InventoryRowAnalytics({ workspace }: { workspace: ChannelWorkspace }) {
   return (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-full">
+    <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 h-full">
       <div>
         <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Failed inventory rows</p>
         <h3 className="text-sm font-bold text-slate-900">Persisted row analytics</h3>
@@ -227,7 +225,7 @@ function SyncLogsPanel({ selectedSyncLog, setSelectedSyncLog, setSyncLogPage, so
 
   return (
     <>
-      <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Sync logs</p>
@@ -313,7 +311,7 @@ function SyncLogsPanel({ selectedSyncLog, setSelectedSyncLog, setSyncLogPage, so
 
 function InventoryReconciliationPanel({ workspace }: { workspace: ChannelWorkspace }) {
   return (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+    <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Operations</p>
@@ -370,7 +368,7 @@ function BackgroundJobHealthPanel({ workspace }: { workspace: ChannelWorkspace }
   const healthTone = deadLetterJobs.length > 0 ? 'failed' : stuckJobs.length > 0 ? 'queued' : 'available';
 
   return (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+    <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Worker health</p>
@@ -410,7 +408,7 @@ function BackgroundJobHealthPanel({ workspace }: { workspace: ChannelWorkspace }
 
 function WebhookEventsPanel({ failedCount, processedCount, replayCount, workspace }: { failedCount: number; processedCount: number; replayCount: number; workspace: ChannelWorkspace }) {
   return (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+    <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Webhook events</p>

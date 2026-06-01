@@ -45,6 +45,7 @@ type UseChannelWorkspaceOptions = {
 
 type ChannelWorkspaceCache = {
   automationEnabled: boolean;
+  airbnbCompletedActions: string[];
   airbnbClientId: string;
   airbnbToken: string;
   backgroundJobs: BackgroundJob[];
@@ -118,6 +119,7 @@ function persistSelectedConnectionId(connectionId: string) {
 function buildEmptyWorkspaceCache(enabled: boolean): ChannelWorkspaceCache {
   return {
     automationEnabled: true,
+    airbnbCompletedActions: [],
     airbnbClientId: '',
     airbnbToken: '',
     backgroundJobs: [],
@@ -303,6 +305,9 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   } | null>(null);
   const [loading, setLoading] = useState(() => cachedState.loading);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [airbnbCompletedActions, setAirbnbCompletedActions] = useState<Set<string>>(
+    () => new Set(cachedState.airbnbCompletedActions),
+  );
   const [airbnbToken, setAirbnbToken] = useState(() => cachedState.airbnbToken);
   const [airbnbClientId, setAirbnbClientId] = useState(() => cachedState.airbnbClientId);
   const [automationEnabled, setAutomationEnabled] = useState(() => cachedState.automationEnabled);
@@ -610,6 +615,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setStatus(nextState.status);
     setError(nextState.error);
     setLoading(nextState.loading);
+    setAirbnbCompletedActions(new Set(nextState.airbnbCompletedActions));
     setAirbnbToken(nextState.airbnbToken);
     setAirbnbClientId(nextState.airbnbClientId);
     setAutomationEnabled(nextState.automationEnabled);
@@ -682,6 +688,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   useEffect(() => {
     channelWorkspaceCacheBySession.set(resolvedSessionKey, {
       automationEnabled,
+      airbnbCompletedActions: Array.from(airbnbCompletedActions),
       airbnbClientId,
       airbnbToken,
       backgroundJobs,
@@ -726,6 +733,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     });
   }, [
     automationEnabled,
+    airbnbCompletedActions,
     airbnbClientId,
     airbnbToken,
     backgroundJobs,
@@ -865,6 +873,14 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setCertificationResponse({ label, payload });
   }
 
+  function markAirbnbActionDone(action: string) {
+    setAirbnbCompletedActions((current) => {
+      const next = new Set(current);
+      next.add(action);
+      return next;
+    });
+  }
+
   async function loadInventoryReconciliation(connectionId: string) {
     setInventoryReconciliationLoading(true);
     setInventoryReconciliationError(null);
@@ -997,6 +1013,12 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   }, [enabled, selectedConnectionId]);
 
   function selectConnection(connectionId: string) {
+    if (connectionId === selectedConnectionId) {
+      setStatus(null);
+      setError(null);
+      return;
+    }
+
     setSelectedConnectionId(connectionId);
     setCatalogConnectionId('');
     setCatalogLoaded(false);
@@ -1010,6 +1032,17 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setRatePlanId('');
     setStatus(null);
     setError(null);
+  }
+
+  function selectZodomusOtaKey(nextOtaKey: ZodomusOtaKey) {
+    setZodomusOtaKey((current) => {
+      if (current !== nextOtaKey) {
+        setZodomusPropertyId('');
+        setZodomusPriceModelId(String(defaultPriceModelIdForOta(nextOtaKey)));
+      }
+
+      return nextOtaKey;
+    });
   }
 
   async function createConnection(event: FormEvent) {
@@ -1057,6 +1090,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     await runAction('airbnb-host-activation', async () => {
       const response = await api.post(`/channels/${selectedConnection.id}/airbnb-host-activation`);
       rememberCertificationResponse('Airbnb host activation', response.data);
+      markAirbnbActionDone('airbnb-host-activation');
       setStatus('Airbnb host activation request sent.');
     });
   }
@@ -1089,6 +1123,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         state: token,
       });
       window.open(authUrl, '_blank', 'noopener,noreferrer');
+      markAirbnbActionDone('airbnb-oauth2-tests');
       setStatus('Airbnb authorization URL opened.');
     });
   }
@@ -1106,6 +1141,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         params: { token },
       });
       rememberCertificationResponse('Airbnb host status', response.data);
+      markAirbnbActionDone('airbnb-host-status');
       setStatus('Airbnb host status fetched.');
     });
   }
@@ -1123,6 +1159,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         params: { token },
       });
       rememberCertificationResponse('Airbnb host info', response.data);
+      markAirbnbActionDone('airbnb-host-info');
       setStatus('Airbnb host info fetched.');
     });
   }
@@ -1155,16 +1192,23 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         params: { token },
       });
       rememberCertificationResponse('Airbnb listings', response.data);
+      markAirbnbActionDone('airbnb-listings');
       setStatus('Airbnb listings fetched.');
     });
   }
 
   async function fetchProviderAvailability() {
     if (!selectedConnection) return;
+    const syncWindow = buildSyncWindow(Number(syncWindowDays));
     await runAction('provider-availability', async () => {
-      const response = await api.get(`/channels/${selectedConnection.id}/provider-availability`);
+      const response = await api.get(`/channels/${selectedConnection.id}/provider-availability`, {
+        params: {
+          from: syncWindow.from,
+          to: syncWindow.to,
+        },
+      });
       rememberCertificationResponse('Get availability', response.data);
-      setStatus('Availability fetched from Zodomus.');
+      setStatus(`Availability fetched from Zodomus for ${syncWindow.from} to ${syncWindow.to}.`);
     });
   }
 
@@ -1192,7 +1236,60 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         external_room_id: externalRoomId,
       });
       setExternalRoomId(hasCatalogRooms ? catalogRooms[0]?.external_room_id ?? '' : '');
+      setStatus('Room mappings are saved.');
+      await loadData();
+    });
+  }
+
+  async function createRoomMappingPair(input: { roomCategoryId: string; externalRoomId: string }) {
+    if (!selectedConnection) return;
+    if (!confirmMappingChange('room')) return;
+    await runAction('create-room-mapping', async () => {
+      await api.post(`/channels/${selectedConnection.id}/room-mappings`, {
+        room_category_id: input.roomCategoryId,
+        external_room_id: input.externalRoomId,
+      });
+      setRoomCategoryId(input.roomCategoryId);
+      setExternalRoomId(input.externalRoomId);
       setStatus('Room mapping saved.');
+      await loadData();
+    });
+  }
+
+  async function saveRoomMappingsBatch(input: Array<{ roomCategoryId: string; externalRoomId: string }>) {
+    if (!selectedConnection || input.length === 0) return;
+    if (!confirmMappingChange('room')) return;
+    await runAction('create-room-mapping', async () => {
+      await api.post(`/channels/${selectedConnection.id}/mappings/batch`, {
+        room_mappings: input.map((mapping) => ({
+          room_category_id: mapping.roomCategoryId,
+          external_room_id: mapping.externalRoomId,
+        })),
+      });
+      setStatus('Room mappings are saved.');
+      await loadData();
+    });
+  }
+
+  async function updateRoomMapping(mappingId: string, input: { externalRoomId: string }) {
+    if (!selectedConnection) return;
+    if (!confirmMappingChange('room')) return;
+    await runAction('update-room-mapping', async () => {
+      await api.patch(`/channels/${selectedConnection.id}/room-mappings/${mappingId}`, {
+        external_room_id: input.externalRoomId,
+      });
+      setStatus('Room mappings are saved.');
+      await loadData();
+    });
+  }
+
+  async function deleteRoomMapping(mappingId: string) {
+    if (!selectedConnection) return;
+    if (!window.confirm('Delete this room mapping?')) return;
+    if (!confirmMappingChange('room')) return;
+    await runAction('delete-room-mapping', async () => {
+      await api.delete(`/channels/${selectedConnection.id}/room-mappings/${mappingId}`);
+      setStatus('Room mappings are saved.');
       await loadData();
     });
   }
@@ -1213,7 +1310,47 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
           ? filteredCatalogRates[0]?.external_room_id ?? selectedRoomMappingForRatePlan?.external_room_id ?? ''
           : selectedRoomMappingForRatePlan?.external_room_id ?? '',
       );
-      setStatus('Rate mapping saved.');
+      setStatus('Rate mappings are saved.');
+      await loadData();
+    });
+  }
+
+  async function saveRateMappingsBatch(input: Array<{ ratePlanId: string; externalRoomId: string; externalRateId: string }>) {
+    if (!selectedConnection || input.length === 0) return;
+    if (!confirmMappingChange('rate')) return;
+    await runAction('create-rate-mapping', async () => {
+      await api.post(`/channels/${selectedConnection.id}/mappings/batch`, {
+        rate_mappings: input.map((mapping) => ({
+          rate_plan_id: mapping.ratePlanId,
+          external_room_id: mapping.externalRoomId,
+          external_rate_id: mapping.externalRateId,
+        })),
+      });
+      setStatus('Rate mappings are saved.');
+      await loadData();
+    });
+  }
+
+  async function updateRateMapping(mappingId: string, input: { externalRoomId: string; externalRateId: string }) {
+    if (!selectedConnection) return;
+    if (!confirmMappingChange('rate')) return;
+    await runAction('update-rate-mapping', async () => {
+      await api.patch(`/channels/${selectedConnection.id}/rate-mappings/${mappingId}`, {
+        external_room_id: input.externalRoomId,
+        external_rate_id: input.externalRateId,
+      });
+      setStatus('Rate mappings are saved.');
+      await loadData();
+    });
+  }
+
+  async function deleteRateMapping(mappingId: string) {
+    if (!selectedConnection) return;
+    if (!window.confirm('Delete this rate mapping?')) return;
+    if (!confirmMappingChange('rate')) return;
+    await runAction('delete-rate-mapping', async () => {
+      await api.delete(`/channels/${selectedConnection.id}/rate-mappings/${mappingId}`);
+      setStatus('Rate mappings are saved.');
       await loadData();
     });
   }
@@ -1363,10 +1500,10 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     });
   }
 
-  async function deleteConnection() {
-    if (!selectedConnection) return;
+  async function deleteConnection(connectionId = selectedConnection?.id) {
+    if (!connectionId) return;
     await runAction('delete-connection', async () => {
-      await api.delete(`/channels/${selectedConnection.id}`);
+      await api.delete(`/channels/${connectionId}`);
       setProviderCatalog(null);
       setCatalogConnectionId('');
       setCatalogLoaded(false);
@@ -1375,7 +1512,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       setExternalRateRoomId('');
       setRoomCategoryId('');
       setRatePlanId('');
-      setSelectedConnectionId('');
+      if (selectedConnection?.id === connectionId) setSelectedConnectionId('');
       setStatus('OTA connection removed.');
       await loadData();
     });
@@ -1600,6 +1737,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   return {
     automationEnabled,
     airbnbClientId,
+    airbnbCompletedActions,
     airbnbToken,
     activateMappedRooms,
     activateAirbnbHost,
@@ -1623,6 +1761,13 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     createConnection,
     createRateMapping,
     createRoomMapping,
+    createRoomMappingPair,
+    saveRoomMappingsBatch,
+    saveRateMappingsBatch,
+    updateRoomMapping,
+    updateRateMapping,
+    deleteRoomMapping,
+    deleteRateMapping,
     deleteConnection,
     disconnectConnection,
     error,
@@ -1720,7 +1865,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setRoomCategoryId,
     setSelectedConnectionId,
     setSyncWindowDays,
-    setZodomusOtaKey,
+    setZodomusOtaKey: selectZodomusOtaKey,
     setZodomusPriceModelId,
     setZodomusPropertyId,
     status,

@@ -1,4 +1,4 @@
-import { BookingStatus, ChannelProvider, ChannelSyncStatus, ChannelSyncType, Prisma } from '@prisma/client';
+import { BookingStatus, ChannelProvider, ChannelSyncStatus, ChannelSyncType, Prisma, RoomStatus } from '@prisma/client';
 import { BadRequestException } from '@nestjs/common';
 import { ChannelService } from './channel.service';
 
@@ -208,8 +208,6 @@ describe('ChannelService Zodomus price model validation', () => {
   it.each([
     ['BOOKING_COM', 1],
     ['BOOKING_COM', 2],
-    ['BOOKING_COM', 4],
-    ['BOOKING_COM', 5],
     ['EXPEDIA', 3],
     ['EXPEDIA', 4],
     ['EXPEDIA', 5],
@@ -220,6 +218,8 @@ describe('ChannelService Zodomus price model validation', () => {
 
   it.each([
     ['BOOKING_COM', 3],
+    ['BOOKING_COM', 4],
+    ['BOOKING_COM', 5],
     ['EXPEDIA', 1],
     ['EXPEDIA', 2],
     ['AIRBNB', 1],
@@ -383,6 +383,85 @@ describe('ChannelService provider reservation creation', () => {
       service.createProviderTestReservation('connection-1', 'cancelled', 'RESERVATION_ID'),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(providerService.createTestReservation).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChannelService connection deletion cleanup', () => {
+  const originalEnvironment = process.env.ZODOMUS_ENVIRONMENT;
+
+  afterEach(() => {
+    if (originalEnvironment === undefined) {
+      delete process.env.ZODOMUS_ENVIRONMENT;
+    } else {
+      process.env.ZODOMUS_ENVIRONMENT = originalEnvironment;
+    }
+  });
+
+  it('releases occupied physical rooms from deleted checked-in imported stays', async () => {
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
+    const service = Object.create(ChannelService.prototype) as ChannelService;
+    const tx = {
+      reservationGroup: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'reservation-group-1',
+            primaryGuestId: 'guest-1',
+            rooms: [
+              {
+                id: 'reservation-room-1',
+                propertyId: 'property-1',
+                roomCategoryId: 'category-1',
+                roomId: 'room-1',
+                arrivalDate: new Date('2026-05-27T00:00:00.000Z'),
+                departureDate: new Date('2026-05-29T00:00:00.000Z'),
+                status: BookingStatus.CHECKED_IN,
+              },
+            ],
+          },
+        ]),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      billing: {
+        findMany: jest.fn().mockResolvedValue([]),
+        deleteMany: jest.fn(),
+      },
+      paymentTransaction: {
+        deleteMany: jest.fn(),
+      },
+      inventoryCalendar: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        update: jest.fn(),
+      },
+      room: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      guest: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+
+    const result = await (service as unknown as {
+      deleteImportedReservationsForConnection: (
+        tx: unknown,
+        connectionId: string,
+      ) => Promise<{ physical_rooms_released: number }>;
+    }).deleteImportedReservationsForConnection(tx, 'connection-1');
+
+    expect(tx.room.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['room-1'] },
+        status: RoomStatus.OCCUPIED,
+        reservationRooms: {
+          none: {
+            status: BookingStatus.CHECKED_IN,
+          },
+        },
+      },
+      data: {
+        status: RoomStatus.AVAILABLE,
+      },
+    });
+    expect(result.physical_rooms_released).toBe(1);
   });
 });
 
@@ -907,6 +986,7 @@ describe('ChannelService connection removal cleanup', () => {
             arrivalDate: true,
             departureDate: true,
             status: true,
+            roomId: true,
           },
         },
       },
@@ -995,6 +1075,7 @@ describe('ChannelService connection removal cleanup', () => {
         billing_payment_transactions_deleted: 1,
         imported_guests_deleted: 1,
         active_room_nights_released: 2,
+        physical_rooms_released: 0,
       },
     });
   });

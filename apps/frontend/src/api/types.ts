@@ -10,6 +10,8 @@ export type ChannelProvider = 'MOCK' | 'ZODOMUS' | 'SITEMINDER' | 'BOOKING_COM' 
 export type ChannelConnectionStatus = 'ACTIVE' | 'PAUSED' | 'ERROR';
 export type ChannelSyncType = 'INVENTORY' | 'RATES' | 'BOOKINGS';
 export type ChannelSyncStatus = 'QUEUED' | 'SUCCEEDED' | 'PARTIAL_FAILED' | 'FAILED';
+export type NotificationTone = 'arrival' | 'reservation' | 'housekeeping' | 'payment' | 'sync' | 'maintenance';
+export type NotificationStatus = 'Unread' | 'Read';
 export type AuditAction =
   | 'CREATE'
   | 'UPDATE'
@@ -111,6 +113,24 @@ export type DashboardSummary = {
   active_reservation_groups: number;
   open_housekeeping_tasks: number;
   pending_balance_total: number;
+};
+
+export type NotificationFeedItem = {
+  id: string;
+  title: string;
+  message: string;
+  source: string;
+  status: NotificationStatus;
+  tone: NotificationTone;
+  created_at: string;
+};
+
+export type NotificationFeedResponse = {
+  data: NotificationFeedItem[];
+  meta: {
+    limit: number;
+    unread: number;
+  };
 };
 
 export type AvailabilitySummary = {
@@ -242,6 +262,7 @@ export type HousekeepingTask = {
   priority: HousekeepingPriority;
   notes: string | null;
   due_date: string | null;
+  completed_at: string | null;
   property: Pick<Property, 'id' | 'name' | 'code'>;
   room: {
     id: string;

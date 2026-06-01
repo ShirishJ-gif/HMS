@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { formatConnectionLabel, SetupBadge, SummaryTile } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
 import { CustomSelect } from '../components/CustomSelect';
-import { labelCls, inputCls, primaryBtn, secondaryBtn, dangerBtn, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
+import { PageHeader, labelCls, inputCls, primaryBtn, secondaryBtn, dangerBtn, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
 
 export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace }) {
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
@@ -111,13 +111,11 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
 
   return (
     <section className="space-y-5">
-      <div>
-        <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-amber-500 mb-1">Integrations</p>
-        <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Channel Manager</h2>
-        <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-2xl">
-          Connect OTA distribution through Zodomus, complete provider onboarding, and manage channel readiness from one workspace.
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Integrations"
+        title="Channel Manager"
+        subtitle="Connect OTA distribution through Zodomus, complete provider onboarding, and manage channel readiness from one workspace."
+      />
 
       {workspace.loading && <LoadingMsg>Loading channel data…</LoadingMsg>}
       {workspace.error && <ErrorMsg>{workspace.error}</ErrorMsg>}
@@ -133,7 +131,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
         {/* Left rail */}
         <aside className="space-y-4">
           {/* Add connection form */}
-          <form onSubmit={workspace.createConnection} className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+          <form onSubmit={workspace.createConnection} className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">New connection</p>
               <h3 className="text-base font-bold text-slate-900">Add OTA connection</h3>
@@ -158,7 +156,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
           </form>
 
           {/* Select connection */}
-          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Connection</p>
               <h3 className="text-base font-bold text-slate-900">Select OTA</h3>
@@ -184,7 +182,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                     ))}
                   </dl>
                 </div>
-                <button className="inline-flex items-center justify-center w-full border border-rose-200 bg-rose-50 hover:bg-rose-100 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-rose-700 font-semibold px-4 py-2.5 rounded-lg shadow-sm text-sm transition" disabled={workspace.pendingAction === 'delete-connection'} onClick={() => setRemoveConfirmOpen(true)} type="button">{workspace.pendingAction === 'delete-connection' ? 'Removing…' : 'Remove connection'}</button>
+                <button className="inline-flex items-center justify-center w-full border border-rose-200 bg-rose-50 hover:bg-rose-100 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-rose-700 font-semibold px-4 py-2.5 rounded-lg text-sm transition" disabled={workspace.pendingAction === 'delete-connection'} onClick={() => setRemoveConfirmOpen(true)} type="button">{workspace.pendingAction === 'delete-connection' ? 'Removing…' : 'Remove connection'}</button>
                 <div className="flex gap-2">
                   <button className="inline-flex flex-1 items-center justify-center bg-amber-50 hover:bg-amber-100 border border-amber-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-amber-800 font-bold px-2 py-2 rounded-lg text-xs transition" disabled={workspace.pendingAction === 'pause-connection'} onClick={() => void workspace.pauseConnection()} type="button">Pause</button>
                   <button className="inline-flex flex-1 items-center justify-center bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-emerald-800 font-bold px-2 py-2 rounded-lg text-xs transition" disabled={workspace.pendingAction === 'resume-connection'} onClick={() => void workspace.resumeConnection()} type="button">Resume</button>
@@ -199,7 +197,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
           {/* Readiness status */}
           {workspace.selectedConnection && (
             <>
-              <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-3">
+              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Workspace</p>
                   <h3 className="text-sm font-bold text-slate-900">Readiness status</h3>
@@ -219,7 +217,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                 </div>
               </div>
 
-              <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-3">
+              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Mapping health</p>
                   <h3 className="text-sm font-bold text-slate-900">Room and rate coverage</h3>
@@ -258,7 +256,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
           {workspace.selectedConnection && (
             <>
               {/* Operator runbook */}
-              <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Setup order</p>
@@ -287,7 +285,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
 
               {/* Setup blockers */}
               {workspace.channelWarnings.length > 0 && (
-                <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-3">
+                <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Action needed</p>
                     <h3 className="text-base font-bold text-slate-900">Setup blockers</h3>
@@ -303,7 +301,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                 </div>
               )}
 
-              <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Provider IDs</p>
                   <h3 className="text-base font-bold text-slate-900">Room and rate IDs</h3>
@@ -327,10 +325,10 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                     <CustomSelect disabled={!workspace.selectedConnection || workspace.providerPriceModelsLoading} onChange={workspace.setZodomusPriceModelId} options={workspace.priceModelOptions.map((m) => ({ label: `${m.id} - ${m.model}`, value: String(m.id) }))} value={workspace.zodomusPriceModelId} />
                   </label>
                   <div className="flex flex-wrap gap-2 xl:flex-1 xl:justify-start">
-                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm transition-colors" disabled={!workspace.canLoadCatalog || workspace.pendingAction === 'load-provider-catalog'} onClick={() => void workspace.loadProviderCatalog()} title={workspace.canLoadCatalog ? 'Fetch provider room and rate IDs for mapping.' : catalogBlocker} type="button">{workspace.pendingAction === 'load-provider-catalog' ? 'Loading…' : 'Load Zodomus rooms & rates'}</button>
-                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm transition-colors" disabled={!canRunFinalPropertyCheck || workspace.pendingAction === 'property-check'} onClick={() => void workspace.runPropertyCheck()} title={propertyCheckBlocker} type="button">Run final property check</button>
-                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm transition-colors" disabled={!workspace.selectedConnection || workspace.pendingAction === 'property-activate'} onClick={() => void workspace.reactivateProperty()} type="button">Re-activate property</button>
-                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg shadow-sm transition-colors" disabled={!workspace.canActivateMappedRooms || workspace.pendingAction === 'activate-mapped-rooms'} onClick={() => void workspace.activateMappedRooms()} title={activationBlocker} type="button">Activate mapped rooms in Zodomus</button>
+                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors" disabled={!workspace.canLoadCatalog || workspace.pendingAction === 'load-provider-catalog'} onClick={() => void workspace.loadProviderCatalog()} title={workspace.canLoadCatalog ? 'Fetch provider room and rate IDs for mapping.' : catalogBlocker} type="button">{workspace.pendingAction === 'load-provider-catalog' ? 'Loading…' : 'Load Zodomus rooms & rates'}</button>
+                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors" disabled={!canRunFinalPropertyCheck || workspace.pendingAction === 'property-check'} onClick={() => void workspace.runPropertyCheck()} title={propertyCheckBlocker} type="button">Run final property check</button>
+                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors" disabled={!workspace.selectedConnection || workspace.pendingAction === 'property-activate'} onClick={() => void workspace.reactivateProperty()} type="button">Re-activate property</button>
+                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors" disabled={!workspace.canActivateMappedRooms || workspace.pendingAction === 'activate-mapped-rooms'} onClick={() => void workspace.activateMappedRooms()} title={activationBlocker} type="button">Activate mapped rooms in Zodomus</button>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
@@ -341,7 +339,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                 {workspace.providerPriceModelsError && <p className="text-xs text-slate-400">Using fallback price model labels: {workspace.providerPriceModelsError}</p>}
               </div>
 
-              <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Certification testing</p>
                   <h3 className="text-base font-bold text-slate-900">Extra API checks</h3>
@@ -424,7 +422,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
 
               {/* Automation controls + Admin tools */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                <form onSubmit={workspace.saveAutomationSettings} className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+                <form onSubmit={workspace.saveAutomationSettings} className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500">Operations</p>
@@ -460,7 +458,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
 
                   <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-100">
                     <p className={`text-[11px] ${canApplyAutomation ? 'text-emerald-700' : 'text-slate-400'}`}>{automationBlocker}</p>
-                    <button className="inline-flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-xs font-bold whitespace-nowrap shadow-sm transition-colors" disabled={!canApplyAutomation || workspace.pendingAction === 'save-automation'} title={automationBlocker} type="submit">{workspace.pendingAction === 'save-automation' ? 'Saving…' : 'Apply automation'}</button>
+                    <button className="inline-flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-xs font-bold whitespace-nowrap transition-colors" disabled={!canApplyAutomation || workspace.pendingAction === 'save-automation'} title={automationBlocker} type="submit">{workspace.pendingAction === 'save-automation' ? 'Saving…' : 'Apply automation'}</button>
                   </div>
                 </form>
 
@@ -469,7 +467,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                     event.preventDefault();
                     setProviderEventConfirmOpen(true);
                   }}
-                  className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4"
+                  className="bg-white border border-slate-200 rounded-xl p-5 space-y-4"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div>
@@ -626,7 +624,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
             <div className="p-5 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
               <button className={secondaryBtn} disabled={workspace.pendingAction === 'reservations-summary-backfill'} onClick={() => setBackfillConfirmOpen(false)} type="button">Cancel</button>
               <button
-                className="inline-flex items-center justify-center bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-xs font-bold whitespace-nowrap shadow-sm transition-colors"
+                className="inline-flex items-center justify-center bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-xs font-bold whitespace-nowrap transition-colors"
                 disabled={workspace.pendingAction === 'reservations-summary-backfill'}
                 onClick={() => {
                   void workspace.backfillExistingReservations().then(() => setBackfillConfirmOpen(false));
@@ -651,7 +649,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
             <div className="p-5 bg-slate-50 flex items-center justify-end gap-2">
               <button className={secondaryBtn} disabled={workspace.pendingAction === 'provider-reservation-event'} onClick={() => setProviderEventConfirmOpen(false)} type="button">Cancel</button>
               <button
-                className="inline-flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-xs font-bold whitespace-nowrap shadow-sm transition-colors"
+                className="inline-flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-xs font-bold whitespace-nowrap transition-colors"
                 disabled={workspace.pendingAction === 'provider-reservation-event'}
                 onClick={() => {
                   void workspace.submitProviderReservationEvent().then(() => setProviderEventConfirmOpen(false));

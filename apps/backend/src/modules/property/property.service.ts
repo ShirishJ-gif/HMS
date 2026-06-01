@@ -13,6 +13,7 @@ import { CreateRatePlanDto } from './dto/create-rate-plan.dto';
 import { CreateRoomCategoryDto } from './dto/create-room-category.dto';
 import { UpdatePricingRuleDto } from './dto/update-pricing-rule.dto';
 import { UpdatePropertyStatusDto } from './dto/update-property-status.dto';
+import { UpdateRoomCategoryDto } from './dto/update-room-category.dto';
 
 @Injectable()
 export class PropertyService {
@@ -98,6 +99,96 @@ export class PropertyService {
     }
   }
 
+  async removeProperty(id: string) {
+    const existing = await this.prisma.property.findUnique({
+      where: { id },
+      include: {
+        roomCategories: { select: { id: true } },
+        ratePlans: { select: { id: true } },
+        rooms: { select: { id: true } },
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Property not found');
+    }
+
+    const [
+      userCount,
+      reservationGroupCount,
+      reservationRoomCount,
+      channelConnectionCount,
+      webhookEventCount,
+    ] = await this.prisma.$transaction([
+      this.prisma.user.count({ where: { propertyId: id } }),
+      this.prisma.reservationGroup.count({ where: { propertyId: id } }),
+      this.prisma.reservationRoom.count({ where: { propertyId: id } }),
+      this.prisma.channelConnection.count({ where: { propertyId: id } }),
+      this.prisma.webhookEvent.count({ where: { propertyId: id } }),
+    ]);
+
+    const blockers = this.formatDeleteBlockers([
+      ['assigned user', userCount],
+      ['reservation group', reservationGroupCount],
+      ['reservation stay', reservationRoomCount],
+      ['channel connection', channelConnectionCount],
+      ['webhook event', webhookEventCount],
+    ]);
+
+    if (blockers.length > 0) {
+      throw new ConflictException(`Cannot delete this property because ${blockers.join(', ')} still depend on it.`);
+    }
+
+    const roomCategoryIds = existing.roomCategories.map((category) => category.id);
+    const ratePlanIds = existing.ratePlans.map((ratePlan) => ratePlan.id);
+    const roomIds = existing.rooms.map((room) => room.id);
+
+    try {
+      const summary = await this.prisma.$transaction(async (tx) => {
+        const deletedPricingRules = await tx.pricingRule.deleteMany({ where: { propertyId: id } });
+        const deletedRatePlans = await tx.ratePlan.deleteMany({ where: { propertyId: id } });
+        const deletedHousekeepingTasks =
+          roomIds.length > 0 ? await tx.housekeepingTask.deleteMany({ where: { roomId: { in: roomIds } } }) : { count: 0 };
+        const deletedOutOfServicePeriods = await tx.roomOutOfServicePeriod.deleteMany({ where: { propertyId: id } });
+        const deletedRooms = await tx.room.deleteMany({ where: { propertyId: id } });
+        const deletedInventoryBlocks = await tx.inventoryBlock.deleteMany({ where: { propertyId: id } });
+        const deletedInventoryRows = await tx.inventoryCalendar.deleteMany({ where: { propertyId: id } });
+        const deletedRoomCategories = await tx.roomCategory.deleteMany({ where: { propertyId: id } });
+        const deletedGuests = await tx.guest.deleteMany({ where: { propertyId: id } });
+
+        await tx.property.delete({ where: { id } });
+
+        return {
+          room_categories_deleted: deletedRoomCategories.count,
+          rooms_deleted: deletedRooms.count,
+          rate_plans_deleted: deletedRatePlans.count,
+          pricing_rules_deleted: deletedPricingRules.count,
+          housekeeping_tasks_deleted: deletedHousekeepingTasks.count,
+          out_of_service_periods_deleted: deletedOutOfServicePeriods.count,
+          inventory_blocks_deleted: deletedInventoryBlocks.count,
+          inventory_rows_deleted: deletedInventoryRows.count,
+          guests_deleted: deletedGuests.count,
+        };
+      });
+
+      return {
+        id,
+        deleted: true,
+        room_category_ids: roomCategoryIds,
+        rate_plan_ids: ratePlanIds,
+        ...summary,
+      };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new ConflictException(
+          'Cannot delete this property because users, guests, reservations, mappings, rooms, or inventory still depend on it.',
+        );
+      }
+
+      throw error;
+    }
+  }
+
   async createRoomCategory(dto: CreateRoomCategoryDto, user?: AuthenticatedUser) {
     assertCanAccessProperty(user, dto.property_id);
 
@@ -152,6 +243,121 @@ export class PropertyService {
     ]);
 
     return paginatedResponse(categories.map((category) => this.toRoomCategoryResponse(category)), total, page, limit);
+  }
+
+  async updateRoomCategory(id: string, dto: UpdateRoomCategoryDto, user?: AuthenticatedUser) {
+    const existing = await this.prisma.roomCategory.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Room category not found');
+    }
+
+    assertCanAccessProperty(user, existing.propertyId);
+
+    if (dto.property_id && dto.property_id !== existing.propertyId) {
+      throw new ConflictException('Room category cannot be moved to another property');
+    }
+
+    try {
+      const category = await this.prisma.roomCategory.update({
+        where: { id },
+        data: {
+          name: dto.name,
+          code: dto.code,
+          description: dto.description,
+          maxOccupancy: dto.max_occupancy,
+        },
+        include: {
+          property: true,
+          images: {
+            orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }],
+          },
+        },
+      });
+
+      return this.toRoomCategoryResponse(category);
+    } catch (error) {
+      this.handlePrismaError(error, 'Room category code already exists for this property');
+    }
+  }
+
+  async removeRoomCategory(id: string, user?: AuthenticatedUser) {
+    const existing = await this.prisma.roomCategory.findUnique({
+      where: { id },
+      include: {
+        ratePlans: { select: { id: true } },
+        rooms: { select: { id: true } },
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Room category not found');
+    }
+
+    assertCanAccessProperty(user, existing.propertyId);
+
+    const ratePlanIds = existing.ratePlans.map((ratePlan) => ratePlan.id);
+    const roomIds = existing.rooms.map((room) => room.id);
+    const [
+      reservationRoomCount,
+      channelRoomMappingCount,
+      channelRateMappingCount,
+    ] = await this.prisma.$transaction([
+      this.prisma.reservationRoom.count({ where: { roomCategoryId: id } }),
+      this.prisma.channelRoomMapping.count({ where: { roomCategoryId: id } }),
+      ratePlanIds.length > 0
+        ? this.prisma.channelRateMapping.count({ where: { ratePlanId: { in: ratePlanIds } } })
+        : this.prisma.channelRateMapping.count({ where: { id: { in: [] } } }),
+    ]);
+
+    if (reservationRoomCount > 0 || channelRoomMappingCount > 0 || channelRateMappingCount > 0) {
+      const blockers = [
+        reservationRoomCount > 0 ? `${reservationRoomCount} reservation stay${reservationRoomCount === 1 ? '' : 's'}` : null,
+        channelRoomMappingCount > 0 ? `${channelRoomMappingCount} room mapping${channelRoomMappingCount === 1 ? '' : 's'}` : null,
+        channelRateMappingCount > 0 ? `${channelRateMappingCount} rate mapping${channelRateMappingCount === 1 ? '' : 's'}` : null,
+      ].filter(Boolean);
+      throw new ConflictException(`Cannot delete this room type because ${blockers.join(', ')} still depend on it.`);
+    }
+
+    try {
+      const summary = await this.prisma.$transaction(async (tx) => {
+        const deletedHousekeepingTasks =
+          roomIds.length > 0
+            ? await tx.housekeepingTask.deleteMany({ where: { roomId: { in: roomIds } } })
+            : { count: 0 };
+        const deletedRooms = await tx.room.deleteMany({ where: { roomCategoryId: id } });
+        const deletedRatePlans =
+          ratePlanIds.length > 0
+            ? await tx.ratePlan.deleteMany({ where: { id: { in: ratePlanIds } } })
+            : { count: 0 };
+        const deletedInventoryBlocks = await tx.inventoryBlock.deleteMany({ where: { roomCategoryId: id } });
+        const deletedInventoryRows = await tx.inventoryCalendar.deleteMany({ where: { roomCategoryId: id } });
+
+        await tx.roomCategory.delete({
+          where: { id },
+        });
+
+        return {
+          rooms_deleted: deletedRooms.count,
+          rate_plans_deleted: deletedRatePlans.count,
+          housekeeping_tasks_deleted: deletedHousekeepingTasks.count,
+          inventory_blocks_deleted: deletedInventoryBlocks.count,
+          inventory_rows_deleted: deletedInventoryRows.count,
+        };
+      });
+
+      return { id, deleted: true, ...summary };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new ConflictException(
+          'Cannot delete this room type because rooms, rate plans, reservations, mappings, or inventory still depend on it.',
+        );
+      }
+
+      throw error;
+    }
   }
 
   async createRatePlan(dto: CreateRatePlanDto, user?: AuthenticatedUser) {
@@ -224,6 +430,57 @@ export class PropertyService {
     ]);
 
     return paginatedResponse(ratePlans.map((ratePlan) => this.toRatePlanResponse(ratePlan)), total, page, limit);
+  }
+
+  async removeRatePlan(id: string, user?: AuthenticatedUser) {
+    const existing = await this.prisma.ratePlan.findUnique({
+      where: { id },
+      include: {
+        pricingRules: { select: { id: true } },
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Rate plan not found');
+    }
+
+    assertCanAccessProperty(user, existing.propertyId);
+
+    const [reservationRoomCount, channelRateMappingCount] = await this.prisma.$transaction([
+      this.prisma.reservationRoom.count({ where: { ratePlanId: id } }),
+      this.prisma.channelRateMapping.count({ where: { ratePlanId: id } }),
+    ]);
+    const blockers = this.formatDeleteBlockers([
+      ['reservation stay', reservationRoomCount],
+      ['rate mapping', channelRateMappingCount],
+    ]);
+
+    if (blockers.length > 0) {
+      throw new ConflictException(`Cannot delete this rate plan because ${blockers.join(', ')} still depend on it.`);
+    }
+
+    const pricingRuleIds = existing.pricingRules.map((rule) => rule.id);
+
+    try {
+      const summary = await this.prisma.$transaction(async (tx) => {
+        const deletedPricingRules = await tx.pricingRule.deleteMany({ where: { ratePlanId: id } });
+        await tx.ratePlan.delete({ where: { id } });
+
+        return {
+          pricing_rules_deleted: deletedPricingRules.count,
+        };
+      });
+
+      return { id, deleted: true, pricing_rule_ids: pricingRuleIds, ...summary };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new ConflictException(
+          'Cannot delete this rate plan because reservations, mappings, or pricing rules still depend on it.',
+        );
+      }
+
+      throw error;
+    }
   }
 
   async createPricingRule(dto: CreatePricingRuleDto, user?: AuthenticatedUser) {
@@ -522,6 +779,12 @@ export class PropertyService {
 
   private parseBoolean(value?: string) {
     return value === 'true' || value === '1' || value === 'on';
+  }
+
+  private formatDeleteBlockers(blockers: Array<[label: string, count: number]>) {
+    return blockers
+      .filter(([, count]) => count > 0)
+      .map(([label, count]) => `${count} ${label}${count === 1 ? '' : 's'}`);
   }
 
   private handlePrismaError(error: unknown, conflictMessage: string): never {

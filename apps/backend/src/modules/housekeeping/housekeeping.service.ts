@@ -1,5 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { HousekeepingStatus, Prisma } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginatedResponse, paginationParams } from '../../common/pagination/paginated-response';
 import { AuthenticatedUser } from '../auth/auth.guard';
@@ -63,6 +63,7 @@ export class HousekeepingService {
         priority: dto.priority,
         notes: dto.notes,
         dueDate: dto.due_date ? new Date(`${dto.due_date}T00:00:00.000Z`) : undefined,
+        completedAt: dto.status === HousekeepingStatus.INSPECTED ? new Date() : undefined,
       },
       include: this.includeRelations(),
     });
@@ -87,6 +88,9 @@ export class HousekeepingService {
           priority: dto.priority,
           notes: dto.notes,
           dueDate: dto.due_date ? new Date(`${dto.due_date}T00:00:00.000Z`) : undefined,
+          ...(dto.status
+            ? { completedAt: dto.status === HousekeepingStatus.INSPECTED ? new Date() : null }
+            : {}),
         },
         include: this.includeRelations(),
       });
@@ -126,6 +130,7 @@ export class HousekeepingService {
     priority: string;
     notes: string | null;
     dueDate: Date | null;
+    completedAt: Date | null;
     property: { id: string; name: string; code: string };
     reservationRoom: {
       id: string;
@@ -149,6 +154,7 @@ export class HousekeepingService {
       priority: task.priority,
       notes: task.notes,
       due_date: task.dueDate?.toISOString().slice(0, 10) ?? null,
+      completed_at: task.completedAt?.toISOString() ?? null,
       property: {
         id: task.property.id,
         name: task.property.name,

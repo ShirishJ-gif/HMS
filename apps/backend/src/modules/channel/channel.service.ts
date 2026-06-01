@@ -14,6 +14,7 @@ import {
   ChannelSyncStatus,
   ChannelSyncType,
   Prisma,
+  RoomStatus,
 } from '@prisma/client';
 import { BackgroundJobService } from '../background-job/background-job.service';
 import { MetricsService } from '../metrics/metrics.service';
@@ -28,10 +29,13 @@ import { ChannelProviderService } from './channel-provider.service';
 import { CreateChannelConnectionDto } from './dto/create-channel-connection.dto';
 import { CreateChannelRateMappingDto } from './dto/create-channel-rate-mapping.dto';
 import { CreateChannelRoomMappingDto } from './dto/create-channel-room-mapping.dto';
+import { GetProviderAvailabilityQueryDto } from './dto/get-provider-availability-query.dto';
 import { SaveChannelMappingsBatchDto } from './dto/save-channel-mappings-batch.dto';
 import { SetupZodomusChannelDto } from './dto/setup-zodomus-channel.dto';
 import { SyncChannelDto } from './dto/sync-channel.dto';
 import { UpdateChannelAutomationDto } from './dto/update-channel-automation.dto';
+import { UpdateChannelRateMappingDto } from './dto/update-channel-rate-mapping.dto';
+import { UpdateChannelRoomMappingDto } from './dto/update-channel-room-mapping.dto';
 import { AirbnbOauthTestDto } from './dto/airbnb-oauth-test.dto';
 import { InventorySyncPayloadService } from './inventory-sync-payload.service';
 import { RateSyncPayloadService } from './rate-sync-payload.service';
@@ -75,6 +79,7 @@ type ImportedReservationCleanupSummary = {
   billing_payment_transactions_deleted: number;
   imported_guests_deleted: number;
   active_room_nights_released: number;
+  physical_rooms_released: number;
 };
 
 @Injectable()
@@ -754,11 +759,18 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async getProviderAvailability(connectionId: string, user?: AuthenticatedUser) {
+  async getProviderAvailability(
+    connectionId: string,
+    query: GetProviderAvailabilityQueryDto = {},
+    user?: AuthenticatedUser,
+  ) {
     const { client, channelId, propertyId } = await this.zodomusCertificationClient(connectionId, user);
+    const window = this.providerAvailabilityWindow(query);
     return client.getAvailability({
       channelId: channelId.toString(),
       propertyId,
+      dateFrom: window.from,
+      dateTo: window.to,
     });
   }
 
@@ -1039,6 +1051,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
             arrivalDate: true,
             departureDate: true,
             status: true,
+            roomId: true,
           },
         },
       },
@@ -1052,6 +1065,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         billing_payment_transactions_deleted: 0,
         imported_guests_deleted: 0,
         active_room_nights_released: 0,
+        physical_rooms_released: 0,
       };
     }
 
@@ -1107,9 +1121,14 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     const activeStatuses = new Set<BookingStatus>([BookingStatus.BOOKED, BookingStatus.CHECKED_IN]);
     const releaseCounts = new Map<string, { propertyId: string; roomCategoryId: string; stayDate: Date; roomCount: number }>();
+    const checkedInPhysicalRoomIds = new Set<string>();
 
     for (const reservationGroup of reservationGroups) {
       for (const room of reservationGroup.rooms) {
+        if (room.status === BookingStatus.CHECKED_IN && room.roomId) {
+          checkedInPhysicalRoomIds.add(room.roomId);
+        }
+
         if (!activeStatuses.has(room.status)) {
           continue;
         }
@@ -1160,6 +1179,24 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       where: { id: { in: reservationGroupIds } },
     });
 
+    const releasedPhysicalRooms =
+      checkedInPhysicalRoomIds.size > 0
+        ? await tx.room.updateMany({
+            where: {
+              id: { in: Array.from(checkedInPhysicalRoomIds) },
+              status: RoomStatus.OCCUPIED,
+              reservationRooms: {
+                none: {
+                  status: BookingStatus.CHECKED_IN,
+                },
+              },
+            },
+            data: {
+              status: RoomStatus.AVAILABLE,
+            },
+          })
+        : { count: 0 };
+
     const deletedGuests =
       primaryGuestIds.length > 0
         ? await tx.guest.deleteMany({
@@ -1182,6 +1219,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         (total, release) => total + release.roomCount,
         0,
       ),
+      physical_rooms_released: releasedPhysicalRooms.count,
     };
   }
 
@@ -1195,6 +1233,224 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     );
 
     return result.rate_mappings[0];
+  }
+
+  async updateRoomMapping(
+    connectionId: string,
+    mappingId: string,
+    dto: UpdateChannelRoomMappingDto,
+    user?: AuthenticatedUser,
+  ) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    const existing = await this.prisma.channelRoomMapping.findUnique({
+      where: { id: mappingId },
+      include: { roomCategory: true },
+    });
+    if (!existing || existing.channelConnectionId !== connection.id) {
+      throw new NotFoundException('Channel room mapping not found');
+    }
+
+    const externalRoomId = dto.external_room_id?.trim();
+    const externalRoomName = dto.external_room_name?.trim();
+    const changesExternalRoom = Boolean(externalRoomId && externalRoomId !== existing.externalRoomId);
+
+    if (!externalRoomId && externalRoomName === undefined) {
+      throw new BadRequestException('At least one room mapping field is required');
+    }
+
+    if (changesExternalRoom) {
+      const linkedRateMappings = await this.prisma.channelRateMapping.count({
+        where: {
+          channelConnectionId: connection.id,
+          ratePlan: { roomCategoryId: existing.roomCategoryId },
+        },
+      });
+      if (linkedRateMappings > 0) {
+        throw new ConflictException('Delete rate mappings for this room category before changing its provider room');
+      }
+    }
+
+    try {
+      const updated = await this.prisma.channelRoomMapping.update({
+        where: { id: mappingId },
+        data: {
+          ...(externalRoomId ? { externalRoomId } : {}),
+          ...(externalRoomName !== undefined ? { externalRoomName: externalRoomName || null } : {}),
+        },
+        include: { roomCategory: true },
+      });
+
+      await this.auditLogService.record({
+        action: AuditAction.UPDATE,
+        entityType: 'channel_room_mapping',
+        entityId: updated.id,
+        propertyId: connection.propertyId,
+        summary: `Updated room mapping ${updated.roomCategory.code}`,
+        metadata: {
+          channel_connection_id: connection.id,
+          previous_external_room_id: existing.externalRoomId,
+          next_external_room_id: updated.externalRoomId,
+        },
+        user,
+      });
+
+      await this.markZodomusMappingsChanged(connection);
+
+      return this.toRoomMappingResponse(updated);
+    } catch (error) {
+      this.handlePrismaError(error, 'Room mapping conflicts with an existing channel mapping');
+    }
+  }
+
+  async deleteRoomMapping(connectionId: string, mappingId: string, user?: AuthenticatedUser) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    const existing = await this.prisma.channelRoomMapping.findUnique({
+      where: { id: mappingId },
+      include: { roomCategory: true },
+    });
+    if (!existing || existing.channelConnectionId !== connection.id) {
+      throw new NotFoundException('Channel room mapping not found');
+    }
+
+    const linkedRateMappings = await this.prisma.channelRateMapping.count({
+      where: {
+        channelConnectionId: connection.id,
+        ratePlan: { roomCategoryId: existing.roomCategoryId },
+      },
+    });
+    if (linkedRateMappings > 0) {
+      throw new ConflictException('Delete rate mappings for this room category before deleting its room mapping');
+    }
+
+    await this.prisma.channelRoomMapping.delete({ where: { id: mappingId } });
+
+    await this.auditLogService.record({
+      action: AuditAction.DELETE,
+      entityType: 'channel_room_mapping',
+      entityId: existing.id,
+      propertyId: connection.propertyId,
+      summary: `Deleted room mapping ${existing.roomCategory.code}`,
+      metadata: {
+        channel_connection_id: connection.id,
+        room_category_id: existing.roomCategoryId,
+        external_room_id: existing.externalRoomId,
+      },
+      user,
+    });
+
+    await this.markZodomusMappingsChanged(connection);
+
+    return { deleted: true, id: mappingId };
+  }
+
+  async updateRateMapping(
+    connectionId: string,
+    mappingId: string,
+    dto: UpdateChannelRateMappingDto,
+    user?: AuthenticatedUser,
+  ) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    const existing = await this.prisma.channelRateMapping.findUnique({
+      where: { id: mappingId },
+      include: { ratePlan: true },
+    });
+    if (!existing || existing.channelConnectionId !== connection.id) {
+      throw new NotFoundException('Channel rate mapping not found');
+    }
+
+    const externalRoomId = dto.external_room_id?.trim();
+    const externalRateId = dto.external_rate_id?.trim();
+    const externalRateName = dto.external_rate_name?.trim();
+    const pricingConfigProvided = Object.prototype.hasOwnProperty.call(dto, 'pricing_config');
+
+    if (!externalRoomId && !externalRateId && externalRateName === undefined && !pricingConfigProvided) {
+      throw new BadRequestException('At least one rate mapping field is required');
+    }
+
+    const nextExternalRoomId = externalRoomId ?? existing.externalRoomId;
+    if (nextExternalRoomId) {
+      const mappedRoom = await this.prisma.channelRoomMapping.findUnique({
+        where: {
+          channelConnectionId_roomCategoryId: {
+            channelConnectionId: connection.id,
+            roomCategoryId: existing.ratePlan.roomCategoryId,
+          },
+        },
+      });
+      if (!mappedRoom) {
+        throw new BadRequestException(`Map the HMS room category for rate plan ${existing.ratePlan.code} before updating its provider rate mapping.`);
+      }
+      if (mappedRoom.externalRoomId !== nextExternalRoomId) {
+        throw new ConflictException(`Rate plan ${existing.ratePlan.code} belongs to provider room ${mappedRoom.externalRoomId}.`);
+      }
+    }
+
+    try {
+      const updated = await this.prisma.channelRateMapping.update({
+        where: { id: mappingId },
+        data: {
+          ...(externalRoomId ? { externalRoomId } : {}),
+          ...(externalRateId ? { externalRateId } : {}),
+          ...(externalRateName !== undefined ? { externalRateName: externalRateName || null } : {}),
+          ...(pricingConfigProvided ? { pricingConfig: this.normalizePricingConfig(dto.pricing_config) ?? Prisma.JsonNull } : {}),
+        },
+        include: { ratePlan: true },
+      });
+
+      await this.auditLogService.record({
+        action: AuditAction.UPDATE,
+        entityType: 'channel_rate_mapping',
+        entityId: updated.id,
+        propertyId: connection.propertyId,
+        summary: `Updated rate mapping ${updated.ratePlan.code}`,
+        metadata: {
+          channel_connection_id: connection.id,
+          previous_external_room_id: existing.externalRoomId,
+          previous_external_rate_id: existing.externalRateId,
+          next_external_room_id: updated.externalRoomId,
+          next_external_rate_id: updated.externalRateId,
+        },
+        user,
+      });
+
+      await this.markZodomusMappingsChanged(connection);
+
+      return this.toRateMappingResponse(updated);
+    } catch (error) {
+      this.handlePrismaError(error, 'Rate mapping conflicts with an existing channel mapping');
+    }
+  }
+
+  async deleteRateMapping(connectionId: string, mappingId: string, user?: AuthenticatedUser) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    const existing = await this.prisma.channelRateMapping.findUnique({
+      where: { id: mappingId },
+      include: { ratePlan: true },
+    });
+    if (!existing || existing.channelConnectionId !== connection.id) {
+      throw new NotFoundException('Channel rate mapping not found');
+    }
+
+    await this.prisma.channelRateMapping.delete({ where: { id: mappingId } });
+
+    await this.auditLogService.record({
+      action: AuditAction.DELETE,
+      entityType: 'channel_rate_mapping',
+      entityId: existing.id,
+      propertyId: connection.propertyId,
+      summary: `Deleted rate mapping ${existing.ratePlan.code}`,
+      metadata: {
+        channel_connection_id: connection.id,
+        rate_plan_id: existing.ratePlanId,
+        external_room_id: existing.externalRoomId,
+        external_rate_id: existing.externalRateId,
+      },
+      user,
+    });
+
+    await this.markZodomusMappingsChanged(connection);
+
+    return { deleted: true, id: mappingId };
   }
 
   async updateRateMappingPricingConfig(
@@ -2157,6 +2413,30 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     return value.trim();
   }
 
+  private providerAvailabilityWindow(query: GetProviderAvailabilityQueryDto) {
+    if ((query.from && !query.to) || (!query.from && query.to)) {
+      throw new BadRequestException('Both from and to are required when checking provider availability for a custom window.');
+    }
+
+    if (query.from && query.to) {
+      if (query.from > query.to) {
+        throw new BadRequestException('Provider availability from date must be on or before the to date.');
+      }
+
+      return { from: query.from, to: query.to };
+    }
+
+    const appCredentials = readZodomusAppCredentials();
+    const windowDays = this.defaultZodomusSyncWindowDays(appCredentials.environment);
+    const fromDate = this.toDateOnly(new Date());
+    const toDate = this.addDays(fromDate, Math.max(windowDays - 1, 0));
+
+    return {
+      from: fromDate.toISOString().slice(0, 10),
+      to: toDate.toISOString().slice(0, 10),
+    };
+  }
+
   private nextDate(value: string) {
     const date = new Date(`${value}T00:00:00.000Z`);
     if (Number.isNaN(date.getTime())) {
@@ -2569,7 +2849,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   }
 
   private allowedZodomusPriceModels(otaKey: ZodomusOtaKey) {
-    if (otaKey === 'BOOKING_COM') return [1, 2, 4, 5];
+    if (otaKey === 'BOOKING_COM') return [1, 2];
     if (otaKey === 'EXPEDIA') return [3, 4, 5];
     return [4];
   }
@@ -2921,6 +3201,18 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       where: { id: connectionId },
       data: {
         credentials: nextCredentials as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  private async markZodomusMappingsChanged(connection: { id: string; provider: ChannelProvider; credentials: Prisma.JsonValue | null }) {
+    if (connection.provider !== ChannelProvider.ZODOMUS) return;
+
+    await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
+      setup_status: {
+        rooms_activated: false,
+        ready: false,
+        ready_at: null,
       },
     });
   }

@@ -10,6 +10,7 @@
     text-rendering: optimizeLegibility;
     overflow: hidden;
     overscroll-behavior: none;
+    background-color: #f8fafc;
   }
   *, *::before, *::after { box-sizing: border-box; }
 }
@@ -32,17 +33,21 @@
     font-size: 0.8125rem;
   }
 
+  .hms-day-picker-polished {
+    width: 100%;
+  }
+
   .hms-day-picker-compact {
-    --rdp-day-height: 1.85rem;
-    --rdp-day-width: 1.85rem;
-    --rdp-day_button-height: 1.6rem;
-    --rdp-day_button-width: 1.6rem;
-    --rdp-day_button-border-radius: 0.5rem;
+    --rdp-day-height: 2rem;
+    --rdp-day-width: 2rem;
+    --rdp-day_button-height: 1.75rem;
+    --rdp-day_button-width: 1.75rem;
+    --rdp-day_button-border-radius: 0.55rem;
     font-size: 0.75rem;
   }
 
   .hms-day-picker-compact .rdp-month_caption {
-    height: 1.85rem;
+    height: 2rem;
     font-size: 0.8rem;
   }
 
@@ -55,6 +60,11 @@
     font-size: 0.875rem;
     font-weight: 800;
     color: #0f172a;
+  }
+
+  .hms-day-picker .rdp-month_grid {
+    border-collapse: separate;
+    border-spacing: 0.18rem;
   }
 
   .hms-day-picker .rdp-button_previous,
@@ -79,44 +89,173 @@
 
   .hms-day-picker .rdp-day_button {
     font-weight: 700;
+    transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
   }
 
   .hms-day-picker .rdp-day_button:hover {
-    background: #f1f5f9;
+    background: #ecfdf5;
+    border-color: #a7f3d0;
+    color: #047857;
+    transform: translateY(-1px);
   }
 
   .hms-day-picker .rdp-selected .rdp-day_button {
-    background: #059669;
-    border-color: #059669;
+    background: #047857;
+    border-color: #047857;
+    box-shadow: 0 8px 18px rgba(4, 120, 87, 0.22);
     color: white;
   }
 
   .hms-day-picker .rdp-today .rdp-day_button {
-    background: #eff6ff;
-    border-color: #38bdf8;
-    color: #0369a1;
+    background: #fff7ed;
+    border-color: #fdba74;
+    color: #c2410c;
   }
 
   .hms-day-picker .rdp-selected.rdp-today .rdp-day_button {
-    background: #059669;
-    border-color: #059669;
+    background: #047857;
+    border-color: #047857;
     color: white;
   }
 
   .hms-day-picker .rdp-outside {
     color: #cbd5e1;
   }
+
+  .pricing-calendar {
+    width: 100%;
+  }
+
+  .pricing-calendar__nav {
+    display: grid;
+    grid-template-columns: 2rem 1fr 2rem;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .pricing-calendar__nav strong {
+    color: #0f172a;
+    font-size: 0.85rem;
+    font-weight: 800;
+    text-align: center;
+  }
+
+  .pricing-calendar__nav button {
+    align-items: center;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.65rem;
+    color: #475569;
+    display: inline-flex;
+    font-size: 1.15rem;
+    font-weight: 800;
+    height: 2rem;
+    justify-content: center;
+    line-height: 1;
+    transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+  }
+
+  .pricing-calendar__nav button:hover {
+    background: #ecfdf5;
+    border-color: #a7f3d0;
+    color: #047857;
+  }
+
+  .pricing-calendar__weekdays,
+  .pricing-calendar__grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+
+  .pricing-calendar__weekdays {
+    gap: 0.25rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .pricing-calendar__weekdays span {
+    color: #94a3b8;
+    font-size: 0.62rem;
+    font-weight: 900;
+    text-align: center;
+  }
+
+  .pricing-calendar__grid {
+    gap: 0.28rem;
+  }
+
+  .pricing-calendar__day {
+    aspect-ratio: 1;
+    align-items: center;
+    background: #f8fafc;
+    border: 1px solid #eef2f7;
+    color: #334155;
+    display: inline-flex;
+    font-size: 0.74rem;
+    font-weight: 800;
+    justify-content: center;
+    min-width: 0;
+    transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+  }
+
+  .pricing-calendar__day:hover {
+    background: #ecfdf5;
+    border-color: #a7f3d0;
+    color: #047857;
+    transform: translateY(-1px);
+  }
+
+  .pricing-calendar__day--muted {
+    background: #ffffff;
+    border-color: #f1f5f9;
+    color: #cbd5e1;
+  }
+
+  .pricing-calendar__day--today {
+    background: #fff7ed;
+    border-color: #fdba74;
+    color: #c2410c;
+  }
+
+  .pricing-calendar__day--selected,
+  .pricing-calendar__day--selected:hover {
+    background: #047857;
+    border-color: #047857;
+    box-shadow: 0 8px 18px rgba(4, 120, 87, 0.22);
+    color: #ffffff;
+    transform: translateY(-1px);
+  }
 }
 
+/* ── Animations ───────────────────────────────────────────────────── */
 @keyframes spin-icon { to { transform: rotate(360deg); } }
+
 @keyframes shimmer {
   0%   { background-position: 200% 50%; }
   100% { background-position: -200% 50%; }
 }
 
-.animate-spin-icon { animation: spin-icon 700ms linear infinite; }
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes slide-in-left {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.animate-spin-icon  { animation: spin-icon 700ms linear infinite; }
 .animate-shimmer {
   background: linear-gradient(90deg, #e2e8f0 0%, #f1f5f9 50%, #e2e8f0 100%);
   background-size: 200% 100%;
   animation: shimmer 1.4s ease-in-out infinite;
 }
+.animate-page-in    { animation: page-in 200ms ease-out both; }
+.animate-fade-in    { animation: fade-in 180ms ease-out both; }
+.animate-slide-left { animation: slide-in-left 180ms ease-out both; }

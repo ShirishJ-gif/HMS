@@ -200,6 +200,82 @@ describe('BookingService', () => {
     });
   });
 
+  it('uses non-cancelled room dates for the reservation group stay window', () => {
+    const response = (
+      service as unknown as {
+        toReservationGroupResponse: (group: unknown) => { arrival_date: string | null; departure_date: string | null };
+      }
+    ).toReservationGroupResponse({
+      id: 'group-1',
+      propertyId: 'property-1',
+      primaryGuestId: 'guest-1',
+      channelConnectionId: 'connection-1',
+      externalReservationId: 'OTA-123',
+      externalReservationVersion: null,
+      externalStatus: 'modified',
+      source: 'ZODOMUS',
+      currency: 'INR',
+      totalAmount: new Prisma.Decimal('9000'),
+      status: BookingStatus.BOOKED,
+      remarks: null,
+      bookedAt: null,
+      modifiedAt: new Date('2026-07-01T00:00:00.000Z'),
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-07-01T00:00:00.000Z'),
+      property: { id: 'property-1', name: 'Harbour', code: 'HBR' },
+      primaryGuest: { id: 'guest-1', name: 'OTA Guest', phone: null, email: null },
+      channelConnection: null,
+      rooms: [
+        {
+          ...reservationRoom,
+          id: 'cancelled-room-line',
+          externalRoomReservationId: 'old-room-line',
+          arrivalDate: new Date('2026-08-01T00:00:00.000Z'),
+          departureDate: new Date('2026-08-02T00:00:00.000Z'),
+          status: BookingStatus.CANCELLED,
+        },
+        {
+          ...reservationRoom,
+          id: 'active-room-line',
+          externalRoomReservationId: 'new-room-line',
+          arrivalDate: new Date('2026-10-01T00:00:00.000Z'),
+          departureDate: new Date('2026-10-02T00:00:00.000Z'),
+          status: BookingStatus.BOOKED,
+        },
+      ],
+    });
+
+    expect(response.arrival_date).toBe('2026-10-01');
+    expect(response.departure_date).toBe('2026-10-02');
+  });
+
+  it('ignores cancelled room lines when applying the default reservation feed date window', () => {
+    const where = (
+      service as unknown as {
+        reservationFeedImportedWhere: (
+          propertyId: string | null,
+          search: string,
+          status?: BookingStatus,
+          includeCancelled?: boolean,
+          dateWindow?: { from?: Date; toExclusive?: Date },
+        ) => Record<string, unknown>;
+      }
+    ).reservationFeedImportedWhere('property-1', '', undefined, false, {
+      from: new Date('2026-08-01T00:00:00.000Z'),
+      toExclusive: new Date('2026-08-02T00:00:00.000Z'),
+    });
+
+    expect(where).toMatchObject({
+      rooms: {
+        some: {
+          status: { not: BookingStatus.CANCELLED },
+          arrivalDate: { lt: new Date('2026-08-02T00:00:00.000Z') },
+          departureDate: { gt: new Date('2026-08-01T00:00:00.000Z') },
+        },
+      },
+    });
+  });
+
   it('can include cancelled reservations when explicitly requested', () => {
     const where = (
       service as unknown as {
