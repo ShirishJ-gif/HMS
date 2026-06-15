@@ -49,16 +49,14 @@ const navGroups = [
       { id: 'operations' as Page, label: 'Operations Board', icon: 'pulse' },
       { id: 'bookings' as Page, label: 'Reservations', icon: 'calendar' },
       { id: 'guests' as Page, label: 'Guests', icon: 'guest' },
-      { id: 'rooms' as Page, label: 'Rooms & Inventory', icon: 'bed' },
       { id: 'housekeeping' as Page, label: 'Housekeeping', icon: 'sparkles' },
     ],
   },
   {
     section: 'Commercial',
     pages: [
-      { id: 'availability' as Page, label: 'Availability & Rates', icon: 'chart' },
+      { id: 'availability' as Page, label: 'Availability & Rates', icon: 'calendar' },
       { id: 'mapping' as Page, label: 'OTA Mapping', icon: 'puzzle' },
-      { id: 'setup' as Page, label: 'Property Setup', icon: 'settings' },
     ],
   },
   {
@@ -87,7 +85,7 @@ export function App() {
   const [user, setUser] = useState<AuthUser | null>(() => getStoredAuthUser());
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pageKey, setPageKey] = useState(0);
-  const [otaMappingFullWorkspace, setOtaMappingFullWorkspace] = useState(false);
+  const [, setOtaMappingFullWorkspace] = useState(false);
   const [previewDataEnabled, setPreviewDataEnabled] = useState(() => readPreviewDataEnabled());
 
   // Property selector state
@@ -241,7 +239,7 @@ export function App() {
   }
 
   const selectedProperty = properties.find((p) => p.id === selectedPropertyId);
-  const collapseSidebar = activePage === 'setup' || (activePage === 'mapping' && otaMappingFullWorkspace);
+  const collapseSidebar = activePage === 'setup';
 
   if (!user) return <LoginPage onLogin={setUser} />;
 
@@ -482,7 +480,7 @@ export function App() {
               onClick={() => setUserDropdownOpen((v) => !v)}
               className="flex items-center gap-2 hover:bg-slate-50 rounded-lg px-1.5 py-1 transition"
             >
-              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-indigo-700 text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0 select-none">
+              <div className="w-7 h-7 rounded-full bg-slate-600 text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0 select-none">
                 {user.name.charAt(0).toUpperCase()}
               </div>
               <div className="hidden sm:block text-left">
@@ -550,7 +548,7 @@ export function App() {
             {activePage === 'notifications' && <NotificationsPage />}
             {activePage === 'reports'      && <ReportsPage />}
             {activePage === 'operations'   && <OperationsBoardPage previewDataEnabled={previewDataEnabled} />}
-            {activePage === 'setup'        && <PropertySetupPage onConfigureOta={() => handlePageSelect('mapping')} />}
+            {activePage === 'setup'        && <PropertySetupPage onAddRooms={() => handlePageSelect('rooms')} onConfigureOta={() => handlePageSelect('mapping')} />}
             {activePage === 'availability' && <AvailabilityPage previewDataEnabled={previewDataEnabled} />}
             {activePage === 'mapping'      && <OtaMappingPage onFullWorkspaceChange={setOtaMappingFullWorkspace} workspace={channelWorkspace} />}
             {activePage === 'rooms'        && <RoomsPage />}

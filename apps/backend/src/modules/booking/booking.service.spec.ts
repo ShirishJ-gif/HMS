@@ -16,6 +16,7 @@ describe('BookingService', () => {
     },
     room: {
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     billing: {
       findUnique: jest.fn(),
@@ -40,6 +41,7 @@ describe('BookingService', () => {
 
   const inventoryService = {
     allocateInventory: jest.fn(),
+    acquireInventoryAllocationLock: jest.fn(),
   };
 
   const pricingService = {
@@ -92,6 +94,7 @@ describe('BookingService', () => {
     prisma.$transaction.mockImplementation((callback: (client: typeof tx) => unknown) => callback(tx));
     tx.reservationRoom.findUnique.mockResolvedValue(reservationRoom);
     tx.room.update.mockResolvedValue(null);
+    tx.room.updateMany.mockResolvedValue({ count: 1 });
     tx.reservationRoom.update.mockResolvedValue({
       ...reservationRoom,
       status: BookingStatus.CHECKED_OUT,

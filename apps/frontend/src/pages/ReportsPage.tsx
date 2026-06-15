@@ -209,21 +209,20 @@ export function ReportsPage() {
     })
     .filter((r) => propertyFilter === 'ALL' || r.id === propertyFilter);
 
-  const channelReadiness = Array.from(
-    channels.reduce((groups, c) => {
-      const ex = groups.get(c.property_id);
-      if (!ex || rankConn(c) > rankConn(ex)) groups.set(c.property_id, c);
-      return groups;
-    }, new Map<string, ChannelConnection>()).values(),
-  ).map((c) => ({
-    id: c.id,
-    property_name: c.property.name,
-    ota_name: c.provider_config_summary?.ota_name ?? c.provider,
-    ready: c.provider_config_summary?.setup_status.ready ?? false,
-    rooms_activated: c.provider_config_summary?.setup_status.rooms_activated ?? false,
-    last_inventory_status: c.sync_summary.inventory.last_status,
-    last_bookings_status: c.sync_summary.bookings.last_status,
-  }));
+  const channelReadiness = channels
+    .map((c) => ({
+      id: c.id,
+      property_name: c.property.name,
+      ota_name: c.provider_config_summary?.ota_name ?? c.provider,
+      ready: c.provider_config_summary?.setup_status.ready ?? false,
+      rooms_activated: c.provider_config_summary?.setup_status.rooms_activated ?? false,
+      last_inventory_status: c.sync_summary.inventory.last_status,
+      last_bookings_status: c.sync_summary.bookings.last_status,
+    }))
+    .sort((a, b) => (
+      a.property_name.localeCompare(b.property_name) ||
+      a.ota_name.localeCompare(b.ota_name)
+    ));
 
   const postureAttention = [
     blockedGroups.length > 0 ? `${blockedGroups.length} provider booking${blockedGroups.length === 1 ? '' : 's'} blocked from import.` : null,
@@ -520,16 +519,6 @@ export function ReportsPage() {
 }
 
 /* ─── helpers ─────────────────────────────────────────────────────────────── */
-function rankConn(c: ChannelConnection) {
-  return [
-    c.provider !== 'MOCK' ? 1 : 0,
-    c.provider_config_summary?.setup_status.ready ? 1 : 0,
-    c.provider_config_summary?.setup_status.rooms_activated ? 1 : 0,
-    c.sync_summary.inventory.last_status === 'SUCCEEDED' ? 1 : 0,
-    c.sync_summary.bookings.last_status === 'SUCCEEDED' ? 1 : 0,
-  ].reduce((s, v) => s * 10 + v, 0);
-}
-
 function calcNights(ci: string, co: string) {
   if (!ci || !co) return 0;
   return Math.max(0, Math.round(

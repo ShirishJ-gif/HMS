@@ -89,32 +89,51 @@ export class InventoryService {
       throw new BadRequestException('to_date must be on or after from_date');
     }
 
-    const roomCategory = await this.prisma.roomCategory.findUnique({
-      where: { id: dto.room_category_id },
-    });
+    const { block, roomCategory } = await this.prisma.$transaction(async (tx) => {
+      await this.acquireInventoryAllocationLock(tx, dto.property_id, dto.room_category_id);
 
-    if (!roomCategory || roomCategory.propertyId !== dto.property_id) {
-      throw new NotFoundException('Room category not found for this property');
-    }
+      const roomCategory = await tx.roomCategory.findUnique({
+        where: { id: dto.room_category_id },
+      });
 
-    const block = await this.prisma.inventoryBlock.create({
-      data: {
+      if (!roomCategory || roomCategory.propertyId !== dto.property_id) {
+        throw new NotFoundException('Room category not found for this property');
+      }
+
+      const rows = await this.rebuildCalendarRange({
         propertyId: dto.property_id,
-        roomCategoryId: dto.room_category_id,
-        fromDate,
-        toDate,
-        blockedRooms: dto.blocked_rooms,
-        reason: dto.reason.trim(),
-        source: dto.source?.trim() || 'MANUAL',
-        createdByUserId: user?.sub ?? null,
-      },
-    });
+        roomCategoryIds: [dto.room_category_id],
+        from: fromDate,
+        to: toDate,
+      }, tx);
+      const unavailableRow = rows.find((row) => row.availableRooms < dto.blocked_rooms);
+      if (unavailableRow) {
+        throw new ConflictException(
+          `Cannot block ${dto.blocked_rooms} room(s): only ${unavailableRow.availableRooms} available on ${unavailableRow.stayDate.toISOString().slice(0, 10)}`,
+        );
+      }
 
-    await this.rebuildCalendarRange({
-      propertyId: dto.property_id,
-      roomCategoryIds: [dto.room_category_id],
-      from: fromDate,
-      to: toDate,
+      const block = await tx.inventoryBlock.create({
+        data: {
+          propertyId: dto.property_id,
+          roomCategoryId: dto.room_category_id,
+          fromDate,
+          toDate,
+          blockedRooms: dto.blocked_rooms,
+          reason: dto.reason.trim(),
+          source: dto.source?.trim() || 'MANUAL',
+          createdByUserId: user?.sub ?? null,
+        },
+      });
+
+      await this.rebuildCalendarRange({
+        propertyId: dto.property_id,
+        roomCategoryIds: [dto.room_category_id],
+        from: fromDate,
+        to: toDate,
+      }, tx);
+
+      return { block, roomCategory };
     });
 
     await this.auditLogService.record({
@@ -164,37 +183,43 @@ export class InventoryService {
       throw new BadRequestException('max_stay must be greater than or equal to min_stay');
     }
 
-    const roomCategory = await this.prisma.roomCategory.findUnique({
-      where: { id: dto.room_category_id },
-    });
+    const roomCategory = await this.prisma.$transaction(async (tx) => {
+      await this.acquireInventoryAllocationLock(tx, dto.property_id, dto.room_category_id);
 
-    if (!roomCategory || roomCategory.propertyId !== dto.property_id) {
-      throw new NotFoundException('Room category not found for this property');
-    }
+      const roomCategory = await tx.roomCategory.findUnique({
+        where: { id: dto.room_category_id },
+      });
 
-    await this.rebuildCalendarRange({
-      propertyId: dto.property_id,
-      roomCategoryIds: [dto.room_category_id],
-      from: fromDate,
-      to: toDate,
-    });
+      if (!roomCategory || roomCategory.propertyId !== dto.property_id) {
+        throw new NotFoundException('Room category not found for this property');
+      }
 
-    await this.prisma.inventoryCalendar.updateMany({
-      where: {
+      await this.rebuildCalendarRange({
         propertyId: dto.property_id,
-        roomCategoryId: dto.room_category_id,
-        stayDate: {
-          gte: fromDate,
-          lte: toDate,
+        roomCategoryIds: [dto.room_category_id],
+        from: fromDate,
+        to: toDate,
+      }, tx);
+
+      await tx.inventoryCalendar.updateMany({
+        where: {
+          propertyId: dto.property_id,
+          roomCategoryId: dto.room_category_id,
+          stayDate: {
+            gte: fromDate,
+            lte: toDate,
+          },
         },
-      },
-      data: {
-        ...(dto.stop_sell !== undefined ? { stopSell: dto.stop_sell } : {}),
-        ...(dto.closed_to_arrival !== undefined ? { closedToArrival: dto.closed_to_arrival } : {}),
-        ...(dto.closed_to_departure !== undefined ? { closedToDeparture: dto.closed_to_departure } : {}),
-        ...(dto.min_stay !== undefined ? { minStay: dto.min_stay } : {}),
-        ...(dto.max_stay !== undefined ? { maxStay: dto.max_stay } : {}),
-      } as any,
+        data: {
+          ...(dto.stop_sell !== undefined ? { stopSell: dto.stop_sell } : {}),
+          ...(dto.closed_to_arrival !== undefined ? { closedToArrival: dto.closed_to_arrival } : {}),
+          ...(dto.closed_to_departure !== undefined ? { closedToDeparture: dto.closed_to_departure } : {}),
+          ...(dto.min_stay !== undefined ? { minStay: dto.min_stay } : {}),
+          ...(dto.max_stay !== undefined ? { maxStay: dto.max_stay } : {}),
+        } as any,
+      });
+
+      return roomCategory;
     });
 
     await this.auditLogService.record({
@@ -558,7 +583,7 @@ export class InventoryService {
     }
   }
 
-  private async acquireInventoryAllocationLock(
+  async acquireInventoryAllocationLock(
     tx: Prisma.TransactionClient,
     propertyId: string,
     roomCategoryId: string,

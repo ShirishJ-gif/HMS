@@ -9,6 +9,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
   const [syncLogPage, setSyncLogPage] = useState(1);
   const [selectedSyncLog, setSelectedSyncLog] = useState<ChannelSyncLog | null>(null);
   const selectedConnection = workspace.selectedConnection;
+  const hasSavedConnections = workspace.zodomusConnections.length > 0;
   const providerSummary = selectedConnection?.provider_config_summary;
   const syncSummary = selectedConnection?.sync_summary ?? defaultSyncSummary;
   const connectionStatusTone = mapTone(selectedConnection?.status);
@@ -28,12 +29,12 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
         eyebrow="Integrations"
         title="Connection diagnostics"
         subtitle="Follow one OTA connection from sync health through recent attempts, row-level failures, inventory drift, and the property-scoped webhook ledger."
-      />
-      <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 w-full max-w-xs">
+      >
+        <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 w-full max-w-xs">
           <div className="flex items-start justify-between gap-2">
             <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">OTA connection</p>
-              <h3 className="text-sm font-bold text-slate-900">{selectedConnection ? formatConnectionLabel(selectedConnection) : 'Select OTA'}</h3>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">OTA connection</p>
+              <h3 className="text-sm font-bold text-slate-900">{selectedConnection ? formatConnectionLabel(selectedConnection) : hasSavedConnections ? 'Select OTA' : 'No OTA connection'}</h3>
             </div>
             {selectedConnection && <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold ${connectionToneClass(connectionStatusTone)}`}>{selectedConnection.status}</span>}
           </div>
@@ -43,8 +44,9 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
                 <span key={tag} className="inline-flex items-center px-2 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">{tag}</span>
               ))}
             </div>
-          ) : <p className="text-xs text-slate-400">Choose a saved Zodomus connection to inspect sync health and webhook intake.</p>}
+          ) : <p className="text-xs text-slate-400">{hasSavedConnections ? 'Choose a saved Zodomus connection to inspect sync health and webhook intake.' : 'Add an OTA connection from OTA Mapping to start sync and webhook monitoring.'}</p>}
         </div>
+      </PageHeader>
 
       {workspace.loading && <LoadingMsg>Loading channel diagnostics...</LoadingMsg>}
       {workspace.error && <ErrorMsg>{workspace.error}</ErrorMsg>}
@@ -62,7 +64,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.07fr)_minmax(21rem,0.93fr)] gap-5 items-stretch">
             <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Workspace</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Workspace</p>
                 <h3 className="text-base font-bold text-slate-900">Connection snapshot</h3>
               </div>
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
@@ -76,7 +78,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
                 {[{ eyebrow: 'Connection-scoped', title: 'Primary diagnostics', desc: 'Sync health, sync logs, failed inventory rows, and inventory reconciliation are tied directly to this connection ID.' }, { eyebrow: 'Property-scoped', title: 'Webhook ledger', desc: 'Webhook events are filtered by property, so they describe inbound traffic for this property rather than only this single connection.' }].map((card) => (
                   <div key={card.title} className="bg-slate-50 border border-slate-100 rounded-xl p-3.5">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">{card.eyebrow}</p>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">{card.eyebrow}</p>
                     <h4 className="text-sm font-bold text-slate-900 mb-1">{card.title}</h4>
                     <p className="text-xs text-slate-500 leading-relaxed">{card.desc}</p>
                   </div>
@@ -86,16 +88,16 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
 
             <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 h-full">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Operations</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Operations</p>
                 <h3 className="text-base font-bold text-slate-900">Manual sync runbook</h3>
               </div>
               <div className="space-y-3">
                 {[{ eyebrow: 'Inventory', title: workspace.syncGuidance.inventory.title, when: workspace.syncGuidance.inventory.when, warning: workspace.syncGuidance.inventory.warning }, { eyebrow: 'Rates', title: workspace.syncGuidance.rates.title, when: workspace.syncGuidance.rates.when, warning: workspace.syncGuidance.rates.warning }].map((card) => (
                   <div key={card.title} className="bg-slate-50 border border-slate-100 rounded-xl p-3.5">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">{card.eyebrow}</p>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">{card.eyebrow}</p>
                     <h4 className="text-sm font-bold text-slate-900 mb-1">{card.title}</h4>
                     <p className="text-xs text-slate-500 leading-relaxed">{card.when}</p>
-                    {card.warning && <p className="text-xs text-amber-600 leading-relaxed mt-1">{card.warning}</p>}
+                    {card.warning && <p className="text-xs text-slate-500 leading-relaxed mt-1">{card.warning}</p>}
                   </div>
                 ))}
               </div>
@@ -107,7 +109,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
             <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 h-full">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Operations</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Operations</p>
                   <h3 className="text-base font-bold text-slate-900">Sync health</h3>
                 </div>
                 <div className="flex gap-2">
@@ -121,7 +123,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
                 <SyncStateCard label="Reservation import" state={syncSummary.bookings} />
               </div>
               <p className="text-xs text-slate-400 leading-relaxed">Automation currently compares or pushes a {workspace.syncWindowDays}-day window from today. Use the detailed logs below for request and provider payloads.</p>
-              {!providerSummary?.setup_status.ready && <p className="text-xs text-amber-600 leading-relaxed">This connection is not yet ready. Manual sync calls can still be queued from HMS, but the provider may reject them until setup and final checks are complete.</p>}
+              {!providerSummary?.setup_status.ready && <p className="text-xs text-slate-500 leading-relaxed">This connection is not yet ready. Manual sync calls can still be queued from HMS, but the provider may reject them until setup and final checks are complete.</p>}
             </div>
 
             <InventoryRowAnalytics workspace={workspace} />
@@ -148,9 +150,9 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
         </>
       ) : (
         <div className="bg-white border border-slate-200 rounded-xl p-8 text-center">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-1">Connection</p>
-          <h3 className="text-base font-bold text-slate-900 mb-2">Choose a workspace</h3>
-          <p className="text-sm text-slate-500">Select a saved OTA connection to load its sync health, row analytics, drift checks, and webhook ledger.</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">{hasSavedConnections ? 'Connection' : 'OTA mapping'}</p>
+          <h3 className="text-base font-bold text-slate-900 mb-2">{hasSavedConnections ? 'Choose a workspace' : 'No OTA connections yet'}</h3>
+          <p className="text-sm text-slate-500">{hasSavedConnections ? 'Select a saved OTA connection to load its sync health, row analytics, drift checks, and webhook ledger.' : 'Add an OTA connection from OTA Mapping before reviewing sync health and webhook logs.'}</p>
         </div>
       )}
     </section>
@@ -161,7 +163,7 @@ function InventoryRowAnalytics({ workspace }: { workspace: ChannelWorkspace }) {
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 h-full">
       <div>
-        <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Failed inventory rows</p>
+        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Failed inventory rows</p>
         <h3 className="text-sm font-bold text-slate-900">Persisted row analytics</h3>
       </div>
       {workspace.inventoryRowResultsLoading && <LoadingMsg>Loading row-level inventory failures...</LoadingMsg>}
@@ -178,7 +180,7 @@ function InventoryRowAnalytics({ workspace }: { workspace: ChannelWorkspace }) {
           </div>
           {workspace.inventoryRowResults.recent_failed_rows.length > 0 ? (
             <div className="overflow-x-auto">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-2">Recent failures</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Recent failures</p>
               <table className="w-full text-xs min-w-[400px]">
                 <thead><tr className="bg-slate-50 border-b border-slate-100"><Th>Date</Th><Th>Provider room</Th><Th>Available</Th><Th>Error</Th></tr></thead>
                 <tbody>
@@ -228,7 +230,7 @@ function SyncLogsPanel({ selectedSyncLog, setSelectedSyncLog, setSyncLogPage, so
       <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Sync logs</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Sync logs</p>
             <h3 className="text-sm font-bold text-slate-900">Recent connection attempts</h3>
           </div>
           <div className="flex items-center gap-2">
@@ -256,6 +258,20 @@ function SyncLogsPanel({ selectedSyncLog, setSelectedSyncLog, setSyncLogPage, so
                     <span className="text-[11px] text-slate-500 leading-relaxed">{syncSummary.inlineSummary}</span>
                     <span className="text-[10px] text-slate-400 flex-shrink-0">{formatDateTime(log.created_at)}</span>
                   </div>
+                  {syncSummary.metrics.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-wrap mt-2">
+                      {syncSummary.metrics.map((metric) => (
+                        <span
+                          key={metric.label}
+                          className={`inline-flex items-center text-[11px] font-semibold ${
+                            metric.tone === 'failed' ? 'text-rose-700' : 'text-emerald-700'
+                          }`}
+                        >
+                          {metric.value} {metric.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {syncSummary.errorText && <p className="text-[11px] text-rose-600 leading-relaxed mt-0.5">{syncSummary.errorText}</p>}
                 </button>
               );
@@ -278,7 +294,7 @@ function SyncLogsPanel({ selectedSyncLog, setSelectedSyncLog, setSyncLogPage, so
             <div className={`h-full overflow-y-auto p-5 space-y-4 transition-opacity duration-200 ease-out ${drawerOpen ? 'opacity-100 delay-100' : 'opacity-0'}`}>
               <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-100">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Selected log</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Selected log</p>
                   <h3 className="text-base font-bold text-slate-900">{drawerLog.sync_type}</h3>
                   <p className="text-xs text-slate-400 mt-1">{formatDateTime(drawerLog.created_at)}</p>
                 </div>
@@ -297,7 +313,7 @@ function SyncLogsPanel({ selectedSyncLog, setSelectedSyncLog, setSyncLogPage, so
                 { label: 'Response payload', value: drawerLog.response_payload },
               ].map(({ label, value }) => (
                 <div key={String(label)}>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-1">{label}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">{label}</p>
                   <pre className="text-[11px] text-slate-700 bg-slate-50 border border-slate-100 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">{formatPayloadPreview(value)}</pre>
                 </div>
               ))}
@@ -314,7 +330,7 @@ function InventoryReconciliationPanel({ workspace }: { workspace: ChannelWorkspa
     <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Operations</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Operations</p>
           <h3 className="text-base font-bold text-slate-900">Inventory reconciliation</h3>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -371,7 +387,7 @@ function BackgroundJobHealthPanel({ workspace }: { workspace: ChannelWorkspace }
     <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Worker health</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Worker health</p>
           <h3 className="text-base font-bold text-slate-900">Background jobs</h3>
         </div>
         <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold ${logToneClass(healthTone)}`}>
@@ -411,7 +427,7 @@ function WebhookEventsPanel({ failedCount, processedCount, replayCount, workspac
     <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Webhook events</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Webhook events</p>
           <h3 className="text-base font-bold text-slate-900">Property-scoped inbound ledger</h3>
         </div>
         <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">{workspace.webhookEvents.length}</span>
@@ -464,14 +480,14 @@ function WebhookEventsPanel({ failedCount, processedCount, replayCount, workspac
 function connectionToneClass(tone: string) {
   if (tone === 'available') return 'bg-emerald-50 text-emerald-700';
   if (tone === 'failed') return 'bg-rose-50 text-rose-700';
-  if (tone === 'queued') return 'bg-amber-50 text-amber-700';
+  if (tone === 'queued') return 'bg-slate-100 text-slate-600';
   return 'bg-slate-100 text-slate-600';
 }
 
 function logToneClass(tone: string) {
   if (tone === 'available') return 'bg-emerald-50 text-emerald-700';
   if (tone === 'failed') return 'bg-rose-50 text-rose-700';
-  if (tone === 'queued') return 'bg-amber-50 text-amber-700';
+  if (tone === 'queued') return 'bg-slate-100 text-slate-600';
   return 'bg-slate-100 text-slate-600';
 }
 
@@ -518,12 +534,23 @@ function summarizeSyncLog(log: ChannelSyncLog) {
   const requestPayload = asRecord(log.request_payload);
   const responsePayload = asRecord(log.response_payload);
   const responseSummary = asRecord(responsePayload?.summary);
-  const parts = [requestWindowLabel(requestPayload), summarizeRowCounts(responseSummary), readString(responsePayload?.message), readString(responsePayload?.status_message)].filter((v): v is string => Boolean(v && v.trim().length > 0));
-  return { inlineSummary: parts[0] ?? 'Expand to inspect request and response payloads.', errorText: log.error_message ?? parts[1] ?? null };
+  const parts = [requestWindowLabel(requestPayload), readString(responsePayload?.message), readString(responsePayload?.status_message)].filter((v): v is string => Boolean(v && v.trim().length > 0));
+  return {
+    inlineSummary: parts[0] ?? 'Expand to inspect request and response payloads.',
+    metrics: summarizeRowCounts(responseSummary),
+    errorText: log.error_message ?? parts[1] ?? null,
+  };
 }
 
 function requestWindowLabel(payload: Record<string, unknown> | null) { const from = readString(payload?.from); const to = readString(payload?.to); if (from && to) return `${from} to ${to}`; return null; }
-function summarizeRowCounts(summary: Record<string, unknown> | null) { const f = readNumber(summary?.failed_rows); const s = readNumber(summary?.succeeded_rows); const c = readNumber(summary?.compared_row_count); const parts = [typeof f === 'number' ? `${f} failed` : null, typeof s === 'number' ? `${s} succeeded` : null, typeof c === 'number' ? `${c} compared` : null].filter((v): v is string => Boolean(v)); return parts.length > 0 ? parts.join(' · ') : null; }
+function summarizeRowCounts(summary: Record<string, unknown> | null) {
+  const failed = readNumber(summary?.failed_rows);
+  const succeeded = readNumber(summary?.succeeded_rows);
+  const metrics: Array<{ label: string; value: number; tone: 'failed' | 'succeeded' }> = [];
+  if (typeof failed === 'number' && failed > 0) metrics.push({ label: 'failed', value: failed, tone: 'failed' });
+  if (typeof succeeded === 'number') metrics.push({ label: 'succeeded', value: succeeded, tone: 'succeeded' });
+  return metrics;
+}
 
 function formatPayloadPreview(value: unknown) { if (value == null) return 'No payload stored.'; try { const t = JSON.stringify(value, null, 2); return t.length > 900 ? `${t.slice(0, 900)}\n...` : t; } catch { return String(value); } }
 

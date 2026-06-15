@@ -50,7 +50,7 @@ export function DashboardPage() {
   );
 
   return (
-    <section className="space-y-6 max-w-[1280px]">
+    <section className="space-y-6">
       <PageHeader
         eyebrow="Overview"
         title="Dashboard"

@@ -69,6 +69,10 @@ export class ZodomusClient {
     });
   }
 
+  async setAirbnbPricingAvailability(body: Record<string, string | number>) {
+    return this.request({ method: 'POST', path: '/airbnb-pricing-availability', body });
+  }
+
   async checkProperty(body: Record<string, string | number>) {
     return this.request({ method: 'POST', path: '/property-check', body });
   }
@@ -79,6 +83,10 @@ export class ZodomusClient {
 
   async activateRooms(body: unknown) {
     return this.request({ method: 'POST', path: '/rooms-activation', body });
+  }
+
+  async cancelRooms(body: unknown) {
+    return this.request({ method: 'POST', path: '/rooms-cancellation', body });
   }
 
   async cancelProperty(body: Record<string, string | number>) {

@@ -2,7 +2,7 @@ import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'reac
 import '@daypicker/react/style.css';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
-import { PricingRule, PricingRuleType, Property, RatePlan, RoomCategory } from '../api/types';
+import { PricingRule, PricingRuleType, Property, RatePlan, Room, RoomCategory } from '../api/types';
 import { CalendarDatePickerField, formatDatePickerLabel, InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
@@ -33,10 +33,12 @@ const TYPE_CHIP: Record<string, string> = {
 const TYPE_LABEL: Record<string, string> = { WEEKEND: 'Weekend', DATE_RANGE: 'Date range', OCCUPANCY: 'Occupancy' };
 
 const SETUP_STEPS = [
+  { key: 'property'     as const, label: 'Add property'   },
   { key: 'roomTypes'    as const, label: 'Room types'    },
   { key: 'ratePlans'    as const, label: 'Rate plans'    },
   { key: 'pricingRules' as const, label: 'Pricing rules' },
   { key: 'media'        as const, label: 'Media'         },
+  { key: 'physicalRooms' as const, label: 'Rooms'        },
   { key: 'ota'          as const, label: 'OTA ready'     },
 ];
 type SetupKey = typeof SETUP_STEPS[number]['key'];
@@ -44,21 +46,25 @@ type SetupState = Record<SetupKey, boolean>;
 const OPTIONAL_SETUP_KEYS = new Set<SetupKey>(['media']);
 
 function isSetupStepComplete(setup: SetupState, key: SetupKey) {
+  if (key === 'media') return setup.media || (setup.roomTypes && setup.ratePlans && setup.pricingRules);
   return setup[key] || OPTIONAL_SETUP_KEYS.has(key);
 }
 
-function computeSetup(p: Property, cats: RoomCategory[], rps: RatePlan[], rules: PricingRule[]): SetupState {
+function computeSetup(p: Property, cats: RoomCategory[], rps: RatePlan[], rules: PricingRule[], rooms: Room[]): SetupState {
   const pCats  = cats.filter((c) => c.property_id === p.id);
   const hasMedia = p.images.length > 0 || pCats.some((c) => c.images.length > 0);
   const hasRoomTypes = pCats.length > 0;
   const hasRatePlans = rps.some((r) => r.property_id === p.id);
   const hasPricingRules = rules.some((r) => r.property_id === p.id);
+  const hasPhysicalRooms = rooms.some((r) => r.property_id === p.id);
   return {
+    property:     true,
     roomTypes:    hasRoomTypes,
     ratePlans:    hasRatePlans,
     pricingRules: hasPricingRules,
     media:        hasMedia,
-    ota:          hasRoomTypes && hasRatePlans && hasPricingRules,
+    physicalRooms: hasPhysicalRooms,
+    ota:          hasRoomTypes && hasRatePlans && hasPricingRules && hasPhysicalRooms,
   };
 }
 
@@ -155,8 +161,32 @@ function SectionCard({ eyebrow, title, badge, badgeTone, children, addForm, onAd
 }
 
 /* ── OTA gate ────────────────────────────────────────────────── */
-function OtaGate({ onConfigureOta, setup, colorBg }: { onConfigureOta: () => void; setup: SetupState; colorBg: string }) {
+function RoomsGate({ onAddRooms, roomCount, setup, colorBg }: { onAddRooms: () => void; roomCount: number; setup: SetupState; colorBg: string }) {
   const prereqs = (['roomTypes', 'ratePlans', 'pricingRules'] as const);
+  const missing = prereqs.filter((k) => !setup[k]);
+  const ready = missing.length === 0;
+  return (
+    <div className={`rounded-xl border-2 ${ready ? 'border-emerald-200 bg-emerald-50/40' : 'border-slate-100 bg-white'} p-5`}>
+      <div className="flex items-start gap-4">
+        <div className="flex-1 min-w-0">
+          <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Next step</p>
+          <h3 className="text-[14px] font-bold text-slate-900 mb-1">{ready ? 'Add rooms to inventory' : 'Rooms locked'}</h3>
+          {ready
+            ? <p className="text-[12.5px] text-emerald-700 font-medium">Add physical rooms before OTA mapping. OTA setup will unlock after at least one room exists.</p>
+            : <p className="text-[12.5px] text-slate-500">Finish property setup before adding physical rooms.</p>
+          }
+        </div>
+        <button type="button" disabled={!ready} onClick={onAddRooms}
+          className={`h-9 px-4 rounded-lg text-[12px] font-semibold flex-shrink-0 transition-colors ${ready ? `${colorBg} text-white hover:opacity-90` : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}>
+          {roomCount > 0 ? 'Manage rooms →' : 'Add rooms →'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OtaGate({ onConfigureOta, setup, colorBg }: { onConfigureOta: () => void; setup: SetupState; colorBg: string }) {
+  const prereqs = (['roomTypes', 'ratePlans', 'pricingRules', 'physicalRooms'] as const);
   const missing = prereqs.filter((k) => !setup[k]);
   const allDone = missing.length === 0;
   return (
@@ -207,7 +237,19 @@ const defaultPricingRuleForm = { property_id: '', rate_plan_id: '', name: '', ty
 const inlineInputCls = 'h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-[12.5px] font-semibold text-slate-900 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15';
 
 /* ══ Main page ═══════════════════════════════════════════════════ */
-export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => void }) {
+export function PropertySetupPage({
+  controlledSelectedPropertyId,
+  embedded = false,
+  onAddRooms,
+  onConfigureOta,
+  onSelectedPropertyIdChange,
+}: {
+  controlledSelectedPropertyId?: string | null;
+  embedded?: boolean;
+  onAddRooms?: () => void;
+  onConfigureOta: () => void;
+  onSelectedPropertyIdChange?: (propertyId: string | null) => void;
+}) {
   /* ── global state ── */
   const [reloadKey, setReloadKey] = useState(0);
   const [actionError, setActionError]   = useState<string | null>(null);
@@ -222,9 +264,10 @@ export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => vo
   const [selectedPricingRuleId, setSelectedPricingRuleId] = useState<string | null>(null);
   const [openPricingRuleDatePicker, setOpenPricingRuleDatePicker] = useState<'start' | 'end' | null>(null);
   const rightPanelRef = useRef<HTMLDivElement | null>(null);
+  const autoOpenedCreatePropertyRef = useRef(false);
 
   /* ── hub panel state ── */
-  const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
+  const [internalSelectedPropertyId, setInternalSelectedPropertyId] = useState<string | null>(null);
   const [addingProperty,      setAddingProperty]      = useState(false);
   const [addingCategory,      setAddingCategory]      = useState(false);
   const [addingRatePlan,      setAddingRatePlan]      = useState(false);
@@ -251,19 +294,40 @@ export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => vo
   const categoriesState  = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), [reloadKey]);
   const ratePlansState   = useAsync(async () => fetchAllPages<RatePlan>('/rate-plans'), [reloadKey]);
   const pricingRulesState = useAsync(async () => fetchAllPages<PricingRule>('/pricing-rules'), [reloadKey]);
+  const roomsState = useAsync(async () => fetchAllPages<Room>('/rooms'), [reloadKey]);
   const properties   = propertiesState.data  ?? [];
   const categories   = categoriesState.data  ?? [];
   const ratePlans    = ratePlansState.data    ?? [];
   const pricingRules = pricingRulesState.data ?? [];
+  const rooms = roomsState.data ?? [];
   const activeProperties = properties.filter((p) => p.is_active);
-  const isLoading = propertiesState.loading || categoriesState.loading || ratePlansState.loading || pricingRulesState.loading;
-  const loadError = propertiesState.error ?? categoriesState.error ?? ratePlansState.error ?? pricingRulesState.error;
+  const isLoading = propertiesState.loading || categoriesState.loading || ratePlansState.loading || pricingRulesState.loading || roomsState.loading;
+  const isLoadingProperties = propertiesState.loading && properties.length === 0;
+  const loadError = propertiesState.error ?? categoriesState.error ?? ratePlansState.error ?? pricingRulesState.error ?? roomsState.error;
+  const selectedPropertyId = controlledSelectedPropertyId !== undefined ? controlledSelectedPropertyId : internalSelectedPropertyId;
+
+  function selectPropertyId(propertyId: string | null) {
+    setInternalSelectedPropertyId(propertyId);
+    onSelectedPropertyIdChange?.(propertyId);
+    setAddingProperty(false);
+  }
+
+  function startAddingProperty() {
+    setPropertyForm(defaultPropertyForm);
+    setAddingProperty(true);
+  }
+
+  useEffect(() => {
+    if (!embedded || isLoadingProperties || propertiesState.error || properties.length > 0 || autoOpenedCreatePropertyRef.current) return;
+    autoOpenedCreatePropertyRef.current = true;
+    startAddingProperty();
+  }, [embedded, isLoadingProperties, propertiesState.error, properties.length]);
 
   /* ── auto-select first active property on load ── */
   useEffect(() => {
     if (!selectedPropertyId && properties.length > 0) {
       const first = properties.find((p) => p.is_active) ?? properties[0];
-      setSelectedPropertyId(first.id);
+      selectPropertyId(first.id);
     }
   }, [properties, selectedPropertyId]);
 
@@ -292,12 +356,13 @@ export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => vo
   const selectedCategories  = categories.filter((c) => c.property_id === selectedPropertyId);
   const selectedRatePlans   = ratePlans.filter((r) => r.property_id === selectedPropertyId);
   const selectedPricingRules = pricingRules.filter((r) => r.property_id === selectedPropertyId);
+  const selectedRooms = rooms.filter((r) => r.property_id === selectedPropertyId);
   const selectedCategory = selectedCategories.find((category) => category.id === selectedCategoryId) ?? null;
   const selectedRatePlan = selectedRatePlans.find((ratePlan) => ratePlan.id === selectedRatePlanId) ?? null;
   const selectedPricingRule = selectedPricingRules.find((rule) => rule.id === selectedPricingRuleId) ?? null;
   const selectedSetup: SetupState = selectedProperty
-    ? computeSetup(selectedProperty, categories, ratePlans, pricingRules)
-    : { roomTypes: false, ratePlans: false, pricingRules: false, media: false, ota: false };
+    ? computeSetup(selectedProperty, categories, ratePlans, pricingRules, rooms)
+    : { property: false, roomTypes: false, ratePlans: false, pricingRules: false, media: false, physicalRooms: false, ota: false };
   const allMediaImages = [
     ...(selectedProperty?.images ?? []).map((img) => ({ ...img, label: selectedProperty!.name, sub: 'Property photo' })),
     ...selectedCategories.flatMap((cat) => cat.images.map((img) => ({ ...img, label: cat.name, sub: 'Room type photo' }))),
@@ -323,7 +388,7 @@ export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => vo
       const { data } = await api.post<Property>('/properties', { ...propertyForm, phone: propertyForm.phone || undefined, email: propertyForm.email || undefined });
       setPropertyForm(defaultPropertyForm); setAddingProperty(false);
       setActionStatus('Property created.'); reload();
-      setSelectedPropertyId(data.id);
+      selectPropertyId(data.id);
     });
   }
   async function togglePropertyArchive(property: Property) {
@@ -338,7 +403,7 @@ export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => vo
     await runAction(`delete-property:${property.id}`, async () => {
       await api.delete(`/properties/${property.id}`);
       const nextProperty = properties.find((candidate) => candidate.id !== property.id) ?? null;
-      setSelectedPropertyId(nextProperty?.id ?? null);
+      selectPropertyId(nextProperty?.id ?? null);
       setSelectedCategoryId(null);
       setSelectedRatePlanId(null);
       setSelectedPricingRuleId(null);
@@ -524,37 +589,39 @@ export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => vo
 
   /* ── render ── */
   return (
-    <div className="-mx-5 lg:-mx-8 -my-6 lg:-my-8 flex h-[calc(100dvh-3rem)] overflow-hidden">
+    <div className={embedded ? 'flex h-full min-h-0 overflow-hidden' : '-mx-5 lg:-mx-8 -my-6 lg:-my-8 flex h-[calc(100dvh-3rem)] overflow-hidden'}>
 
       {/* ══ Left rail ══════════════════════════════════════════════ */}
-      <aside className="w-[268px] flex-shrink-0 bg-[#eeede9] border-r border-black/[0.06] flex flex-col h-full overflow-hidden">
+      <aside className={`${embedded ? 'w-[292px] bg-[#eeede9] border-r border-black/[0.06]' : 'w-[268px] bg-[#eeede9] border-r border-black/[0.06]'} flex-shrink-0 flex flex-col h-full overflow-hidden`}>
 
         {/* Rail header */}
-        <div className="px-4 pt-5 pb-4 border-b border-black/[0.06] flex items-center justify-between flex-shrink-0">
+        <div className="px-4 pt-5 pb-4 flex items-center justify-between flex-shrink-0 border-b border-black/[0.06]">
           <div>
-            <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-slate-400 mb-0.5">Admin</p>
+            <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-slate-400 mb-0.5">{embedded ? 'Setup step 1' : 'Admin'}</p>
             <h2 className="text-[15px] font-bold text-slate-900 leading-tight">Properties</h2>
           </div>
-          <button type="button" onClick={() => setAddingProperty((v) => !v)}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-lg font-light transition-colors bg-white border border-black/[0.08] text-slate-600 hover:bg-slate-50">
-            {addingProperty ? '×' : '+'}
-          </button>
+          {!embedded && (
+            <button type="button" onClick={() => setAddingProperty((v) => !v)}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-lg font-light transition-colors bg-white border border-black/[0.08] text-slate-600 hover:bg-slate-50">
+              {addingProperty ? '×' : '+'}
+            </button>
+          )}
         </div>
 
         {/* Property list */}
-        <div className="flex-1 overflow-y-auto py-2 px-2 space-y-1 min-h-0">
-          {isLoading && properties.length === 0 && (
+        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain px-2 py-2">
+          {isLoadingProperties && (
             <p className="text-[11px] text-slate-400 px-3 py-4">Loading…</p>
           )}
-          {properties.map((p, idx) => {
+          {!isLoadingProperties && properties.map((p, idx) => {
             const col   = getColor(idx);
-            const setup = computeSetup(p, categories, ratePlans, pricingRules);
+            const setup = computeSetup(p, categories, ratePlans, pricingRules, rooms);
             const done  = SETUP_STEPS.filter((s) => isSetupStepComplete(setup, s.key)).length;
             const total = SETUP_STEPS.length;
             const active = p.id === selectedPropertyId;
             return (
-              <button key={p.id} type="button" onClick={() => setSelectedPropertyId(p.id)}
-                className={`w-full text-left rounded-xl px-3 py-3 flex items-center gap-3 transition-all ${active ? 'bg-white shadow-sm border border-black/[0.07]' : 'hover:bg-white/60'}`}>
+              <button key={p.id} type="button" onClick={() => selectPropertyId(p.id)}
+                className={`w-full text-left rounded-xl px-3 py-3 flex items-center gap-3 transition-all ${active ? 'bg-white shadow-sm border border-emerald-200' : 'hover:bg-white/70'}`}>
                 <div className={`w-9 h-9 rounded-lg flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-white ${col.bg}`}>
                   {p.code.slice(0, 3)}
                 </div>
@@ -576,10 +643,20 @@ export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => vo
               </button>
             );
           })}
+          {embedded && !isLoadingProperties && (
+            <button
+              className="mt-5 flex h-10 w-full items-center justify-center gap-1.5 rounded-lg border border-black/[0.08] bg-white px-3 text-[11.5px] font-semibold text-slate-700 transition hover:bg-slate-50"
+              onClick={startAddingProperty}
+              type="button"
+            >
+              <span className="text-base font-light leading-none">+</span>
+              {properties.length > 0 ? 'Add new property' : 'Add property'}
+            </button>
+          )}
         </div>
 
         {/* Bottom stats */}
-        <div className="border-t border-black/[0.06] px-4 py-3 space-y-1 flex-shrink-0">
+        <div className={`px-4 py-3 space-y-1 flex-shrink-0 border-t border-black/[0.06] ${embedded ? 'bg-white/45' : ''}`}>
           {[
             { l: 'Active properties', v: activeProperties.length },
             { l: 'Total room types',  v: categories.length },
@@ -594,7 +671,7 @@ export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => vo
       </aside>
 
       {/* ══ Right panel ════════════════════════════════════════════ */}
-      <div ref={rightPanelRef} className="flex-1 min-w-0 overflow-y-auto p-6 lg:p-8 space-y-4 h-full scrollbar-none">
+      <div ref={rightPanelRef} className="h-full min-w-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-6 scrollbar-none lg:p-8">
 
         {actionStatus && (
           <div className="fixed right-5 top-5 z-50 w-[min(24rem,calc(100vw-2.5rem))]">
@@ -604,18 +681,60 @@ export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => vo
         {actionError  && <ErrorMsg>{actionError}</ErrorMsg>}
         {loadError    && <ErrorMsg>{loadError}</ErrorMsg>}
 
-        {isLoading && !selectedProperty && (
+        {isLoading && (
           <LoadingMsg>Loading property data…</LoadingMsg>
         )}
 
-        {!isLoading && !selectedProperty && (
+        {!isLoading && embedded && addingProperty && (
+          <form className="rounded-xl border border-slate-200 bg-white p-4" onSubmit={submitProperty}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-600">New property</p>
+                <h3 className="mt-0.5 text-[15px] font-bold text-slate-900">Add property details</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button className="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60" disabled={pendingAction === 'create-property'} type="submit">
+                  {pendingAction === 'create-property' ? 'Creating…' : 'Create property'}
+                </button>
+                {properties.length > 0 && (
+                  <button className="text-[11.5px] font-semibold text-slate-500 transition hover:text-slate-800" onClick={() => setAddingProperty(false)} type="button">
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <label className={labelCls}><span>Property name</span>
+                <input className={inputCls} value={propertyForm.name} onChange={(e) => setPropertyForm({ ...propertyForm, name: e.target.value })} placeholder="Harbour Residency" required />
+              </label>
+              <label className={labelCls}><span>Code</span>
+                <input className={inputCls} value={propertyForm.code} onChange={(e) => setPropertyForm({ ...propertyForm, code: e.target.value })} placeholder="HARBOUR" required />
+              </label>
+              <label className={labelCls}><span>Timezone</span>
+                <CustomSelect
+                  value={propertyForm.timezone}
+                  onChange={(timezone) => setPropertyForm({ ...propertyForm, timezone })}
+                  options={TIMEZONE_OPTIONS}
+                  placeholder="Select timezone"
+                />
+              </label>
+              <div className="md:col-span-3">
+                <label className={`${labelCls} w-full max-w-lg`}><span>Address</span>
+                  <input className={`${inputCls} h-11`} value={propertyForm.address} onChange={(e) => setPropertyForm({ ...propertyForm, address: e.target.value })} placeholder="Mumbai, Maharashtra" required />
+                </label>
+              </div>
+            </div>
+          </form>
+        )}
+
+        {!isLoading && !(embedded && addingProperty) && !selectedProperty && (
           <div className="flex flex-col items-center justify-center py-32 text-center">
             <p className="text-[14px] font-semibold text-slate-500 mb-1">No property selected</p>
-            <p className="text-[12px] text-slate-400">Use the + button in the sidebar to create your first property.</p>
+            <p className="text-[12px] text-slate-400">{embedded ? 'Use the Add property button in the sidebar to create your first property.' : 'Use the + button in the sidebar to create your first property.'}</p>
           </div>
         )}
 
-        {selectedProperty && (
+        {!isLoading && selectedProperty && (
           <>
             {/* Property header */}
             <div className="flex items-start justify-between gap-4">
@@ -1064,13 +1183,16 @@ export function PropertySetupPage({ onConfigureOta }: { onConfigureOta: () => vo
               </div>
             </SectionCard>
 
-            {/* ── OTA gate ── */}
-            <OtaGate onConfigureOta={onConfigureOta} setup={selectedSetup} colorBg={selectedColor.bg} />
+            {/* ── Rooms / OTA gate ── */}
+            {selectedSetup.physicalRooms
+              ? <OtaGate onConfigureOta={onConfigureOta} setup={selectedSetup} colorBg={selectedColor.bg} />
+              : <RoomsGate onAddRooms={onAddRooms ?? (() => {})} roomCount={selectedRooms.length} setup={selectedSetup} colorBg={selectedColor.bg} />
+            }
           </>
         )}
       </div>
 
-      {addingProperty && (
+      {addingProperty && !embedded && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6 backdrop-blur-[2px]">
           <button
             aria-label="Close create property dialog"

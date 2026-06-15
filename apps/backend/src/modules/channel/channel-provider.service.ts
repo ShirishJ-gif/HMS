@@ -51,6 +51,7 @@ interface ChannelAdapter {
   checkProperty(payload: ChannelPropertyActionPayload): Promise<Prisma.InputJsonObject>;
   activateProperty(payload: ChannelPropertyActionPayload): Promise<Prisma.InputJsonObject>;
   activateRooms(payload: ChannelPropertyActionPayload): Promise<Prisma.InputJsonObject>;
+  cancelRooms(payload: ChannelPropertyActionPayload): Promise<Prisma.InputJsonObject>;
   disconnectProperty(payload: ChannelPropertyActionPayload): Promise<Prisma.InputJsonObject>;
   getAccount(payload: ChannelConnectionValidationPayload): Promise<Prisma.InputJsonObject>;
   getChannels(payload: ChannelConnectionValidationPayload): Promise<Prisma.InputJsonObject>;
@@ -118,6 +119,16 @@ class MockChannelAdapter implements ChannelAdapter {
       accepted: true,
       rooms: payload.rooms ?? [],
       message: 'Mock provider accepted room activation.',
+    };
+  }
+
+  async cancelRooms(payload: ChannelPropertyActionPayload) {
+    return {
+      provider: payload.provider,
+      external_hotel_id: payload.external_hotel_id ?? null,
+      accepted: true,
+      rooms: payload.rooms ?? [],
+      message: 'Mock provider accepted room cancellation.',
     };
   }
 
@@ -248,6 +259,12 @@ class ExternalChannelAdapter implements ChannelAdapter {
     );
   }
 
+  async cancelRooms(): Promise<Prisma.InputJsonObject> {
+    throw new NotImplementedException(
+      `${this.provider} room cancellation requires a real provider adapter before it can be enabled.`,
+    );
+  }
+
   async getAccount(): Promise<Prisma.InputJsonObject> {
     throw new NotImplementedException(
       `${this.provider} account lookup requires a real provider adapter before it can be enabled.`,
@@ -349,6 +366,14 @@ export class ChannelProviderService {
   async activateRooms(payload: ChannelPropertyActionPayload) {
     try {
       return await this.adapterFor(payload.provider).activateRooms(payload);
+    } catch (error) {
+      throw this.mapProviderError(error);
+    }
+  }
+
+  async cancelRooms(payload: ChannelPropertyActionPayload) {
+    try {
+      return await this.adapterFor(payload.provider).cancelRooms(payload);
     } catch (error) {
       throw this.mapProviderError(error);
     }

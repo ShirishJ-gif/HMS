@@ -506,6 +506,14 @@ describe('ChannelService Zodomus readiness gate', () => {
           },
         },
       }),
+      cancelRooms: jest.fn().mockResolvedValue({
+        response: {
+          status: {
+            returnCode: 200,
+            returnMessage: 'OK',
+          },
+        },
+      }),
       ...(input.providerService ?? {}),
     };
     const auditLogService = {
@@ -594,6 +602,51 @@ describe('ChannelService Zodomus readiness gate', () => {
             setup_status: expect.objectContaining({
               rooms_activated: true,
               activated_room_count: 1,
+              ready: false,
+              ready_at: null,
+            }),
+          }),
+        },
+      }),
+    );
+  });
+
+  it('cancels Zodomus room associations and resets ready status', async () => {
+    const connection = {
+      id: 'connection-1',
+      propertyId: 'property-1',
+      provider: ChannelProvider.ZODOMUS,
+      externalHotelId: 'hotel-1',
+      credentials: {
+        setup_status: {
+          activated: true,
+          rooms_activated: true,
+          ready: true,
+        },
+      },
+    };
+    const { service, prisma, providerService } = createService({ connection });
+    jest
+      .spyOn(service as unknown as { getConnectionResponse: () => Promise<typeof connection> }, 'getConnectionResponse')
+      .mockResolvedValue(connection);
+
+    await service.cancelProviderRooms('connection-1', { rooms: [{ roomId: '90001' }] });
+
+    expect(providerService.cancelRooms).toHaveBeenCalledWith({
+      provider: ChannelProvider.ZODOMUS,
+      external_hotel_id: 'hotel-1',
+      credentials: connection.credentials,
+      rooms: [{ roomId: '90001' }],
+    });
+    expect(prisma.channelConnection.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'connection-1' },
+        data: {
+          credentials: expect.objectContaining({
+            setup_status: expect.objectContaining({
+              rooms_activated: false,
+              rooms_cancelled: true,
+              cancelled_room_count: 1,
               ready: false,
               ready_at: null,
             }),

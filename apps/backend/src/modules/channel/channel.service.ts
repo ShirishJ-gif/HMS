@@ -26,6 +26,7 @@ import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty, propertyIdFilter } from '../auth/property-scope';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ChannelProviderService } from './channel-provider.service';
+import { CancelChannelRoomsDto } from './dto/cancel-channel-rooms.dto';
 import { CreateChannelConnectionDto } from './dto/create-channel-connection.dto';
 import { CreateChannelRateMappingDto } from './dto/create-channel-rate-mapping.dto';
 import { CreateChannelRoomMappingDto } from './dto/create-channel-room-mapping.dto';
@@ -658,6 +659,53 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  async cancelProviderRooms(connectionId: string, dto: CancelChannelRoomsDto, user?: AuthenticatedUser) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+
+    if (connection.provider !== ChannelProvider.ZODOMUS) {
+      throw new BadRequestException('Room cancellation is currently supported only for Zodomus connections.');
+    }
+
+    const rooms = dto.rooms.map((room) => ({ roomId: room.roomId }));
+    const cancellation = await this.providerService.cancelRooms({
+      provider: connection.provider,
+      external_hotel_id: connection.externalHotelId,
+      credentials: connection.credentials,
+      rooms,
+    });
+
+    await this.auditLogService.record({
+      action: AuditAction.UPDATE,
+      entityType: 'channel_connection',
+      entityId: connection.id,
+      propertyId: connection.propertyId,
+      summary: `Cancelled ${connection.provider} room associations`,
+      metadata: {
+        cancelled_room_count: rooms.length,
+        room_ids: rooms.map((room) => room.roomId),
+      },
+      user,
+    });
+
+    await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
+      setup_status: {
+        rooms_activated: false,
+        rooms_cancelled: true,
+        rooms_cancelled_at: new Date().toISOString(),
+        cancelled_room_count: rooms.length,
+        last_rooms_cancellation_message: this.readProviderReturnMessage(cancellation),
+        last_rooms_cancellation_code: this.readProviderReturnCode(cancellation),
+        ready: false,
+        ready_at: null,
+      },
+    });
+
+    return {
+      cancellation,
+      connection: await this.getConnectionResponse(connection.id),
+    };
+  }
+
   async getProviderAccount(connectionId: string, user?: AuthenticatedUser) {
     const connection = await this.findAccessibleConnection(connectionId, user);
     return this.providerService.getAccount({
@@ -789,6 +837,10 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       roomIds: this.availabilityMultipleLines(inventoryRows, channelId),
     };
 
+    if (channelId === 3) {
+      await this.ensureAirbnbStandardPricingAvailability(client, channelId, propertyId);
+    }
+
     return client.pushAvailabilityMultiple(body);
   }
 
@@ -807,6 +859,10 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       ...(channelId === 3 ? { pnaModel: 'STANDARD' } : {}),
       roomIds: this.ratesMultipleLines(rateRows, channelId, priceModelId),
     };
+
+    if (channelId === 3) {
+      await this.ensureAirbnbStandardPricingAvailability(client, channelId, propertyId);
+    }
 
     return client.pushRatesMultiple(body);
   }
@@ -2411,6 +2467,20 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     }
 
     return value.trim();
+  }
+
+  private async ensureAirbnbStandardPricingAvailability(
+    client: ZodomusClient,
+    channelId: number,
+    propertyId: string,
+  ) {
+    await client.setAirbnbPricingAvailability({
+      channelId,
+      propertyId,
+      pricingAvailabilityModelType: 'STANDARD',
+      inModelTransition: 'false',
+      clearIncompatibleSettings: 'false',
+    });
   }
 
   private providerAvailabilityWindow(query: GetProviderAvailabilityQueryDto) {

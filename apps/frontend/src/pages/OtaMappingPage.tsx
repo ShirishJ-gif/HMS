@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { CatalogList, formatConnectionLabel, formatDateTime } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
 import { CustomSelect } from '../components/CustomSelect';
+import { PropertySetupPage } from './PropertySetupPage';
+import { RoomsPage } from './RoomsPage';
 import {
   labelCls,
   inputCls,
@@ -234,8 +236,8 @@ function buildOtaSetupSteps({
     { label: 'Catalog', done: catalogLoaded },
     { label: 'Rooms', done: roomMappingsCount > 0 },
     { label: 'Rates', done: rateMappingsCount > 0 },
-    { label: 'Activate', done: Boolean(setupStatus?.rooms_activated) },
-    { label: 'Ready', done: Boolean(setupStatus?.ready) },
+    { label: 'Activate rooms', done: Boolean(setupStatus?.rooms_activated) },
+    { label: 'Property check', done: Boolean(setupStatus?.ready) },
   ];
 }
 
@@ -451,11 +453,11 @@ function RoomConnectorMapper({
           Load the provider catalog for this connection before saving new room mappings.
         </div>
       )}
-      {!workspace.canMap && draftEntries.length > 0 && (
+      {/* {!workspace.canMap && draftEntries.length > 0 && (
         <div className="mb-4 border border-slate-200 bg-slate-50 px-4 py-3 text-[12px] font-medium text-slate-600">
           Saved room mappings are shown below. Load the provider catalog only when adding new mappings.
         </div>
-      )}
+      )} */}
       {hasSavedRemapDraft && (
         <div className="mb-4 border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] font-medium text-amber-800">
           Saved room mapping changes are staged. Save changes or cancel edit mode before adding more mappings.
@@ -1062,6 +1064,7 @@ function OtaConnectionSetup({
 
 /* ─── Inline panel tab types ─── */
 type PanelTab = 'mappings' | 'logs';
+type PropertySetupDrawerTab = 'property' | 'rooms';
 const expandedOtaCardStorageKey = 'hms_ota_mapping_expanded_connection_id';
 
 function FloatingSuccessToast({ message }: { message: string | null }) {
@@ -1072,6 +1075,112 @@ function FloatingSuccessToast({ message }: { message: string | null }) {
       <div className="w-full max-w-md shadow-2xl shadow-emerald-950/10">
         <SuccessMsg>{message}</SuccessMsg>
       </div>
+    </div>
+  );
+}
+
+function PropertySetupDrawer({
+  activeTab,
+  onClose,
+  onConfigureOta,
+  onTabChange,
+}: {
+  activeTab: PropertySetupDrawerTab;
+  onClose: () => void;
+  onConfigureOta: () => void;
+  onTabChange: (tab: PropertySetupDrawerTab) => void;
+}) {
+  const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
+  const tabs: Array<{ id: PropertySetupDrawerTab; label: string; description: string }> = [
+    { id: 'property', label: 'Property setup', description: 'Profile, rates & media' },
+    { id: 'rooms', label: 'Rooms', description: 'Physical inventory' },
+  ];
+  const contentClassName = activeTab === 'property'
+    ? 'min-h-0 flex-1 overflow-hidden bg-[#f5f5f3]'
+    : 'min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#f5f5f3]';
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/35">
+      <button
+        aria-label="Close property setup"
+        className="hidden flex-1 cursor-default md:block"
+        onClick={onClose}
+        type="button"
+      />
+      <aside className="flex h-full w-full max-w-[1640px] flex-col overflow-hidden border-l border-black/[0.06] bg-white shadow-2xl shadow-slate-950/20 md:w-[min(1640px,calc(100vw-0.5rem))]">
+        <div className="flex flex-shrink-0 items-center gap-4 border-b border-slate-100 bg-white px-5 py-3 lg:px-6">
+          <div className="min-w-0 flex-shrink-0">
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-600">OTA onboarding</p>
+            <h2 className="mt-0.5 text-[15px] font-bold tracking-tight text-slate-900">Add property</h2>
+          </div>
+
+          <div className="flex min-w-0 flex-1 justify-center">
+            <div className="relative grid w-full max-w-xl grid-cols-2">
+              <div className="absolute left-[25%] right-[25%] top-4 h-px bg-slate-200" />
+              {activeTab === 'rooms' && (
+                <div className="absolute left-[25%] right-[50%] top-4 h-px bg-emerald-500" />
+              )}
+              {tabs.map((tab, index) => {
+                const selected = activeTab === tab.id;
+                const completed = tab.id === 'property' && activeTab === 'rooms';
+                return (
+                  <button
+                    key={tab.id}
+                    className="relative flex min-w-0 flex-col items-center px-3 pb-0.5 text-center"
+                    onClick={() => onTabChange(tab.id)}
+                    type="button"
+                  >
+                    <span className={`relative z-10 flex h-8 w-8 items-center justify-center rounded-full border-2 text-[11px] font-bold transition ${
+                      selected
+                        ? 'border-emerald-600 bg-emerald-600 text-white'
+                        : completed
+                          ? 'border-emerald-500 bg-white text-emerald-600'
+                          : 'border-slate-200 bg-white text-slate-400'
+                    }`}>
+                      {completed ? (
+                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} viewBox="0 0 24 24">
+                          <path d="m5 12 4 4L19 6" />
+                        </svg>
+                      ) : (
+                        index + 1
+                      )}
+                    </span>
+                    <span className="mt-1.5 min-w-0">
+                      <span className={`block truncate text-[12px] font-bold ${selected || completed ? 'text-slate-900' : 'text-slate-500'}`}>{tab.label}</span>
+                      <span className="hidden truncate text-[10px] font-medium text-slate-400 sm:block">{tab.description}</span>
+                    </span>
+                    <span className={`mt-1.5 h-0.5 w-12 rounded-full ${selected ? 'bg-emerald-500' : 'bg-transparent'}`} />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <button
+            aria-label="Close"
+            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
+            onClick={onClose}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className={contentClassName}>
+          {activeTab === 'property' && (
+            <PropertySetupPage
+              controlledSelectedPropertyId={selectedPropertyId}
+              embedded
+              onAddRooms={() => onTabChange('rooms')}
+              onConfigureOta={onConfigureOta}
+              onSelectedPropertyIdChange={setSelectedPropertyId}
+            />
+          )}
+          {activeTab === 'rooms' && (
+            <RoomsPage embedded propertyId={selectedPropertyId} />
+          )}
+        </div>
+      </aside>
     </div>
   );
 }
@@ -1360,9 +1469,12 @@ export function OtaMappingPage({
   const [setupOtaKey, setSetupOtaKey] = useState<ChannelWorkspace['zodomusOtaKey'] | null>(null);
   const [eventConfirm, setEventConfirm] = useState(false);
   const [backfillConfirm, setBackfillConfirm] = useState(false);
+  const [roomsCancelConfirm, setRoomsCancelConfirm] = useState(false);
   const [removeMode, setRemoveMode] = useState(false);
   const [removeChoiceIds, setRemoveChoiceIds] = useState<string[]>([]);
   const [removeTargetId, setRemoveTargetId] = useState<string | null>(null);
+  const [propertySetupDrawerOpen, setPropertySetupDrawerOpen] = useState(false);
+  const [propertySetupDrawerTab, setPropertySetupDrawerTab] = useState<PropertySetupDrawerTab>('property');
 
   const conn = workspace.selectedConnection;
   const setup = workspace.persistedSetupStatus;
@@ -1402,6 +1514,7 @@ export function OtaMappingPage({
     .map(c => ({ key: c.id, label: c.provider_config_summary?.ota_name ?? c.provider, connection: c }));
   const allCards = [...channelCards, ...extraCards];
   const removeTarget = workspace.zodomusConnections.find(c => c.id === removeTargetId) ?? null;
+  const mappedExternalRoomIds = Array.from(new Set(conn?.room_mappings.map(mapping => mapping.external_room_id).filter(Boolean) ?? []));
 
   useEffect(() => {
     onFullWorkspaceChange?.(Boolean(detailId));
@@ -1422,6 +1535,15 @@ export function OtaMappingPage({
     setExpandedId(null);
     persistExpandedOtaCardId(null);
     setSetupOtaKey(otaKey);
+  };
+
+  const openPropertySetupDrawer = (tab: PropertySetupDrawerTab = 'property') => {
+    setPropertySetupDrawerTab(tab);
+    setPropertySetupDrawerOpen(true);
+  };
+
+  const closePropertySetupDrawer = () => {
+    setPropertySetupDrawerOpen(false);
   };
 
   const getConnectionOtaKey = (
@@ -1514,6 +1636,13 @@ export function OtaMappingPage({
       setupStatus: setup ?? undefined,
     });
     const doneSteps = STEPS.filter(s => s.done).length;
+    const OVERVIEW_STEPS = [
+      ...STEPS,
+      { label: 'Enable automation', done: automationSaved },
+      { label: 'Sync inventory', done: Boolean(workspace.latestInventorySyncLog) },
+      { label: 'Sync rates', done: Boolean(workspace.latestRateSyncLog) },
+    ];
+    const overviewDoneSteps = OVERVIEW_STEPS.filter(step => step.done).length;
 
     return (
       <div className="min-h-screen bg-[#f4f3f0] -mx-5 lg:-mx-8 -my-6 lg:-my-8">
@@ -1551,7 +1680,7 @@ export function OtaMappingPage({
         <div className="flex" style={{ minHeight: 'calc(100vh - 44px)' }}>
 
           {/* ── LEFT SIDEBAR ── */}
-          <aside className="w-60 flex-shrink-0 bg-white border-r border-black/[0.07] sticky top-[44px] self-start h-[calc(100vh-44px)] overflow-y-auto hidden lg:flex flex-col">
+          <aside className="hidden">
             {/* Brand identity */}
             <div className="relative p-5 flex-shrink-0" style={{ background: `linear-gradient(160deg, ${brand.bg}88 0%, white 65%)` }}>
               {connectionReady && (
@@ -1676,7 +1805,7 @@ export function OtaMappingPage({
             <FloatingSuccessToast message={workspace.status} />
 
             {/* Mobile-only identity (shown when sidebar is hidden) */}
-            <div className="lg:hidden bg-white border border-black/[0.07] rounded-xl p-4 flex items-center gap-3">
+            <div className="hidden">
               <div className="w-10 h-10 rounded-xl flex items-center justify-center text-[13px] font-bold flex-shrink-0"
                 style={{ backgroundColor: brand.bg, color: brand.color }}>{brand.abbr}</div>
               <div className="flex-1 min-w-0">
@@ -1688,6 +1817,91 @@ export function OtaMappingPage({
 
             {/* Sections */}
             <div className="space-y-3">
+
+              <div className="rounded-xl border border-slate-200 bg-white">
+                <div className="flex flex-col gap-4 px-4 py-4 xl:flex-row xl:items-start xl:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-white/70 text-[14px] font-bold"
+                      style={{ backgroundColor: brand.bg, color: brand.color }}>
+                      {brand.abbr}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-[15px] font-bold text-slate-900">{otaName}</h2>
+                        <StatusBadge status={conn.status} />
+                        {connectionReady && <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Ready</span>}
+                      </div>
+                      <p className="mt-0.5 text-[12px] text-slate-500">{conn.property.name}</p>
+                      {(channelId || conn.external_hotel_id) && (
+                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                          {channelId && <p className="text-[10.5px] text-slate-400">Channel ID <span className="font-mono text-slate-600">{channelId}</span></p>}
+                          {conn.external_hotel_id && <p className="text-[10.5px] text-slate-400">Hotel ID <span className="font-mono text-slate-600">{conn.external_hotel_id}</span></p>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5 xl:justify-end">
+                    <button type="button" onClick={() => void workspace.runInventorySync()} disabled={!automationSaved || workspace.pendingAction === 'inventory-sync'}
+                      className="h-7 rounded-lg border border-slate-200 bg-white px-2.5 text-[10.5px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-40">
+                      {workspace.pendingAction === 'inventory-sync' ? 'Working…' : 'Sync inventory'}
+                    </button>
+                    <button type="button" onClick={() => void workspace.runRatesSync()} disabled={!automationSaved || workspace.pendingAction === 'rates-sync'}
+                      className="h-7 rounded-lg border border-slate-200 bg-white px-2.5 text-[10.5px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-40">
+                      {workspace.pendingAction === 'rates-sync' ? 'Working…' : 'Sync rates'}
+                    </button>
+                  </div>
+
+                  {/* <div className="space-y-2 xl:w-[30rem]">
+                    {workspace.zodomusConnections.length > 1 && (
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        <span className="mr-1 text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Switch connection</span>
+                        {workspace.zodomusConnections.map(connection => {
+                          const connectionBrand = otaBrand(connection.provider_config_summary?.ota_name ?? undefined);
+                          const active = connection.id === conn.id;
+                          return (
+                            <button key={connection.id} type="button" onClick={() => !active && workspace.selectConnection(connection.id)}
+                              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition ${
+                                active ? 'border-slate-300 bg-slate-100 text-slate-900' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+                              }`}>
+                              <span className="flex h-4 w-4 items-center justify-center rounded text-[8px] font-bold"
+                                style={{ backgroundColor: connectionBrand.bg, color: connectionBrand.color }}>{connectionBrand.abbr}</span>
+                              {connection.property.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-3 overflow-hidden rounded-lg border border-slate-100 bg-slate-50/70">
+                      {([['Rooms', conn.room_mappings.length], ['Rates', conn.rate_mappings.length], ['Steps', `${overviewDoneSteps}/${OVERVIEW_STEPS.length}`]] as [string, string | number][]).map(([label, value], index) => (
+                        <div key={label} className={`px-3 py-2.5 ${index > 0 ? 'border-l border-slate-100' : ''}`}>
+                          <p className="text-[16px] font-bold leading-none text-slate-900">{value}</p>
+                          <p className="mt-1 text-[9px] font-bold uppercase tracking-wide text-slate-400">{label}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div> */}
+                </div>
+
+                <div className="space-y-3 border-t border-slate-100 px-4 py-3">
+                  <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Setup progress</p>
+                  <div className="flex items-start">
+                    {OVERVIEW_STEPS.map((step, index) => (
+                      <div key={step.label} className="flex min-w-0 flex-1 items-start">
+                        <div className="flex min-w-0 flex-1 flex-col items-center gap-1.5 px-1 text-center">
+                          <span className={`flex h-7 w-7 items-center justify-center rounded-full border-2 text-[10px] font-bold ${
+                            step.done ? 'border-emerald-500 bg-white text-emerald-600' : index === overviewDoneSteps ? 'border-amber-300 bg-white text-amber-600' : 'border-slate-200 bg-white text-slate-400'
+                          }`}>
+                            {step.done ? '✓' : index + 1}
+                          </span>
+                          <span className={`text-[10px] font-semibold leading-tight ${step.done ? 'text-slate-700' : index === overviewDoneSteps ? 'text-amber-600' : 'text-slate-400'}`}>{step.label}</span>
+                        </div>
+                        {index < OVERVIEW_STEPS.length - 1 && <span className={`mt-3.5 h-0.5 w-full max-w-8 rounded-full ${step.done ? 'bg-emerald-300' : 'bg-slate-200'}`} />}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
 
               <Section title="Provider catalog" badge="Room & rate IDs" accent="#6366f1" defaultOpen={!catLoaded}>
                 <div className="pt-3 space-y-3">
@@ -1703,6 +1917,10 @@ export function OtaMappingPage({
                     <button type="button" onClick={() => void workspace.activateMappedRooms()}
                       disabled={!workspace.canActivateMappedRooms || workspace.pendingAction === 'activate-mapped-rooms'} className={secondaryBtn}>
                       {workspace.pendingAction === 'activate-mapped-rooms' ? 'Activating…' : 'Activate mapped rooms'}
+                    </button>
+                    <button type="button" onClick={() => setRoomsCancelConfirm(true)}
+                      disabled={!workspace.canCancelMappedRooms || workspace.pendingAction === 'cancel-mapped-rooms'} className={secondaryBtn}>
+                      {workspace.pendingAction === 'cancel-mapped-rooms' ? 'Cancelling…' : 'Cancel mapped rooms'}
                     </button>
                     <button type="button" onClick={() => void workspace.runPropertyCheck()}
                       disabled={workspace.pendingAction === 'property-check'} className={secondaryBtn}>
@@ -1900,6 +2118,43 @@ export function OtaMappingPage({
           </main>
         </div>
 
+        {/* Rooms cancellation confirm modal */}
+        {roomsCancelConfirm && conn && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm">
+            <div className="w-full max-w-lg bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden">
+              <div className="p-5 border-b border-slate-100">
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-rose-500 mb-1">Zodomus room cancellation</p>
+                <h3 className="text-base font-bold text-slate-900">Cancel mapped room associations?</h3>
+                <p className="text-[13px] text-slate-500 mt-2 leading-relaxed">
+                  This will send {mappedExternalRoomIds.length} mapped Zodomus room ID{mappedExternalRoomIds.length === 1 ? '' : 's'} to {formatConnectionLabel(conn)}.
+                </p>
+                {mappedExternalRoomIds.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {mappedExternalRoomIds.slice(0, 8).map(roomId => (
+                      <span key={roomId} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-600">
+                        {roomId}
+                      </span>
+                    ))}
+                    {mappedExternalRoomIds.length > 8 && (
+                      <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-500">
+                        +{mappedExternalRoomIds.length - 8} more
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="p-4 bg-slate-50 flex justify-end gap-2">
+                <button className={secondaryBtn} disabled={workspace.pendingAction === 'cancel-mapped-rooms'} onClick={() => setRoomsCancelConfirm(false)} type="button">Cancel</button>
+                <button type="button" disabled={workspace.pendingAction === 'cancel-mapped-rooms'}
+                  onClick={() => { void workspace.cancelMappedRooms().then(() => setRoomsCancelConfirm(false)); }}
+                  className={primaryBtn}>
+                  {workspace.pendingAction === 'cancel-mapped-rooms' ? 'Cancelling…' : 'Cancel rooms'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Backfill confirm modal */}
         {backfillConfirm && conn && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm">
@@ -1938,8 +2193,8 @@ export function OtaMappingPage({
             <div className="grid flex-1 grid-cols-3 overflow-hidden rounded-xl border border-black/[0.07] bg-white shadow-sm sm:flex-none">
               {([
                 ['Connections', workspace.zodomusConnections.length, 'bg-indigo-500'],
-                ['Rooms', totalRooms, 'bg-emerald-500'],
-                ['Rates', totalRates, 'bg-amber-500'],
+                ['Mapped rooms', totalRooms, 'bg-emerald-500'],
+                ['Mapped rates', totalRates, 'bg-amber-500'],
               ] as [string, number, string][]).map(([label, value, dot], index) => (
                 <div
                   key={label}
@@ -1954,6 +2209,14 @@ export function OtaMappingPage({
               ))}
             </div>
           )}
+          <button
+            type="button"
+            className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 text-[13px] font-semibold text-emerald-800 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-100 active:bg-emerald-50 sm:w-auto"
+            onClick={() => openPropertySetupDrawer('property')}
+          >
+            <span className="text-[16px] font-semibold leading-none text-emerald-700">+</span>
+            Add property
+          </button>
           <button
             type="button"
             className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-[13px] font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 active:bg-white sm:w-auto"
@@ -1981,6 +2244,18 @@ export function OtaMappingPage({
       {workspace.loading && <LoadingMsg>Loading channel data…</LoadingMsg>}
       {workspace.error && <ErrorMsg>{workspace.error}</ErrorMsg>}
       <FloatingSuccessToast message={workspace.status} />
+      {propertySetupDrawerOpen && createPortal(
+        <PropertySetupDrawer
+          activeTab={propertySetupDrawerTab}
+          onClose={closePropertySetupDrawer}
+          onConfigureOta={() => {
+            setPropertySetupDrawerOpen(false);
+            setSetupOtaKey(workspace.zodomusOtaKey);
+          }}
+          onTabChange={setPropertySetupDrawerTab}
+        />,
+        document.body,
+      )}
       {removeMode && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-medium text-rose-700">
           Select a channel card to remove. If that channel has multiple saved connections, choose the exact connection next.
@@ -2013,10 +2288,9 @@ export function OtaMappingPage({
                 c?.provider_config_summary?.ota_name?.toLowerCase().includes('airbnb') ||
                 cOta.toLowerCase().includes('airbnb'),
               );
-              const useCurrentAirbnbActions = Boolean(cardIsAirbnb && c && c.id === conn?.id);
               const cardStepDetails = isConf && c
                 ? buildOtaSetupSteps({
-                    airbnbActions: useCurrentAirbnbActions ? workspace.airbnbCompletedActions : new Set<string>(),
+                    airbnbActions: cardIsAirbnb ? workspace.airbnbActionsForConnection(c.id) : new Set<string>(),
                     catalogLoaded: Boolean(c.provider_config_summary?.setup_status?.catalog_loaded) || (c.id === conn?.id && workspace.canMap),
                     channelId: cardChannelId,
                     otaName: cOta,

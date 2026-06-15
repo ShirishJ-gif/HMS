@@ -29,6 +29,9 @@ describe('RoomService', () => {
   const backgroundJobService = {
     queueInventorySyncsForProperty: jest.fn(),
   };
+  const inventoryService = {
+    acquireInventoryAllocationLock: jest.fn(),
+  };
 
   const property = {
     id: '11111111-1111-4111-8111-111111111111',
@@ -46,9 +49,16 @@ describe('RoomService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    prisma.$transaction.mockImplementation((queries) => Promise.all(queries));
+    prisma.$transaction.mockImplementation((input) =>
+      typeof input === 'function' ? input(prisma) : Promise.all(input),
+    );
     prisma.reservationRoom.count.mockResolvedValue(0);
-    service = new RoomService(prisma as never, auditLogService as never, backgroundJobService as never);
+    service = new RoomService(
+      prisma as never,
+      auditLogService as never,
+      backgroundJobService as never,
+      inventoryService as never,
+    );
   });
 
   it('creates a property-scoped physical room', async () => {
@@ -160,6 +170,11 @@ describe('RoomService', () => {
 
     await service.update(roomRecord().id, { status: RoomStatus.MAINTENANCE });
 
+    expect(inventoryService.acquireInventoryAllocationLock).toHaveBeenCalledWith(
+      prisma,
+      property.id,
+      roomCategory.id,
+    );
     expect(backgroundJobService.queueInventorySyncsForProperty).toHaveBeenCalledWith(property.id, {
       trigger: 'room_updated',
     });
@@ -186,6 +201,11 @@ describe('RoomService', () => {
 
     await expect(service.remove('7f43ac6b-743c-4e21-b3a3-931025058655')).rejects.toBeInstanceOf(
       ConflictException,
+    );
+    expect(inventoryService.acquireInventoryAllocationLock).toHaveBeenCalledWith(
+      prisma,
+      property.id,
+      roomCategory.id,
     );
     expect(prisma.room.delete).not.toHaveBeenCalled();
   });
@@ -238,6 +258,11 @@ describe('RoomService', () => {
       }),
     );
 
+    expect(inventoryService.acquireInventoryAllocationLock).toHaveBeenCalledWith(
+      prisma,
+      property.id,
+      roomCategory.id,
+    );
     expect(backgroundJobService.queueInventorySyncsForProperty).toHaveBeenCalledWith(property.id, {
       trigger: 'room_out_of_service_created',
     });

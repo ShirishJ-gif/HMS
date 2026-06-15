@@ -37,60 +37,43 @@ export class ZodomusChannelAdapter {
 
     if (payload.sync_type === ChannelSyncType.INVENTORY) {
       this.requireExternalHotelId(payload.external_hotel_id, payload.sync_type);
+      const isAirbnb = this.isAirbnbConnection(connectionConfig.channel_code, connectionConfig.ota_name);
+      if (isAirbnb) {
+        await this.ensureAirbnbStandardPricingAvailability(client, connectionConfig.channel_code, payload.external_hotel_id!);
+      }
       const inventoryRows = this.readPayloadArray(payload.inventory, 'inventory sync');
       const inventorySegments = this.batchInventoryRows(inventoryRows);
-      const rowResults = await this.mapWithConcurrency(
-        inventorySegments,
-        this.readSyncConcurrency(),
-        async (segment) => {
-          const response = await client
-            .pushAvailability({
-              channelId: Number(connectionConfig.channel_code),
-              propertyId: payload.external_hotel_id,
-              roomId: segment.external_room_id,
-              dateFrom: segment.date_from,
-              dateTo: segment.date_to,
-              availability: segment.available,
-              stopSell: segment.stop_sell ? 1 : 0,
-              closedToArrival: segment.closed_to_arrival ? 1 : 0,
-              closedToDeparture: segment.closed_to_departure ? 1 : 0,
-            })
-            .then((providerResponse) => {
-              const providerError = this.readProviderFailure(providerResponse);
-
-              return segment.rows.map((row) =>
-                providerError
-                  ? {
-                      date: row.date,
-                      external_room_id: segment.external_room_id,
-                      available: segment.available,
-                      status: 'FAILED' as const,
-                      error_message: providerError,
-                      provider_response: providerResponse,
-                    }
-                  : {
-                      date: row.date,
-                      external_room_id: segment.external_room_id,
-                      available: segment.available,
-                      status: 'SUCCEEDED' as const,
-                      provider_response: providerResponse,
-                    },
-              );
-            })
-            .catch((error: unknown) =>
-              segment.rows.map((row) => ({
+      const availabilityResponse = await client
+        .pushAvailabilityMultiple({
+          channelId: Number(connectionConfig.channel_code),
+          propertyId: payload.external_hotel_id,
+          ...(isAirbnb ? { pnaModel: 'STANDARD' } : {}),
+          roomIds: inventorySegments.map((segment) =>
+            this.availabilityMultipleLine(segment, Number(connectionConfig.channel_code)),
+          ),
+        })
+        .catch((error: unknown) => ({ error_message: this.readErrorMessage(error) }));
+      const providerError = this.readObjectString(availabilityResponse, 'error_message') ?? this.readProviderFailure(availabilityResponse);
+      const flattenedRowResults = inventorySegments.flatMap((segment) =>
+        segment.rows.map((row) =>
+          providerError
+            ? {
                 date: row.date,
                 external_room_id: segment.external_room_id,
                 available: segment.available,
                 status: 'FAILED' as const,
-                error_message: this.readErrorMessage(error),
-              })),
-            );
-
-          return response;
-        },
+                error_message: providerError,
+                provider_response: availabilityResponse,
+              }
+            : {
+                date: row.date,
+                external_room_id: segment.external_room_id,
+                available: segment.available,
+                status: 'SUCCEEDED' as const,
+                provider_response: availabilityResponse,
+              },
+        ),
       );
-      const flattenedRowResults = rowResults.flat();
       const succeededRows = flattenedRowResults.filter((result) => result.status === 'SUCCEEDED');
       const failedRows = flattenedRowResults.filter((result) => result.status === 'FAILED');
 
@@ -100,13 +83,12 @@ export class ZodomusChannelAdapter {
         environment: appCredentials.environment,
         external_hotel_id: payload.external_hotel_id,
         ota_name: connectionConfig.ota_name,
+        provider_endpoint: 'availability-multiple',
         date_from: payload.from ?? null,
         date_to: payload.to ?? null,
         room_count: inventoryRows.length,
         row_results: this.asJsonValue(flattenedRowResults),
-        response: this.asJsonValue(
-          succeededRows.flatMap((result) => ('provider_response' in result ? [result.provider_response] : [])),
-        ),
+        response: this.asJsonValue(succeededRows.length > 0 ? [availabilityResponse] : []),
         summary: {
           total_rows: flattenedRowResults.length,
           succeeded_rows: succeededRows.length,
@@ -118,59 +100,74 @@ export class ZodomusChannelAdapter {
     if (payload.sync_type === ChannelSyncType.RATES) {
       this.requireExternalHotelId(payload.external_hotel_id, payload.sync_type);
       const propertyId = payload.external_hotel_id!;
+      const isAirbnb = this.isAirbnbConnection(connectionConfig.channel_code, connectionConfig.ota_name);
+      if (isAirbnb) {
+        await this.ensureAirbnbStandardPricingAvailability(client, connectionConfig.channel_code, propertyId);
+      }
       const rateRows = this.readPayloadArray(payload.rates, 'rate sync');
       const rateSegments = this.batchRateRows(rateRows);
       const priceModelId = this.readPriceModelId(payload.price_model_id);
-      const rowResults = await this.mapWithConcurrency(
-        rateSegments,
-        this.readSyncConcurrency(),
-        async (segment) => {
-          const endpoint = this.rateEndpointForPriceModel(priceModelId);
-          return this.pushRateSegment(client, {
-            endpoint,
-            channelId: Number(connectionConfig.channel_code),
-            propertyId,
-            segment,
-          })
-            .then((providerResponse) => {
-              const providerError = this.readProviderFailure(providerResponse);
-
-              return segment.rows.map((row) =>
-                providerError
-                  ? {
-                      date: row.date,
-                      external_room_id: segment.external_room_id,
-                      external_rate_id: segment.external_rate_id,
-                      base_rate: segment.base_rate,
-                      endpoint,
-                      status: 'FAILED' as const,
-                      error_message: providerError,
-                      provider_response: providerResponse,
-                    }
-                  : {
-                      date: row.date,
-                      external_room_id: segment.external_room_id,
-                      external_rate_id: segment.external_rate_id,
-                      base_rate: segment.base_rate,
-                      endpoint,
-                      status: 'SUCCEEDED' as const,
-                      provider_response: providerResponse,
-                    },
-              );
-            })
-            .catch((error: unknown) =>
-              segment.rows.map((row) => ({
-                date: row.date,
-                external_room_id: segment.external_room_id,
-                external_rate_id: segment.external_rate_id,
-                base_rate: segment.base_rate,
+      const endpoint = this.rateEndpointForPriceModel(priceModelId);
+      const rowResults = this.canUseRatesMultiple(endpoint)
+        ? [
+            await this.pushRatesMultiple(client, {
+              endpoint,
+              pnaModel: isAirbnb ? 'STANDARD' : undefined,
+              channelId: Number(connectionConfig.channel_code),
+              propertyId,
+              segments: rateSegments,
+            }),
+          ]
+        : await this.mapWithConcurrency(
+            rateSegments,
+            this.readSyncConcurrency(),
+            async (segment) => {
+              return this.pushRateSegment(client, {
                 endpoint,
-                status: 'FAILED' as const,
-                error_message: this.readErrorMessage(error),
-              })),
-            );
-        },
-      );
+                pnaModel: isAirbnb ? 'STANDARD' : undefined,
+                channelId: Number(connectionConfig.channel_code),
+                propertyId,
+                segment,
+              })
+                .then((providerResponse) => {
+                  const providerError = this.readProviderFailure(providerResponse);
+
+                  return segment.rows.map((row) =>
+                    providerError
+                      ? {
+                          date: row.date,
+                          external_room_id: segment.external_room_id,
+                          external_rate_id: segment.external_rate_id,
+                          base_rate: segment.base_rate,
+                          endpoint,
+                          status: 'FAILED' as const,
+                          error_message: providerError,
+                          provider_response: providerResponse,
+                        }
+                      : {
+                          date: row.date,
+                          external_room_id: segment.external_room_id,
+                          external_rate_id: segment.external_rate_id,
+                          base_rate: segment.base_rate,
+                          endpoint,
+                          status: 'SUCCEEDED' as const,
+                          provider_response: providerResponse,
+                        },
+                  );
+                })
+                .catch((error: unknown) =>
+                  segment.rows.map((row) => ({
+                    date: row.date,
+                    external_room_id: segment.external_room_id,
+                    external_rate_id: segment.external_rate_id,
+                    base_rate: segment.base_rate,
+                    endpoint,
+                    status: 'FAILED' as const,
+                    error_message: this.readErrorMessage(error),
+                  })),
+                );
+            },
+          );
       const flattenedRowResults = rowResults.flat();
       const succeededRows = flattenedRowResults.filter((result) => result.status === 'SUCCEEDED');
       const failedRows = flattenedRowResults.filter((result) => result.status === 'FAILED');
@@ -182,6 +179,7 @@ export class ZodomusChannelAdapter {
         external_hotel_id: payload.external_hotel_id,
         ota_name: connectionConfig.ota_name,
         price_model_id: priceModelId,
+        provider_endpoint: this.canUseRatesMultiple(endpoint) ? 'rates-multiple' : endpoint,
         date_from: payload.from ?? null,
         date_to: payload.to ?? null,
         rate_count: rateRows.length,
@@ -377,6 +375,12 @@ export class ZodomusChannelAdapter {
     return this.readProviderReturnMessage(response) ?? `Provider returned code ${returnCode ?? 'unknown'}`;
   }
 
+  private readObjectString(value: unknown, key: string) {
+    const record = this.readObject(value);
+    const candidate = record[key];
+    return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
+  }
+
   private readSyncConcurrency() {
     const raw = process.env.ZODOMUS_SYNC_CONCURRENCY?.trim();
     if (!raw) {
@@ -449,6 +453,10 @@ export class ZodomusChannelAdapter {
 
   private readProviderStatusRecord(response: unknown) {
     const wrapper = this.readPayloadRecord(response, 'provider response');
+    if ('status' in wrapper) {
+      return this.readPayloadRecord(wrapper.status, 'provider response status');
+    }
+
     const responseRecord =
       'response' in wrapper ? this.readPayloadRecord(wrapper.response, 'provider response body') : wrapper;
     return 'status' in responseRecord
@@ -538,6 +546,38 @@ export class ZodomusChannelAdapter {
 
     const client = new ZodomusClient(appCredentials);
     const response = await client.activateRooms({
+      channelId: Number(connectionConfig.channel_code),
+      propertyId: payload.external_hotel_id,
+      rooms: normalizedRooms,
+    });
+
+    return {
+      provider: payload.provider,
+      external_hotel_id: payload.external_hotel_id,
+      channel_id: Number(connectionConfig.channel_code),
+      ota_name: connectionConfig.ota_name,
+      rooms: this.asJsonValue(normalizedRooms),
+      response: this.asJsonValue(response),
+    };
+  }
+
+  async cancelRooms(payload: ChannelPropertyActionPayload): Promise<Prisma.InputJsonObject> {
+    const appCredentials = readZodomusAppCredentials();
+    const connectionConfig = readZodomusConnectionConfig(payload.credentials);
+    if (!payload.external_hotel_id) {
+      throw new BadRequestException('Zodomus room cancellation requires external_hotel_id on the channel connection.');
+    }
+
+    const rooms = this.readPayloadArray(payload.rooms, 'rooms cancellation');
+    const normalizedRooms = rooms.map((room) => {
+      const record = this.readPayloadRecord(room, 'rooms cancellation item');
+      return {
+        roomId: this.requiredString(record.roomId, 'rooms.roomId'),
+      };
+    });
+
+    const client = new ZodomusClient(appCredentials);
+    const response = await client.cancelRooms({
       channelId: Number(connectionConfig.channel_code),
       propertyId: payload.external_hotel_id,
       rooms: normalizedRooms,
@@ -1101,10 +1141,153 @@ export class ZodomusChannelAdapter {
     return priceModelId === 2 ? 'rates-derived' : 'rates';
   }
 
+  private canUseRatesMultiple(
+    endpoint: 'rates' | 'rates-derived' | 'rates-occupancy' | 'rates-per-day' | 'rates-length-of-stay',
+  ) {
+    return endpoint === 'rates' || endpoint === 'rates-occupancy' || endpoint === 'rates-per-day';
+  }
+
+  private availabilityMultipleLine(
+    segment: {
+      external_room_id: string;
+      available: number;
+      stop_sell: boolean;
+      closed_to_arrival: boolean;
+      closed_to_departure: boolean;
+      date_from: string;
+      date_to: string;
+    },
+    channelId: number,
+  ) {
+    return {
+      roomId: segment.external_room_id,
+      dateFrom: segment.date_from,
+      dateTo: segment.date_to,
+      availability: channelId === 2 ? segment.available.toString() : segment.available,
+      stopSell: segment.stop_sell ? 1 : 0,
+      closedToArrival: segment.closed_to_arrival ? 1 : 0,
+      closedToDeparture: segment.closed_to_departure ? 1 : 0,
+    };
+  }
+
+  private async pushRatesMultiple(
+    client: ZodomusClient,
+    input: {
+      endpoint: 'rates' | 'rates-occupancy' | 'rates-per-day';
+      pnaModel?: 'STANDARD';
+      channelId: number;
+      propertyId: string;
+      segments: Array<{
+        external_room_id: string;
+        external_rate_id: string;
+        currency: string;
+        base_rate: number;
+        room_category_max_occupancy: number | null;
+        pricing_config: Record<string, unknown>;
+        closed: boolean;
+        closed_to_arrival: boolean;
+        closed_to_departure: boolean;
+        min_stay: number | null;
+        max_stay: number | null;
+        date_from: string;
+        date_to: string;
+        rows: Array<{ date: string }>;
+      }>;
+    },
+  ) {
+    const providerResponse = await client
+      .pushRatesMultiple({
+        channelId: input.channelId,
+        propertyId: input.propertyId,
+        ...(input.pnaModel ? { pnaModel: input.pnaModel } : {}),
+        roomIds: input.segments.map((segment) => this.ratesMultipleLine(segment, input.channelId, input.endpoint)),
+      })
+      .catch((error: unknown) => ({ error_message: this.readErrorMessage(error) }));
+
+    const providerError = this.readObjectString(providerResponse, 'error_message') ?? this.readProviderFailure(providerResponse);
+
+    return input.segments.flatMap((segment) =>
+      segment.rows.map((row) =>
+        providerError
+          ? {
+              date: row.date,
+              external_room_id: segment.external_room_id,
+              external_rate_id: segment.external_rate_id,
+              base_rate: segment.base_rate,
+              endpoint: input.endpoint,
+              status: 'FAILED' as const,
+              error_message: providerError,
+              provider_response: providerResponse,
+            }
+          : {
+              date: row.date,
+              external_room_id: segment.external_room_id,
+              external_rate_id: segment.external_rate_id,
+              base_rate: segment.base_rate,
+              endpoint: input.endpoint,
+              status: 'SUCCEEDED' as const,
+              provider_response: providerResponse,
+            },
+      ),
+    );
+  }
+
+  private ratesMultipleLine(
+    segment: {
+      external_room_id: string;
+      external_rate_id: string;
+      currency: string;
+      base_rate: number;
+      room_category_max_occupancy: number | null;
+      pricing_config: Record<string, unknown>;
+      closed: boolean;
+      closed_to_arrival: boolean;
+      closed_to_departure: boolean;
+      min_stay: number | null;
+      max_stay: number | null;
+      date_from: string;
+      date_to: string;
+    },
+    channelId: number,
+    endpoint: 'rates' | 'rates-occupancy' | 'rates-per-day',
+  ) {
+    const baseLine = {
+      roomId: segment.external_room_id,
+      dateFrom: segment.date_from,
+      dateTo: segment.date_to,
+      currencyCode: segment.currency,
+      rateId: segment.external_rate_id,
+      prices:
+        endpoint === 'rates-occupancy'
+          ? this.occupancyPricesForSegment(segment)
+          : endpoint === 'rates-per-day'
+            ? { price: segment.base_rate.toFixed(2) }
+            : this.ratePricesForSegment(segment),
+      closed: channelId === 3 ? (segment.closed ? 1 : 0) : segment.closed ? '1' : '0',
+    };
+
+    if (channelId === 3) {
+      return {
+        ...baseLine,
+        minimumStay: segment.min_stay ?? 1,
+        maximumStay: segment.max_stay ?? 31,
+      };
+    }
+
+    return {
+      ...baseLine,
+      closedToArrival: segment.closed_to_arrival ? '1' : '0',
+      closedToDeparture: segment.closed_to_departure ? '1' : '0',
+      minimumStay: (segment.min_stay ?? 1).toString(),
+      maximumStay: (segment.max_stay ?? 31).toString(),
+    };
+  }
+
   private async pushRateSegment(
     client: ZodomusClient,
     input: {
       endpoint: 'rates' | 'rates-derived' | 'rates-occupancy' | 'rates-per-day' | 'rates-length-of-stay';
+      pnaModel?: 'STANDARD';
       channelId: number;
       propertyId: string;
       segment: {
@@ -1127,6 +1310,7 @@ export class ZodomusChannelAdapter {
     const defaultRateResponse = await client.pushRates({
       channelId: input.channelId,
       propertyId: input.propertyId,
+      ...(input.pnaModel ? { pnaModel: input.pnaModel } : {}),
       roomId: input.segment.external_room_id,
       rateId: input.segment.external_rate_id,
       dateFrom: input.segment.date_from,
@@ -1164,6 +1348,7 @@ export class ZodomusChannelAdapter {
     const derivedRateResponse = await client.pushDerivedRates({
       channelId: input.channelId,
       propertyId: input.propertyId,
+      ...(input.pnaModel ? { pnaModel: input.pnaModel } : {}),
       roomId: input.segment.external_room_id,
       rateId: input.segment.external_rate_id,
       baseOccupancy: this.derivedBaseOccupancy(input.segment),
@@ -1174,6 +1359,24 @@ export class ZodomusChannelAdapter {
       default_rate: defaultRateResponse,
       derived_rate: derivedRateResponse,
     };
+  }
+
+  private isAirbnbConnection(channelCode: string | number | null | undefined, otaName: string | null | undefined) {
+    return Number(channelCode) === 3 || Boolean(otaName?.toLowerCase().includes('airbnb'));
+  }
+
+  private async ensureAirbnbStandardPricingAvailability(
+    client: ZodomusClient,
+    channelCode: string | number,
+    propertyId: string,
+  ) {
+    await client.setAirbnbPricingAvailability({
+      channelId: Number(channelCode),
+      propertyId,
+      pricingAvailabilityModelType: 'STANDARD',
+      inModelTransition: 'false',
+      clearIncompatibleSettings: 'false',
+    });
   }
 
   private ratePricesForSegment(segment: { base_rate: number; room_category_max_occupancy: number | null }) {

@@ -1360,6 +1360,173 @@ describe('App integration', () => {
     expect(concurrencyGroups).toHaveLength(1);
   });
 
+  it('allows only one simultaneous check-in to claim the last physical room', async () => {
+    const fixture = await createLocalInventoryFixture('checkin-race');
+    const arrivalDate = new Date('2027-01-10T00:00:00.000Z');
+    const departureDate = new Date('2027-01-11T00:00:00.000Z');
+    const groups = await Promise.all(
+      ['first', 'second'].map((suffix) =>
+        prisma.reservationGroup.create({
+          data: {
+            propertyId: propertyAId,
+            primaryGuestId: suffix === 'first' ? guestA1Id : guestA2Id,
+            externalReservationId: `${tag}-checkin-race-${suffix}`,
+            externalStatus: 'CONFIRMED',
+            source: 'DIRECT',
+            status: 'BOOKED',
+            rooms: {
+              create: {
+                propertyId: propertyAId,
+                externalRoomReservationId: `${tag}-checkin-race-${suffix}-line`,
+                externalRoomId: `DIRECT:${fixture.roomCategoryId}`,
+                roomCategoryId: fixture.roomCategoryId,
+                ratePlanId: fixture.ratePlanId,
+                arrivalDate,
+                departureDate,
+                status: 'BOOKED',
+                guestName: `Check-in Race ${suffix}`,
+              },
+            },
+          },
+          include: { rooms: true },
+        }),
+      ),
+    );
+
+    const [first, second] = await Promise.all(
+      groups.map((group) =>
+        request(app.getHttpServer())
+          .put(`/bookings/groups/rooms/${group.rooms[0].id}/checkin`)
+          .set('Authorization', `Bearer ${adminAToken}`),
+      ),
+    );
+
+    expect([first.status, second.status].sort((left, right) => left - right)).toEqual([200, 409]);
+    expect(
+      await prisma.reservationRoom.count({
+        where: {
+          id: { in: groups.map((group) => group.rooms[0].id) },
+          status: 'CHECKED_IN',
+          roomId: fixture.roomId,
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('serializes manual inventory blocks against direct reservations', async () => {
+    const fixture = await createLocalInventoryFixture('block-race');
+    const payload = {
+      property_id: propertyAId,
+      room_category_id: fixture.roomCategoryId,
+      from_date: '2027-02-10',
+      to_date: '2027-02-10',
+      blocked_rooms: 1,
+      reason: 'Concurrency test block',
+    };
+
+    const [booking, block] = await Promise.all([
+      request(app.getHttpServer())
+        .post('/reservations/direct')
+        .set('Authorization', `Bearer ${adminAToken}`)
+        .send({
+          property_id: propertyAId,
+          room_category_id: fixture.roomCategoryId,
+          rate_plan_id: fixture.ratePlanId,
+          check_in_date: '2027-02-10',
+          check_out_date: '2027-02-11',
+          room_count: 1,
+          guest_id: guestA1Id,
+          remarks: 'Concurrency booking versus block',
+        }),
+      request(app.getHttpServer())
+        .post('/inventory/block')
+        .set('Authorization', `Bearer ${adminAToken}`)
+        .send(payload),
+    ]);
+
+    expect([booking.status, block.status].sort((left, right) => left - right)).toEqual([201, 409]);
+    const [reservationCount, blockCount] = await Promise.all([
+      prisma.reservationGroup.count({
+        where: { propertyId: propertyAId, remarks: 'Concurrency booking versus block' },
+      }),
+      prisma.inventoryBlock.count({
+        where: { propertyId: propertyAId, roomCategoryId: fixture.roomCategoryId },
+      }),
+    ]);
+    expect(reservationCount + blockCount).toBe(1);
+  });
+
+  it('flags an OTA reservation import when a direct booking already sold the last room', async () => {
+    const fixture = await createLocalInventoryFixture('ota-conflict');
+    const externalRoomId = `${tag}-ota-conflict-ext-room`;
+    const externalRateId = `${tag}-ota-conflict-ext-rate`;
+    const connection = await prisma.channelConnection.create({
+      data: {
+        propertyId: propertyAId,
+        provider: 'ZODOMUS',
+        name: `${tag}-ota-conflict-connection`,
+        status: 'ACTIVE',
+        externalHotelId: `${tag}-ota-conflict-hotel`,
+        credentials: { ota_key: 'BOOKING_COM' },
+      },
+    });
+    await prisma.channelRoomMapping.create({
+      data: {
+        channelConnectionId: connection.id,
+        roomCategoryId: fixture.roomCategoryId,
+        externalRoomId,
+        externalRoomName: 'OTA conflict room',
+      },
+    });
+    await prisma.channelRateMapping.create({
+      data: {
+        channelConnectionId: connection.id,
+        ratePlanId: fixture.ratePlanId,
+        externalRoomId,
+        externalRateId,
+        externalRateName: 'OTA conflict rate',
+      },
+    });
+    const arrivalDate = serviceDateOffset(50);
+    const departureDate = serviceDateOffset(51);
+
+    await request(app.getHttpServer())
+      .post('/reservations/direct')
+      .set('Authorization', `Bearer ${adminAToken}`)
+      .send({
+        property_id: propertyAId,
+        room_category_id: fixture.roomCategoryId,
+        rate_plan_id: fixture.ratePlanId,
+        check_in_date: arrivalDate,
+        check_out_date: departureDate,
+        room_count: 1,
+        guest_id: guestA1Id,
+        remarks: 'Direct booking before OTA conflict',
+      })
+      .expect(201);
+
+    const summary = await zodomusReservationImportService.importFromSync({
+      channelConnectionId: connection.id,
+      propertyId: propertyAId,
+      responsePayload: buildProviderReservationSyncPayload({
+        reservationId: `${tag}-ota-conflict`,
+        roomReservationId: `${tag}-ota-conflict-line`,
+        externalRoomId,
+        externalRateId,
+        arrivalDate,
+        departureDate,
+        totalAmount: '2800',
+        guestName: 'OTA Conflict Guest',
+      }),
+    });
+
+    expect(summary.created).toBe(0);
+    expect(summary.failed).toBe(1);
+    expect(summary.errors[0]).toContain('Insufficient inventory');
+
+    await prisma.channelConnection.delete({ where: { id: connection.id } });
+  });
+
   it('enforces stop-sell and min-stay rules for OTA reservation import', async () => {
     await request(app.getHttpServer())
       .post('/inventory/restrictions')
@@ -2405,6 +2572,42 @@ describe('App integration', () => {
           },
         },
       ],
+    };
+  }
+
+  async function createLocalInventoryFixture(label: string) {
+    const suffix = label.replace(/[^a-z0-9]/gi, '').slice(0, 8);
+    const roomCategory = await prisma.roomCategory.create({
+      data: {
+        propertyId: propertyAId,
+        name: `${tag}-${label}-Category`,
+        code: `${tag}-${suffix}-LOCAL-CAT`.slice(0, 40),
+        maxOccupancy: 2,
+      },
+    });
+    const ratePlan = await prisma.ratePlan.create({
+      data: {
+        propertyId: propertyAId,
+        roomCategoryId: roomCategory.id,
+        name: `${tag}-${label}-Rate`,
+        code: `${tag}-${suffix}-LOCAL-RATE`.slice(0, 40),
+        baseRate: '2800.00',
+        currency: 'INR',
+        isActive: true,
+      },
+    });
+    const room = await prisma.room.create({
+      data: {
+        propertyId: propertyAId,
+        roomCategoryId: roomCategory.id,
+        roomNumber: `${tag}${suffix}`.slice(0, 20),
+      },
+    });
+
+    return {
+      roomCategoryId: roomCategory.id,
+      ratePlanId: ratePlan.id,
+      roomId: room.id,
     };
   }
 

@@ -649,7 +649,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
                       <Td><StatusBadge label={group.import_blocked ? 'IMPORT_BLOCKED' : group.reservation_status} tone={group.import_blocked ? 'rose' : undefined} /></Td>
                       <Td>
                         <button
-                          className={`${secondaryBtn} !text-xs !px-2.5 !py-1.5 ${selectedGroupId === group.id ? '!bg-slate-800 !text-white !border-slate-800' : ''}`}
+                          className={`${secondaryBtn} !text-xs !px-2.5 !py-1.5 ${selectedGroupId === group.id ? '!bg-slate-50 !text-slate-700 !border-slate-300' : ''}`}
                           onClick={() => setSelectedGroupId(id => id === group.id ? null : group.id)}
                           type="button"
                         >
@@ -789,7 +789,7 @@ function ReservationFeedDetails({ group, pendingId, onCheckIn, onCheckOut, onSen
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">{group.import_blocked ? 'Import blocker' : 'Reservation detail'}</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">{group.import_blocked ? 'Import blocker' : 'Reservation detail'}</p>
           <h3 className="text-base font-bold text-slate-900">{group.primary_guest?.name ?? 'Imported guest'}</h3>
           <p className="text-sm text-slate-500">{group.property.name} · {group.external_reservation_id}{group.arrival_date && group.departure_date ? ` · ${group.arrival_date} to ${group.departure_date}` : ''}</p>
         </div>
@@ -826,7 +826,7 @@ function ReservationFeedDetails({ group, pendingId, onCheckIn, onCheckOut, onSen
           <div key={room.id} className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
             <div className="flex items-start justify-between gap-2">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-amber-500 mb-0.5">Room line {room.external_room_reservation_id}</p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Room line {room.external_room_reservation_id}</p>
                 <h4 className="text-sm font-bold text-slate-900">{room.room_category.name}</h4>
                 <p className="text-xs text-slate-500">Assigned: {room.room.room_number ?? 'Not assigned'}</p>
               </div>

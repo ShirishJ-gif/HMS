@@ -19,13 +19,13 @@ describe('ZodomusChannelAdapter', () => {
     jest.restoreAllMocks();
   });
 
-  it('batches contiguous inventory rows with the same availability into one provider call', async () => {
+  it('posts contiguous inventory segments through availability-multiple', async () => {
     const adapter = new ZodomusChannelAdapter();
-    const pushAvailability = jest
-      .spyOn(ZodomusClient.prototype, 'pushAvailability')
+    const pushAvailabilityMultiple = jest
+      .spyOn(ZodomusClient.prototype, 'pushAvailabilityMultiple')
       .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
 
-    await adapter.push({
+    const response = await adapter.push({
       provider: ChannelProvider.ZODOMUS,
       sync_type: ChannelSyncType.INVENTORY,
       property_id: 'property-id',
@@ -54,42 +54,35 @@ describe('ZodomusChannelAdapter', () => {
       ],
     });
 
-    expect(pushAvailability).toHaveBeenCalledTimes(2);
-    expect(pushAvailability).toHaveBeenNthCalledWith(
-      1,
+    expect(pushAvailabilityMultiple).toHaveBeenCalledTimes(1);
+    expect(pushAvailabilityMultiple).toHaveBeenCalledWith(
       expect.objectContaining({
-        dateFrom: '2026-06-01',
-        dateTo: '2026-06-03',
-        roomId: '10001',
-        availability: 2,
+        channelId: 1,
+        propertyId: '100',
+        roomIds: [
+          expect.objectContaining({
+            dateFrom: '2026-06-01',
+            dateTo: '2026-06-03',
+            roomId: '10001',
+            availability: 2,
+          }),
+          expect.objectContaining({
+            dateFrom: '2026-06-03',
+            dateTo: '2026-06-04',
+            roomId: '10001',
+            availability: 1,
+          }),
+        ],
       }),
     );
-    expect(pushAvailability).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        dateFrom: '2026-06-03',
-        dateTo: '2026-06-04',
-        roomId: '10001',
-        availability: 1,
-      }),
-    );
+    expect(response.provider_endpoint).toBe('availability-multiple');
   });
 
-  it('returns row-level partial failure details for inventory syncs', async () => {
+  it('marks every inventory row failed when availability-multiple transport fails', async () => {
     const adapter = new ZodomusChannelAdapter();
     jest
-      .spyOn(ZodomusClient.prototype, 'pushAvailability')
-      .mockImplementation(async (body: unknown) => {
-        const dateFrom =
-          body && typeof body === 'object' && !Array.isArray(body) && typeof (body as { dateFrom?: unknown }).dateFrom === 'string'
-            ? (body as { dateFrom: string }).dateFrom
-            : '';
-        if (dateFrom === '2026-06-02') {
-          throw new Error('provider timeout');
-        }
-
-        return { status: { returnCode: 200, returnMessage: 'OK' } } as never;
-      });
+      .spyOn(ZodomusClient.prototype, 'pushAvailabilityMultiple')
+      .mockRejectedValue(new Error('provider timeout') as never);
 
     const response = await adapter.push({
       provider: ChannelProvider.ZODOMUS,
@@ -117,15 +110,16 @@ describe('ZodomusChannelAdapter', () => {
 
     expect(response.summary).toEqual({
       total_rows: 2,
-      succeeded_rows: 1,
-      failed_rows: 1,
+      succeeded_rows: 0,
+      failed_rows: 2,
     });
     expect(response.row_results).toEqual([
       expect.objectContaining({
         date: '2026-06-01',
         external_room_id: '10001',
         available: 2,
-        status: 'SUCCEEDED',
+        status: 'FAILED',
+        error_message: 'provider timeout',
       }),
       expect.objectContaining({
         date: '2026-06-02',
@@ -140,7 +134,7 @@ describe('ZodomusChannelAdapter', () => {
   it('marks inventory rows as failed when the provider returns a non-200 status', async () => {
     const adapter = new ZodomusChannelAdapter();
     jest
-      .spyOn(ZodomusClient.prototype, 'pushAvailability')
+      .spyOn(ZodomusClient.prototype, 'pushAvailabilityMultiple')
       .mockResolvedValue({ status: { returnCode: 400, returnMessage: 'Property status not Active' } } as never);
 
     const response = await adapter.push({
@@ -178,13 +172,107 @@ describe('ZodomusChannelAdapter', () => {
     ]);
   });
 
-  it('batches contiguous rate rows with the same nightly price into one provider call', async () => {
+  it('treats top-level numeric returnCode 200 with response body as inventory success', async () => {
     const adapter = new ZodomusChannelAdapter();
-    const pushRates = jest
-      .spyOn(ZodomusClient.prototype, 'pushRates')
+    jest
+      .spyOn(ZodomusClient.prototype, 'pushAvailabilityMultiple')
+      .mockResolvedValue({
+        status: {
+          timestamp: '2026-06-02 09:07:07',
+          returnCode: 200,
+          returnMessage: 'OK',
+        },
+        response: {
+          success: true,
+        },
+      } as never);
+
+    const response = await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.INVENTORY,
+      property_id: 'property-id',
+      external_hotel_id: '100',
+      credentials: {
+        ota_key: 'BOOKING_COM',
+      },
+      from: '2026-06-02',
+      to: '2026-06-02',
+      inventory: [
+        {
+          date: '2026-06-02',
+          external_room_id: '1201',
+          available: 3,
+        },
+      ],
+    });
+
+    expect(response.summary).toEqual({
+      total_rows: 1,
+      succeeded_rows: 1,
+      failed_rows: 0,
+    });
+    expect(response.row_results).toEqual([
+      expect.objectContaining({
+        date: '2026-06-02',
+        external_room_id: '1201',
+        available: 3,
+        status: 'SUCCEEDED',
+      }),
+    ]);
+  });
+
+  it('confirms Airbnb STANDARD pricing availability before inventory sync', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const setAirbnbPricingAvailability = jest
+      .spyOn(ZodomusClient.prototype, 'setAirbnbPricingAvailability')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+    const pushAvailabilityMultiple = jest
+      .spyOn(ZodomusClient.prototype, 'pushAvailabilityMultiple')
       .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
 
     await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.INVENTORY,
+      property_id: 'property-id',
+      external_hotel_id: '51224597',
+      credentials: {
+        ota_key: 'AIRBNB',
+      },
+      inventory: [
+        {
+          date: '2026-06-01',
+          external_room_id: '10001',
+          available: 2,
+        },
+      ],
+    });
+
+    expect(setAirbnbPricingAvailability).toHaveBeenCalledWith({
+      channelId: 3,
+      propertyId: '51224597',
+      pricingAvailabilityModelType: 'STANDARD',
+      inModelTransition: 'false',
+      clearIncompatibleSettings: 'false',
+    });
+    expect(pushAvailabilityMultiple).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: 3,
+        propertyId: '51224597',
+        pnaModel: 'STANDARD',
+      }),
+    );
+    expect(setAirbnbPricingAvailability.mock.invocationCallOrder[0]).toBeLessThan(
+      pushAvailabilityMultiple.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('posts contiguous rate segments through rates-multiple', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const pushRatesMultiple = jest
+      .spyOn(ZodomusClient.prototype, 'pushRatesMultiple')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+
+    const response = await adapter.push({
       provider: ChannelProvider.ZODOMUS,
       sync_type: ChannelSyncType.RATES,
       property_id: 'property-id',
@@ -222,46 +310,98 @@ describe('ZodomusChannelAdapter', () => {
       ],
     });
 
-    expect(pushRates).toHaveBeenCalledTimes(2);
-    expect(pushRates).toHaveBeenNthCalledWith(
-      1,
+    expect(pushRatesMultiple).toHaveBeenCalledTimes(1);
+    expect(pushRatesMultiple).toHaveBeenCalledWith(
       expect.objectContaining({
-        dateFrom: '2026-06-01',
-        dateTo: '2026-06-03',
-        roomId: '10001',
-        rateId: '100991',
-        prices: expect.objectContaining({
-          price: '5000.00',
-          priceSingle: '5000.00',
-        }),
-        closed: '0',
-        minimumStay: '1',
-        maximumStay: '31',
+        channelId: 1,
+        propertyId: '100',
+        roomIds: [
+          expect.objectContaining({
+            dateFrom: '2026-06-01',
+            dateTo: '2026-06-03',
+            roomId: '10001',
+            rateId: '100991',
+            prices: expect.objectContaining({
+              price: '5000.00',
+              priceSingle: '5000.00',
+            }),
+            closed: '0',
+            minimumStay: '1',
+            maximumStay: '31',
+          }),
+          expect.objectContaining({
+            dateFrom: '2026-06-03',
+            dateTo: '2026-06-04',
+            roomId: '10001',
+            rateId: '100991',
+            prices: expect.objectContaining({
+              price: '6200.00',
+              priceSingle: '6200.00',
+            }),
+          }),
+        ],
       }),
     );
-    expect(pushRates.mock.calls[0][0]).not.toHaveProperty('weekDays');
-    expect(pushRates).toHaveBeenNthCalledWith(
-      2,
+    expect((pushRatesMultiple.mock.calls[0][0] as { roomIds: Array<Record<string, unknown>> }).roomIds[0]).not.toHaveProperty('weekDays');
+    expect(response.provider_endpoint).toBe('rates-multiple');
+  });
+
+  it('confirms Airbnb STANDARD pricing availability before rate sync', async () => {
+    const adapter = new ZodomusChannelAdapter();
+    const setAirbnbPricingAvailability = jest
+      .spyOn(ZodomusClient.prototype, 'setAirbnbPricingAvailability')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+    const pushRatesMultiple = jest
+      .spyOn(ZodomusClient.prototype, 'pushRatesMultiple')
+      .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
+
+    await adapter.push({
+      provider: ChannelProvider.ZODOMUS,
+      sync_type: ChannelSyncType.RATES,
+      property_id: 'property-id',
+      external_hotel_id: '51224597',
+      credentials: {
+        ota_key: 'AIRBNB',
+      },
+      price_model_id: 4,
+      rates: [
+        {
+          date: '2026-06-01',
+          external_room_id: '10001',
+          external_rate_id: '100991',
+          currency: 'INR',
+          base_rate: 5000,
+          room_category_max_occupancy: 2,
+        },
+      ],
+    });
+
+    expect(setAirbnbPricingAvailability).toHaveBeenCalledWith({
+      channelId: 3,
+      propertyId: '51224597',
+      pricingAvailabilityModelType: 'STANDARD',
+      inModelTransition: 'false',
+      clearIncompatibleSettings: 'false',
+    });
+    expect(pushRatesMultiple).toHaveBeenCalledWith(
       expect.objectContaining({
-        dateFrom: '2026-06-03',
-        dateTo: '2026-06-04',
-        roomId: '10001',
-        rateId: '100991',
-        prices: expect.objectContaining({
-          price: '6200.00',
-          priceSingle: '6200.00',
-        }),
+        channelId: 3,
+        propertyId: '51224597',
+        pnaModel: 'STANDARD',
       }),
+    );
+    expect(setAirbnbPricingAvailability.mock.invocationCallOrder[0]).toBeLessThan(
+      pushRatesMultiple.mock.invocationCallOrder[0],
     );
   });
 
   it('passes inventory restrictions through availability and rate pushes', async () => {
     const adapter = new ZodomusChannelAdapter();
-    const pushAvailability = jest
-      .spyOn(ZodomusClient.prototype, 'pushAvailability')
+    const pushAvailabilityMultiple = jest
+      .spyOn(ZodomusClient.prototype, 'pushAvailabilityMultiple')
       .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
-    const pushRates = jest
-      .spyOn(ZodomusClient.prototype, 'pushRates')
+    const pushRatesMultiple = jest
+      .spyOn(ZodomusClient.prototype, 'pushRatesMultiple')
       .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
 
     await adapter.push({
@@ -306,29 +446,37 @@ describe('ZodomusChannelAdapter', () => {
       ],
     });
 
-    expect(pushAvailability).toHaveBeenCalledWith(
+    expect(pushAvailabilityMultiple).toHaveBeenCalledWith(
       expect.objectContaining({
-        availability: 0,
-        stopSell: 1,
-        closedToArrival: 1,
-        closedToDeparture: 0,
+        roomIds: [
+          expect.objectContaining({
+            availability: 0,
+            stopSell: 1,
+            closedToArrival: 1,
+            closedToDeparture: 0,
+          }),
+        ],
       }),
     );
-    expect(pushRates).toHaveBeenCalledWith(
+    expect(pushRatesMultiple).toHaveBeenCalledWith(
       expect.objectContaining({
-        closed: '1',
-        closedToArrival: '1',
-        closedToDeparture: '1',
-        minimumStay: '2',
-        maximumStay: '5',
+        roomIds: [
+          expect.objectContaining({
+            closed: '1',
+            closedToArrival: '1',
+            closedToDeparture: '1',
+            minimumStay: '2',
+            maximumStay: '5',
+          }),
+        ],
       }),
     );
   });
 
   it('omits priceSingle for single-room rate rows', async () => {
     const adapter = new ZodomusChannelAdapter();
-    const pushRates = jest
-      .spyOn(ZodomusClient.prototype, 'pushRates')
+    const pushRatesMultiple = jest
+      .spyOn(ZodomusClient.prototype, 'pushRatesMultiple')
       .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
 
     await adapter.push({
@@ -353,19 +501,23 @@ describe('ZodomusChannelAdapter', () => {
       ],
     });
 
-    expect(pushRates).toHaveBeenCalledWith(
+    expect(pushRatesMultiple).toHaveBeenCalledWith(
       expect.objectContaining({
-        prices: {
-          price: '5000.00',
-        },
+        roomIds: [
+          expect.objectContaining({
+            prices: {
+              price: '5000.00',
+            },
+          }),
+        ],
       }),
     );
   });
 
   it('uses configured single occupancy price for maximum/single pricing model', async () => {
     const adapter = new ZodomusChannelAdapter();
-    const pushRates = jest
-      .spyOn(ZodomusClient.prototype, 'pushRates')
+    const pushRatesMultiple = jest
+      .spyOn(ZodomusClient.prototype, 'pushRatesMultiple')
       .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
 
     await adapter.push({
@@ -394,12 +546,16 @@ describe('ZodomusChannelAdapter', () => {
       ],
     });
 
-    expect(pushRates).toHaveBeenCalledWith(
+    expect(pushRatesMultiple).toHaveBeenCalledWith(
       expect.objectContaining({
-        prices: {
-          price: '5000.00',
-          priceSingle: '4200.00',
-        },
+        roomIds: [
+          expect.objectContaining({
+            prices: {
+              price: '5000.00',
+              priceSingle: '4200.00',
+            },
+          }),
+        ],
       }),
     );
   });
@@ -472,6 +628,7 @@ describe('ZodomusChannelAdapter', () => {
       ],
     });
     expect(response.price_model_id).toBe(2);
+    expect(response.provider_endpoint).toBe('rates-derived');
     expect(response.row_results).toEqual([
       expect.objectContaining({
         endpoint: 'rates-derived',
@@ -482,8 +639,8 @@ describe('ZodomusChannelAdapter', () => {
 
   it('uses guest-count prices for occupancy pricing model', async () => {
     const adapter = new ZodomusChannelAdapter();
-    const pushRates = jest
-      .spyOn(ZodomusClient.prototype, 'pushRates')
+    const pushRatesMultiple = jest
+      .spyOn(ZodomusClient.prototype, 'pushRatesMultiple')
       .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
 
     const response = await adapter.push({
@@ -516,20 +673,24 @@ describe('ZodomusChannelAdapter', () => {
       ],
     });
 
-    expect(pushRates).toHaveBeenCalledWith(
+    expect(pushRatesMultiple).toHaveBeenCalledWith(
       expect.objectContaining({
         channelId: 2,
         propertyId: '100',
-        roomId: '10001',
-        rateId: '100991',
-        prices: [
-          { guests: '1', price: '4500.00' },
-          { guests: '2', price: '5000.00' },
-          { guests: '3', price: '5600.00' },
+        roomIds: [
+          expect.objectContaining({
+            roomId: '10001',
+            rateId: '100991',
+            prices: [
+              { guests: '1', price: '4500.00' },
+              { guests: '2', price: '5000.00' },
+              { guests: '3', price: '5600.00' },
+            ],
+            closed: '0',
+            minimumStay: '1',
+            maximumStay: '31',
+          }),
         ],
-        closed: '0',
-        minimumStay: '1',
-        maximumStay: '31',
       }),
     );
     expect(response.row_results).toEqual([
@@ -542,8 +703,8 @@ describe('ZodomusChannelAdapter', () => {
 
   it('uses base occupancy default price for per-day pricing model', async () => {
     const adapter = new ZodomusChannelAdapter();
-    const pushRates = jest
-      .spyOn(ZodomusClient.prototype, 'pushRates')
+    const pushRatesMultiple = jest
+      .spyOn(ZodomusClient.prototype, 'pushRatesMultiple')
       .mockResolvedValue({ status: { returnCode: 200, returnMessage: 'OK' } } as never);
 
     const response = await adapter.push({
@@ -572,22 +733,25 @@ describe('ZodomusChannelAdapter', () => {
       ],
     });
 
-    expect(pushRates).toHaveBeenCalledWith(
+    expect(pushRatesMultiple).toHaveBeenCalledWith(
       expect.objectContaining({
         channelId: 2,
         propertyId: '100',
-        roomId: '10001',
-        rateId: '100991',
-        baseOccupancy: '3',
-        prices: {
-          price: '5000.00',
-        },
-        closed: '0',
-        minimumStay: '1',
-        maximumStay: '31',
+        roomIds: [
+          expect.objectContaining({
+            roomId: '10001',
+            rateId: '100991',
+            prices: {
+              price: '5000.00',
+            },
+            closed: '0',
+            minimumStay: '1',
+            maximumStay: '31',
+          }),
+        ],
       }),
     );
-    expect(pushRates.mock.calls[0][0]).not.toHaveProperty('priceSingle');
+    expect((pushRatesMultiple.mock.calls[0][0] as { roomIds: Array<Record<string, unknown>> }).roomIds[0]).not.toHaveProperty('priceSingle');
     expect(response.row_results).toEqual([
       expect.objectContaining({
         endpoint: 'rates-per-day',
@@ -669,7 +833,7 @@ describe('ZodomusChannelAdapter', () => {
   it('marks rate rows as failed when the provider returns a non-200 status', async () => {
     const adapter = new ZodomusChannelAdapter();
     jest
-      .spyOn(ZodomusClient.prototype, 'pushRates')
+      .spyOn(ZodomusClient.prototype, 'pushRatesMultiple')
       .mockResolvedValue({ status: { returnCode: 400, returnMessage: 'Property status not Active' } } as never);
 
     const response = await adapter.push({

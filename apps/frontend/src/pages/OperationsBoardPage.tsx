@@ -37,6 +37,9 @@ function fmtDate(d: string) {
 function daysUntil(dep: string, today: string) {
   return Math.max(0, Math.round((new Date(dep + 'T00:00:00').getTime() - new Date(today + 'T00:00:00').getTime()) / 86_400_000));
 }
+function dayDiff(from: string, to: string) {
+  return Math.round((new Date(to + 'T00:00:00').getTime() - new Date(from + 'T00:00:00').getTime()) / 86_400_000);
+}
 
 /* ── Category dot color — softer palette ── */
 const CAT_COLORS: Record<string, { dot: string }> = {
@@ -256,6 +259,37 @@ function EmptyCol({ label }: { label: string }) {
   );
 }
 
+function FloatingSuccessToast({ message, onClose }: { message: string | null; onClose: () => void }) {
+  if (!message) return null;
+
+  return (
+    <div className="pointer-events-none fixed left-4 right-4 top-20 z-50 flex justify-center lg:left-auto lg:right-6 lg:top-6 lg:justify-end">
+      <div className="pointer-events-auto w-full max-w-xl rounded-2xl border border-emerald-500/70 bg-emerald-500 text-white shadow-[0_18px_40px_-20px_rgba(22,163,74,0.5)]">
+        <div className="flex items-center gap-3 px-5 py-4">
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-white text-emerald-500">
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[15px] font-semibold leading-5 text-white">{message}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-white/90 transition hover:bg-white/10 hover:text-white"
+            aria-label="Dismiss success message"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Main page ── */
 export function OperationsBoardPage({ previewDataEnabled = false }: { previewDataEnabled?: boolean }) {
   const [reloadKey, setReloadKey]         = useState(0);
@@ -264,11 +298,18 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
   const [activeTab, setActiveTab]         = useState<'board' | 'housekeeping'>('board');
   const [selectedInHouseRow, setSelectedInHouseRow] = useState<BoardRow | null>(null);
   const [actionError, setActionError]     = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [pendingId, setPendingId]         = useState<string | null>(null);
   const [boardState, setBoardState]       = useState<OperationsBoardState>(() => ({
     data: operationsBoardCache, error: null, loading: !operationsBoardCache,
   }));
   const today = getLocalDate();
+
+  useEffect(() => {
+    if (!actionSuccess) return;
+    const timeoutId = window.setTimeout(() => setActionSuccess(null), 3000);
+    return () => window.clearTimeout(timeoutId);
+  }, [actionSuccess]);
 
   useEffect(() => {
     let active = true;
@@ -295,12 +336,13 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
 
   function blockPreviewAction(id: string) {
     if (!isPreviewId(id)) return false;
+    setActionSuccess(null);
     setActionError('Sample preview records are read-only. Turn off sample data to work with live records.');
     return true;
   }
-  async function checkIn(id: string)      { if (blockPreviewAction(id)) return; setActionError(null); setPendingId(id); try { await api.put(`/bookings/groups/rooms/${id}/checkin`);          setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); } }
-  async function checkOut(id: string)     { if (blockPreviewAction(id)) return; setActionError(null); setPendingId(id); try { await api.put(`/bookings/groups/rooms/${id}/checkout`);         setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); } }
-  async function sendReminder(id: string) { if (blockPreviewAction(id)) return; setActionError(null); setPendingId(id); try { await api.post(`/bookings/groups/rooms/${id}/checkin-reminder`); setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); } }
+  async function checkIn(id: string)      { if (blockPreviewAction(id)) return; setActionError(null); setActionSuccess(null); setPendingId(id); try { await api.put(`/bookings/groups/rooms/${id}/checkin`);          setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); } }
+  async function checkOut(id: string)     { if (blockPreviewAction(id)) return; setActionError(null); setActionSuccess(null); setPendingId(id); try { await api.put(`/bookings/groups/rooms/${id}/checkout`);         setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); } }
+  async function sendReminder(id: string) { if (blockPreviewAction(id)) return; setActionError(null); setActionSuccess(null); setPendingId(id); try { await api.post(`/bookings/groups/rooms/${id}/checkin-reminder`); setActionSuccess('Reminder sent successfully.'); setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); } }
 
   const previewData  = previewDataEnabled ? createPreviewData() : null;
   const data         = previewData ? { billings: previewData.billings, dashboard: previewData.dashboard, housekeeping: previewData.housekeeping, properties: previewData.properties, reservationGroups: previewData.reservationGroups } : boardState.data;
@@ -335,10 +377,15 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
     ? allRows.filter(row => [row.room.guest_name, row.primary_guest_name, row.property.name, row.external_reservation_id, row.room.room.room_number, row.room.room_category.name, row.room.rate_plan.name].filter(Boolean).join(' ').toLowerCase().includes(normalizedQ))
     : allRows;
 
+  const lateArrivalCutoffDays = 2;
   const arrivals     = filteredRows.filter(r => r.room.arrival_date === today && r.room.reservation_status === 'BOOKED');
   const inHouse      = filteredRows.filter(r => r.room.reservation_status === 'CHECKED_IN').sort((a, b) => a.room.departure_date.localeCompare(b.room.departure_date));
   const departures   = filteredRows.filter(r => r.room.departure_date === today && ['CHECKED_IN', 'CHECKED_OUT'].includes(r.room.reservation_status)).sort((a, b) => a.primary_guest_name.localeCompare(b.primary_guest_name));
-  const lateArrivals = filteredRows.filter(r => r.room.arrival_date < today && r.room.reservation_status === 'BOOKED');
+  const lateArrivals = filteredRows.filter(r =>
+    r.room.arrival_date < today &&
+    r.room.reservation_status === 'BOOKED' &&
+    dayDiff(r.room.arrival_date, today) <= lateArrivalCutoffDays
+  );
   const checkedInToday = filteredRows.filter(r => r.room.arrival_date === today && r.room.reservation_status === 'CHECKED_IN').length;
   const checkInQueue = [...lateArrivals, ...arrivals].sort((a, b) => {
     const la = a.room.arrival_date < today, lb = b.room.arrival_date < today;
@@ -365,6 +412,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
 
   return (
     <div className="min-h-screen -mx-5 lg:-mx-8 -my-6 lg:-my-8 bg-[#f5f5f3] flex flex-col">
+      <FloatingSuccessToast message={actionSuccess} onClose={() => setActionSuccess(null)} />
 
       {/* ── Sticky header ── */}
       <header className="sticky top-0 z-20 bg-white border-b border-black/[0.06]">
@@ -419,24 +467,24 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
         {/* Row 2: search + property filter */}
         <div className="flex items-center gap-3 px-5 lg:px-8 pb-4">
           <div className="relative">
-            <svg className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+            <svg className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
               <path d="m21 21-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z"/>
             </svg>
             <input
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               placeholder="Guest, room, reservation…"
-              className="h-8 w-60 pl-9 pr-3 text-[12px] bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 text-slate-700 placeholder-slate-400"
+              className="h-10 w-72 rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-3 text-[12px] text-slate-700 outline-none placeholder-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
             />
           </div>
 
           {/* Property toggle pills */}
           <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1">
-            <button onClick={() => setPropertyFilter('ALL')} className={`h-6 px-3 rounded-lg text-[11px] font-semibold transition-colors ${propertyFilter === 'ALL' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
+            <button onClick={() => setPropertyFilter('ALL')} className={`h-8 px-3 rounded-lg text-[11px] font-semibold transition-colors ${propertyFilter === 'ALL' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
               All
             </button>
             {properties.map(p => (
-              <button key={p.id} onClick={() => setPropertyFilter(p.id)} className={`h-6 px-3 rounded-lg text-[11px] font-semibold transition-colors ${propertyFilter === p.id ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
+              <button key={p.id} onClick={() => setPropertyFilter(p.id)} className={`h-8 px-3 rounded-lg text-[11px] font-semibold transition-colors ${propertyFilter === p.id ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
                 {p.name}
               </button>
             ))}

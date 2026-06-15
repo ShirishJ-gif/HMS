@@ -6,6 +6,7 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty, propertyIdFilter } from '../auth/property-scope';
 import { BackgroundJobService } from '../background-job/background-job.service';
+import { InventoryService } from '../inventory/inventory.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { CreateRoomOutOfServicePeriodDto } from './dto/create-room-out-of-service-period.dto';
@@ -17,6 +18,7 @@ export class RoomService {
     private readonly prisma: PrismaService,
     private readonly auditLogService: AuditLogService,
     private readonly backgroundJobService: BackgroundJobService,
+    private readonly inventoryService: InventoryService,
   ) {}
 
   async create(createRoomDto: CreateRoomDto, user?: AuthenticatedUser) {
@@ -119,15 +121,28 @@ export class RoomService {
         }
       }
 
-      const room = await this.prisma.room.update({
-        where: { id },
-        data: {
-          propertyId: updateRoomDto.property_id,
-          roomCategoryId: updateRoomDto.room_category_id,
-          roomNumber: updateRoomDto.room_number,
-          status: updateRoomDto.status,
-        },
-        include: this.includeRelations(),
+      const room = await this.prisma.$transaction(async (tx) => {
+        const lockTargets = [
+          { propertyId: existingRoom.propertyId, roomCategoryId: existingRoom.roomCategoryId },
+          {
+            propertyId: updateRoomDto.property_id ?? existingRoom.propertyId,
+            roomCategoryId: updateRoomDto.room_category_id ?? existingRoom.roomCategoryId,
+          },
+        ];
+        for (const target of this.uniqueInventoryLockTargets(lockTargets)) {
+          await this.inventoryService.acquireInventoryAllocationLock(tx, target.propertyId, target.roomCategoryId);
+        }
+
+        return tx.room.update({
+          where: { id },
+          data: {
+            propertyId: updateRoomDto.property_id,
+            roomCategoryId: updateRoomDto.room_category_id,
+            roomNumber: updateRoomDto.room_number,
+            status: updateRoomDto.status,
+          },
+          include: this.includeRelations(),
+        });
       });
 
       await this.auditLogService.record({
@@ -167,35 +182,36 @@ export class RoomService {
 
   async remove(id: string, user?: AuthenticatedUser) {
     try {
-      if (user) {
-        const existingRoom = await this.prisma.room.findUnique({ where: { id } });
-        if (!existingRoom) {
-          throw new NotFoundException('Room not found');
-        }
-        assertCanAccessProperty(user, existingRoom.propertyId);
-      }
-
       const existingRoom = await this.prisma.room.findUnique({ where: { id } });
       if (!existingRoom) {
         throw new NotFoundException('Room not found');
       }
+      assertCanAccessProperty(user, existingRoom.propertyId);
 
-      const activeOrFutureReservationRooms = await this.prisma.reservationRoom.count({
-        where: {
-          roomId: id,
-          status: { in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN] },
-          departureDate: { gt: this.todayUtcDate() },
-        },
-      });
-
-      if (activeOrFutureReservationRooms > 0) {
-        throw new ConflictException(
-          'Cannot delete this room because it has active or future reservation stays. Reassign or check out/cancel those stays first.',
+      await this.prisma.$transaction(async (tx) => {
+        await this.inventoryService.acquireInventoryAllocationLock(
+          tx,
+          existingRoom.propertyId,
+          existingRoom.roomCategoryId,
         );
-      }
 
-      await this.prisma.room.delete({
-        where: { id },
+        const activeOrFutureReservationRooms = await tx.reservationRoom.count({
+          where: {
+            roomId: id,
+            status: { in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN] },
+            departureDate: { gt: this.todayUtcDate() },
+          },
+        });
+
+        if (activeOrFutureReservationRooms > 0) {
+          throw new ConflictException(
+            'Cannot delete this room because it has active or future reservation stays. Reassign or check out/cancel those stays first.',
+          );
+        }
+
+        await tx.room.delete({
+          where: { id },
+        });
       });
 
       await this.auditLogService.record({
@@ -255,26 +271,29 @@ export class RoomService {
       throw new BadRequestException('to_date must be on or after from_date');
     }
 
-    const overlapping = await this.prisma.roomOutOfServicePeriod.findFirst({
-      where: {
-        roomId,
-        fromDate: { lte: toDate },
-        toDate: { gte: fromDate },
-      },
-    });
-    if (overlapping) {
-      throw new ConflictException('An overlapping out-of-service period already exists for this room.');
-    }
+    const period = await this.prisma.$transaction(async (tx) => {
+      await this.inventoryService.acquireInventoryAllocationLock(tx, room.propertyId, room.roomCategoryId);
+      const overlapping = await tx.roomOutOfServicePeriod.findFirst({
+        where: {
+          roomId,
+          fromDate: { lte: toDate },
+          toDate: { gte: fromDate },
+        },
+      });
+      if (overlapping) {
+        throw new ConflictException('An overlapping out-of-service period already exists for this room.');
+      }
 
-    const period = await this.prisma.roomOutOfServicePeriod.create({
-      data: {
-        roomId,
-        propertyId: room.propertyId,
-        fromDate,
-        toDate,
-        reason: dto.reason.trim(),
-        notes: dto.notes?.trim() || null,
-      },
+      return tx.roomOutOfServicePeriod.create({
+        data: {
+          roomId,
+          propertyId: room.propertyId,
+          fromDate,
+          toDate,
+          reason: dto.reason.trim(),
+          notes: dto.notes?.trim() || null,
+        },
+      });
     });
 
     await this.auditLogService.record({
@@ -311,7 +330,10 @@ export class RoomService {
       throw new NotFoundException('Out-of-service period not found for this room');
     }
 
-    await this.prisma.roomOutOfServicePeriod.delete({ where: { id: periodId } });
+    await this.prisma.$transaction(async (tx) => {
+      await this.inventoryService.acquireInventoryAllocationLock(tx, room.propertyId, room.roomCategoryId);
+      await tx.roomOutOfServicePeriod.delete({ where: { id: periodId } });
+    });
 
     await this.auditLogService.record({
       action: AuditAction.DELETE,
@@ -351,6 +373,18 @@ export class RoomService {
     }
 
     throw error;
+  }
+
+  private uniqueInventoryLockTargets(targets: Array<{ propertyId: string; roomCategoryId: string }>) {
+    return Array.from(
+      new Map(
+        targets
+          .sort((left, right) =>
+            `${left.propertyId}:${left.roomCategoryId}`.localeCompare(`${right.propertyId}:${right.roomCategoryId}`),
+          )
+          .map((target) => [`${target.propertyId}:${target.roomCategoryId}`, target]),
+      ).values(),
+    );
   }
 
   private includeRelations() {

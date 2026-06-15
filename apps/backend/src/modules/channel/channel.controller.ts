@@ -8,6 +8,7 @@ import { ChannelService } from './channel.service';
 import { ActivateChannelPropertyDto } from './dto/activate-channel-property.dto';
 import { AirbnbHostCancellationDto } from './dto/airbnb-host-cancellation.dto';
 import { AirbnbOauthTestDto } from './dto/airbnb-oauth-test.dto';
+import { CancelChannelRoomsDto } from './dto/cancel-channel-rooms.dto';
 import { CreateTestReservationDto } from './dto/create-test-reservation.dto';
 import { CreateChannelConnectionDto } from './dto/create-channel-connection.dto';
 import { CreateChannelRateMappingDto } from './dto/create-channel-rate-mapping.dto';
@@ -213,6 +214,16 @@ export class ChannelController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   activateProviderRooms(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.channelService.activateProviderRooms(id, user);
+  }
+
+  @Post(':id/rooms-cancellation')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  cancelProviderRooms(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CancelChannelRoomsDto,
+  ) {
+    return this.channelService.cancelProviderRooms(id, dto, user);
   }
 
   @Get(':id/provider-reservations-queue')

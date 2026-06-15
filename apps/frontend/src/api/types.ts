@@ -401,12 +401,14 @@ export type ChannelConnection = {
       checked: boolean;
       activated: boolean;
       rooms_activated: boolean;
+      rooms_cancelled?: boolean;
       catalog_loaded: boolean;
       ready: boolean;
       disconnected: boolean;
       checked_at: string | null;
       activated_at: string | null;
       rooms_activated_at: string | null;
+      rooms_cancelled_at?: string | null;
       catalog_loaded_at: string | null;
       ready_at: string | null;
       disconnected_at: string | null;
@@ -417,9 +419,12 @@ export type ChannelConnection = {
       last_activation_code: string | null;
       last_rooms_activation_message: string | null;
       last_rooms_activation_code: string | null;
+      last_rooms_cancellation_message?: string | null;
+      last_rooms_cancellation_code?: string | null;
       last_disconnect_message: string | null;
       last_disconnect_code: string | null;
       activated_room_count: number;
+      cancelled_room_count?: number;
       catalog_room_count: number;
       catalog_rate_count: number;
     };

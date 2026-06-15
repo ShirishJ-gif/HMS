@@ -51,15 +51,15 @@ type PendingStatusChange = {
 };
 
 // ─── Main page ─────────────────────────────────────────────────────────────────
-export function RoomsPage() {
+export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean; propertyId?: string | null } = {}) {
   const [reloadKey, setReloadKey]               = useState(0);
   const [periodReloadKey, setPeriodReloadKey]   = useState(0);
-  const [form, setForm]                         = useState(defaultForm);
+  const [form, setForm]                         = useState({ ...defaultForm, property_id: propertyId ?? '' });
   const [outOfServiceForm, setOutOfServiceForm] = useState(defaultOutOfServiceForm);
   const [showAddForm, setShowAddForm]           = useState(false);
   const [selectedRoomId, setSelectedRoomId]     = useState<string | null>(null);
   const [detailTab, setDetailTab]               = useState<'info' | 'blocks'>('info');
-  const [propFilter, setPropFilter]             = useState('ALL');
+  const [propFilter, setPropFilter]             = useState(propertyId ?? 'ALL');
   const [statusFilter, setStatusFilter]         = useState<RoomStatus | 'ALL'>('ALL');
   const [successMsg, setSuccessMsg]             = useState<string | null>(null);
   const [actionError, setActionError]           = useState<string | null>(null);
@@ -87,6 +87,16 @@ export function RoomsPage() {
     return () => document.removeEventListener('pointerdown', closeDetailPanel);
   }, [selectedRoomId]);
 
+  useEffect(() => {
+    if (!propertyId) return;
+    setPropFilter(propertyId);
+    setForm(current => ({
+      ...current,
+      property_id: propertyId,
+      room_category_id: current.property_id === propertyId ? current.room_category_id : '',
+    }));
+  }, [propertyId]);
+
   const roomsState      = useAsync(async () => fetchAllPages<Room>('/rooms'), [reloadKey]);
   const reservationsState = useAsync(async () => fetchAllPages<ReservationGroup>('/bookings/feed'), [reloadKey]);
   const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), []);
@@ -107,6 +117,7 @@ export function RoomsPage() {
   const rooms  = statusFilter === 'ALL' ? scoped : scoped.filter(r => r.status === statusFilter);
 
   const selectedRoom     = allRooms.find(r => r.id === selectedRoomId) ?? null;
+  const selectedProperty = propertyId ? properties.find(p => p.id === propertyId) ?? null : null;
   const occupancyByRoomId = new Map<string, OccupancyDetail>();
   for (const group of reservationsState.data ?? []) {
     for (const stay of group.rooms) {
@@ -138,7 +149,7 @@ export function RoomsPage() {
     e.preventDefault(); setActionError(null); setSubmitting(true);
     try {
       await api.post('/rooms', form);
-      setForm(defaultForm); setShowAddForm(false);
+      setForm({ ...defaultForm, property_id: propertyId ?? '' }); setShowAddForm(false);
       setReloadKey(v => v + 1); flash('Room added successfully.');
     } catch (err) { setActionError(getApiErrorMessage(err)); }
     finally { setSubmitting(false); }
@@ -193,14 +204,18 @@ export function RoomsPage() {
   }
 
   return (
-    <div className="-mx-5 lg:-mx-8 -my-6 lg:-my-8 flex flex-col">
+    <div className={embedded ? 'flex min-h-full flex-col bg-white' : '-mx-5 lg:-mx-8 -my-6 lg:-my-8 flex flex-col'}>
 
       {/* Page header */}
-      <div className="px-5 lg:px-8 pt-6 lg:pt-8 pb-4 flex items-center justify-between gap-4 flex-wrap">
+      <div className={`${embedded ? 'px-5 lg:px-6 pt-5' : 'px-5 lg:px-8 pt-6 lg:pt-8'} pb-4 flex items-center justify-between gap-4 flex-wrap`}>
         <div>
-          <p className="text-[10.5px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Operations</p>
+          <p className="text-[10.5px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">{embedded ? 'Setup step 2' : 'Operations'}</p>
           <h1 className="text-[22px] font-black text-slate-900 tracking-tight leading-none">Rooms & Inventory</h1>
-          <p className="text-[12px] text-slate-400 mt-1">Manage physical rooms, room categories, and maintenance blocks</p>
+          <p className="text-[12px] text-slate-400 mt-1">
+            {embedded && selectedProperty
+              ? `Add physical rooms for ${selectedProperty.name}.`
+              : 'Manage physical rooms, room categories, and maintenance blocks'}
+          </p>
         </div>
         <button
           type="button"
@@ -211,10 +226,21 @@ export function RoomsPage() {
         </button>
       </div>
 
+      {/* {embedded && (
+        <div className="mx-5 lg:mx-6 mb-4 rounded-2xl border border-emerald-100 bg-emerald-50/55 px-4 py-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-600">Room inventory</p>
+            <p className="mt-1 text-[13px] font-semibold text-emerald-950">
+              {selectedProperty ? selectedProperty.name : 'Select a property'} needs physical rooms before OTA mapping.
+            </p>
+          </div>
+        </div>
+      )} */}
+
       {/* Add room form */}
       {showAddForm && (
-        <div className="mx-5 lg:mx-8 mb-4 bg-white border-2 border-indigo-100 rounded-2xl p-5">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500 mb-0.5">New room</p>
+        <div className={`${embedded ? 'mx-5 lg:mx-6' : 'mx-5 lg:mx-8'} mb-4 bg-white border-2 border-emerald-100 rounded-2xl p-5 shadow-sm`}>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-0.5">New room</p>
           <h3 className="text-[14px] font-bold text-slate-900 mb-4">Add room to inventory</h3>
           <form onSubmit={submitRoom} className="grid grid-cols-2 lg:grid-cols-4 gap-4 items-end">
             <label className="flex flex-col gap-1.5">
@@ -283,7 +309,7 @@ export function RoomsPage() {
       )}
 
       {/* Filters */}
-      <div className="flex min-h-8 items-center justify-between gap-3 px-5 lg:px-8 pb-4 flex-wrap">
+      <div className={`flex min-h-8 items-center justify-between gap-3 ${embedded ? 'px-5 lg:px-6' : 'px-5 lg:px-8'} pb-4 flex-wrap`}>
         <div className="flex max-w-full items-center gap-2 flex-wrap">
           <div className="w-[240px] max-w-full">
             <CustomSelect
@@ -322,7 +348,7 @@ export function RoomsPage() {
       </div>
 
       {/* Stats cards */}
-      <div className="px-5 lg:px-8 pb-4 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+      <div className={`${embedded ? 'px-5 lg:px-6' : 'px-5 lg:px-8'} pb-4 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3`}>
         {[
           { label: 'Physical rooms', value: scoped.length,      sub: `${typeCount} room type${typeCount === 1 ? '' : 's'}`, color: 'text-slate-900'   },
           { label: 'Available',      value: availableCount,     sub: 'Ready to sell', color: 'text-emerald-600' },
@@ -348,7 +374,7 @@ export function RoomsPage() {
       {/* Grid + detail panel */}
       <div className="flex flex-1 min-h-0">
         {/* Room grid */}
-        <div className="flex-1 min-w-0 px-5 lg:px-8 py-5">
+        <div className={`flex-1 min-w-0 ${embedded ? 'px-5 lg:px-6' : 'px-5 lg:px-8'} py-5`}>
           <div className={`grid gap-3.5 ${selectedRoom ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6' : 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7'}`}>
             {rooms.map(room => {
               const cfg   = STATUS_CFG[room.status];
@@ -387,7 +413,10 @@ export function RoomsPage() {
             })}
           </div>
           {rooms.length === 0 && !roomsState.loading && (
-            <div className="py-20 text-center text-[13px] text-slate-400">No rooms match your filters.</div>
+            <div className="flex min-h-[16rem] flex-col items-center justify-center rounded-2xl border border-dashed border-emerald-200 bg-emerald-50/40 px-6 py-12 text-center">
+              <p className="text-[14px] font-bold text-slate-900">No physical rooms yet</p>
+              <p className="mt-1 max-w-sm text-[12.5px] leading-relaxed text-slate-500">Add room numbers for the selected property so OTA mapping can use real inventory.</p>
+            </div>
           )}
         </div>
 

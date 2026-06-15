@@ -94,6 +94,7 @@ const diagnosticsCacheUpdatedAtByKey = new Map<string, number>();
 const diagnosticsCacheTtlMs = 60_000;
 const statusAutoClearMs = 5000;
 const selectedConnectionStorageKey = 'hms_selected_channel_connection_id';
+const airbnbCompletedActionsStoragePrefix = 'hms_airbnb_completed_actions';
 
 function readPersistedSelectedConnectionId() {
   try {
@@ -113,6 +114,35 @@ function persistSelectedConnectionId(connectionId: string) {
     localStorage.removeItem(selectedConnectionStorageKey);
   } catch {
     // Ignore storage failures so the workspace still works in restricted browser contexts.
+  }
+}
+
+function airbnbCompletedActionsStorageKey(connectionId: string) {
+  return `${airbnbCompletedActionsStoragePrefix}:${connectionId}`;
+}
+
+function readPersistedAirbnbCompletedActions(connectionId: string | null | undefined) {
+  if (!connectionId) {
+    return [];
+  }
+
+  try {
+    const raw = localStorage.getItem(airbnbCompletedActionsStorageKey(connectionId));
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((action): action is string => typeof action === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistAirbnbCompletedActions(connectionId: string, actions: Iterable<string>) {
+  try {
+    localStorage.setItem(
+      airbnbCompletedActionsStorageKey(connectionId),
+      JSON.stringify(Array.from(new Set(actions))),
+    );
+  } catch {
+    // Ignore storage failures; the in-memory state still updates for the active session.
   }
 }
 
@@ -425,6 +455,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       activeRoomMappings.length > 0 &&
       activeRateMappings.length > 0,
   );
+  const canCancelMappedRooms = Boolean(selectedConnection && activeRoomMappings.length > 0);
   const selectedPropertyScopeId = selectedConnection?.property_id ?? null;
   const providerCatalogRoomCount = persistedSetupStatus?.catalog_room_count ?? providerCatalog?.rooms.length ?? 0;
   const providerCatalogRateCount = persistedSetupStatus?.catalog_rate_count ?? providerCatalog?.rates.length ?? 0;
@@ -783,6 +814,10 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   }, [selectedConnectionId]);
 
   useEffect(() => {
+    setAirbnbCompletedActions(new Set(readPersistedAirbnbCompletedActions(selectedConnectionId)));
+  }, [selectedConnectionId]);
+
+  useEffect(() => {
     if (properties.length === 0) {
       if (propertyId) setPropertyId('');
       return;
@@ -874,11 +909,27 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   }
 
   function markAirbnbActionDone(action: string) {
+    const connectionId = selectedConnection?.id;
     setAirbnbCompletedActions((current) => {
       const next = new Set(current);
       next.add(action);
+      if (connectionId) {
+        persistAirbnbCompletedActions(connectionId, next);
+      }
       return next;
     });
+  }
+
+  function airbnbActionsForConnection(connectionId: string | null | undefined) {
+    if (!connectionId) {
+      return new Set<string>();
+    }
+
+    if (connectionId === selectedConnectionId) {
+      return airbnbCompletedActions;
+    }
+
+    return new Set(readPersistedAirbnbCompletedActions(connectionId));
   }
 
   async function loadInventoryReconciliation(connectionId: string) {
@@ -1382,6 +1433,31 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     });
   }
 
+  async function cancelMappedRooms() {
+    if (!selectedConnection) return;
+
+    const rooms = Array.from(
+      new Set(
+        selectedConnection.room_mappings
+          .map((mapping) => mapping.external_room_id.trim())
+          .filter(Boolean),
+      ),
+    ).map((roomId) => ({ roomId }));
+
+    if (rooms.length === 0) {
+      setError('No mapped Zodomus room IDs are available to cancel.');
+      return;
+    }
+
+    await runAction('cancel-mapped-rooms', async () => {
+      const response = await api.post(`/channels/${selectedConnection.id}/rooms-cancellation`, { rooms });
+      rememberCertificationResponse('Cancel room associations', response.data);
+      setStatus('Mapped room associations cancelled in Zodomus. Run property check before syncing again.');
+      await loadData();
+      setSelectedConnectionId(selectedConnection.id);
+    });
+  }
+
   async function runPropertyCheck() {
     if (!selectedConnection) return;
     await runAction('property-check', async () => {
@@ -1738,6 +1814,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     automationEnabled,
     airbnbClientId,
     airbnbCompletedActions,
+    airbnbActionsForConnection,
     airbnbToken,
     activateMappedRooms,
     activateAirbnbHost,
@@ -1747,9 +1824,11 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     backgroundJobsError,
     backgroundJobsLoading,
     canActivateMappedRooms,
+    canCancelMappedRooms,
     canLoadCatalog,
     canMap,
     cancelAirbnbHost,
+    cancelMappedRooms,
     catalogConnectionId,
     catalogLoaded,
     catalogRates,

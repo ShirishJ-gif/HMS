@@ -399,6 +399,12 @@ export class BookingService {
         throw new ConflictException('Only booked imported room stays can be checked in');
       }
 
+      await this.inventoryService.acquireInventoryAllocationLock(
+        tx,
+        existingRoomLine.propertyId,
+        existingRoomLine.roomCategoryId,
+      );
+
       const assignedRoom =
         existingRoomLine.room ??
         (await tx.room.findFirst({
@@ -432,12 +438,18 @@ export class BookingService {
         throw new ConflictException('No physical room available to assign for this imported room stay');
       }
 
-      await tx.room.update({
-        where: { id: assignedRoom.id },
+      const claimedRoom = await tx.room.updateMany({
+        where: {
+          id: assignedRoom.id,
+          status: RoomStatus.AVAILABLE,
+        },
         data: {
           status: RoomStatus.OCCUPIED,
         },
       });
+      if (claimedRoom.count !== 1) {
+        throw new ConflictException('Physical room was assigned by another check-in. Please retry.');
+      }
 
       const updated = await tx.reservationRoom.update({
         where: { id },
