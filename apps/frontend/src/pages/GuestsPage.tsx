@@ -1,12 +1,8 @@
-import { FormEvent, useDeferredValue, useEffect, useState } from 'react';
-import { api, getApiErrorMessage } from '../api/client';
+import { useDeferredValue, useEffect, useState } from 'react';
 import { fetchAllPages } from '../api/pagination';
 import { Guest, Property, ReservationGroup } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
-import { inputCls, labelCls } from './ui';
-
-const defaultForm = { property_id: '', name: '', phone: '', email: '', id_proof: '', address: '' };
 
 type DisplayGuest = {
   id: string; property_id: string; name: string; phone: string; email: string | null;
@@ -57,7 +53,7 @@ function GuestDetailField({ icon, label, value, mono }: { icon: string; label: s
 }
 
 /* ══ Main page ══ */
-export function GuestsPage() {
+export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: string }) {
   const [reloadKey, setReloadKey] = useState(0);
   const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), [reloadKey]);
   const guestsState     = useAsync(async () => fetchAllPages<Guest>('/guests'), [reloadKey]);
@@ -65,24 +61,16 @@ export function GuestsPage() {
 
   const properties    = propertiesState.data ?? [];
   const mergedGuests  = buildGuestDisplayRows(guestsState.data ?? [], feedState.data ?? []);
-
   const totalCount    = mergedGuests.length;
-  const registryCount = mergedGuests.filter(g => g.source === 'GUEST_REGISTRY').length;
   const feedCount     = mergedGuests.filter(g => g.source === 'RESERVATION_FEED').length;
   const withEmail     = mergedGuests.filter(g => g.email).length;
+  const repeatGuests  = mergedGuests.filter(g => g.reservation_ids.length > 1).length;
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch]         = useState('');
   const deferredSearch              = useDeferredValue(search);
   const [sourceFilter, setSourceFilter] = useState<'ALL' | 'GUEST_REGISTRY' | 'RESERVATION_FEED'>('ALL');
-  const [propertyFilter, setPropertyFilter] = useState('ALL');
-
-  const [showAdd, setShowAdd]       = useState(false);
-  const [addMode, setAddMode]       = useState<'manual' | 'feed'>('manual');
-  const [form, setForm]             = useState(defaultForm);
-  const [actionError, setActionError]   = useState<string | null>(null);
-  const [actionStatus, setActionStatus] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [propertyFilter, setPropertyFilter] = useState(activePropertyId || 'ALL');
 
   const filtered = mergedGuests.filter(g => {
     if (sourceFilter !== 'ALL' && g.source !== sourceFilter) return false;
@@ -90,64 +78,37 @@ export function GuestsPage() {
     return matchesGuestSearch(g, deferredSearch);
   });
 
-  const selected = mergedGuests.find(g => g.id === selectedId) ?? null;
+  const selected = filtered.find(g => g.id === selectedId) ?? null;
+  const filteredIds = filtered.map(g => g.id).join('|');
 
   useEffect(() => {
-    if (!actionStatus) return;
-    const timeout = window.setTimeout(() => setActionStatus(null), 3500);
-    return () => window.clearTimeout(timeout);
-  }, [actionStatus]);
+    if (activePropertyId) setPropertyFilter(activePropertyId);
+  }, [activePropertyId]);
 
-  async function submitGuest(e: FormEvent) {
-    e.preventDefault();
-    setActionError(null); setActionStatus(null); setSubmitting(true);
-    try {
-      await api.post('/guests', { ...form, email: form.email || undefined });
-      setForm(defaultForm);
-      setActionStatus('Guest added successfully.');
-      setReloadKey(v => v + 1);
-      setShowAdd(false);
-    } catch (err) { setActionError(getApiErrorMessage(err)); }
-    finally { setSubmitting(false); }
-  }
-
-  function openAdd() {
-    setShowAdd(true); setAddMode('manual'); setActionError(null); setActionStatus(null);
-  }
+  useEffect(() => {
+    if (selectedId && filtered.some(g => g.id === selectedId)) return;
+    setSelectedId(filtered[0]?.id ?? null);
+  }, [filteredIds, selectedId]);
 
   return (
     <div className="relative min-h-screen -mx-5 lg:-mx-8 -my-6 lg:-my-8 bg-[#f5f5f3] flex flex-col">
-
-      {actionStatus && (
-        <div className="pointer-events-none absolute right-5 top-20 z-20 lg:right-8">
-          <div className="rounded-lg border border-emerald-200 bg-white px-4 py-2.5 text-[12.5px] font-semibold text-emerald-700 shadow-lg shadow-slate-900/10">
-            {actionStatus}
-          </div>
-        </div>
-      )}
-
       {/* ── Header ── */}
       <div className="px-5 lg:px-8 pt-6 lg:pt-8 pb-4 flex items-start justify-between gap-4 flex-shrink-0">
         <div>
           <p className="text-[10.5px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Operations</p>
           <h1 className="text-[22px] font-black text-slate-900 tracking-tight leading-none">Guests</h1>
-          <p className="text-[12px] text-slate-400 mt-1">Guest profiles from registry and reservation feed across all properties</p>
+          <p className="text-[12px] text-slate-400 mt-1">Search guest contacts, IDs, and reservation-linked profiles across properties</p>
         </div>
-        <button onClick={openAdd}
-          className="mt-1 h-9 px-4 rounded-lg text-[12px] font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-colors flex items-center gap-2 flex-shrink-0 shadow-sm">
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-          Add guest
-        </button>
       </div>
 
-      <div className="px-8 py-5 flex flex-col gap-4">
+      <div className="px-5 lg:px-8 py-5 flex flex-col gap-4">
 
         {/* ── KPI strip ── */}
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {([
             ['Total guests',     totalCount],
-            ['Registry',         registryCount],
             ['Reservation feed', feedCount],
+            ['Repeat guests',    repeatGuests],
             ['With email',       withEmail],
           ] as [string, number][]).map(([label, val]) => (
             <div key={label} className="bg-white rounded-xl border border-black/[0.06] px-4 py-3">
@@ -194,7 +155,7 @@ export function GuestsPage() {
             <div className="flex-shrink-0 px-4 py-2.5 border-b border-slate-100">
               <p className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wider">{filtered.length} guest{filtered.length !== 1 ? 's' : ''}</p>
             </div>
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-y-auto scrollbar-none">
               {(guestsState.loading && !guestsState.data) && (
                 <div className="px-4 py-10 text-center text-[12px] text-slate-400">Loading guests…</div>
               )}
@@ -266,7 +227,7 @@ export function GuestsPage() {
               </div>
 
               {/* Body */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-5">
+              <div className="flex-1 overflow-y-auto scrollbar-none p-6 space-y-5">
 
                 {/* Contact */}
                 <div>
@@ -344,128 +305,6 @@ export function GuestsPage() {
         </div>
       </div>
 
-      {/* ── Add guest modal ── */}
-      {showAdd && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm" onClick={() => setShowAdd(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-[540px] max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-
-            {/* Modal header */}
-            <div className="flex items-center justify-between px-6 pt-5 pb-0">
-              <div>
-                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Guest registry</p>
-                <h3 className="text-[17px] font-bold text-slate-900">Add guest</h3>
-              </div>
-              <button onClick={() => setShowAdd(false)}
-                className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
-              </button>
-            </div>
-
-            {/* Mode tabs */}
-            <div className="flex gap-0 px-6 mt-4 border-b border-slate-100">
-              {([['manual', 'Manual entry'], ['feed', 'From reservation']] as const).map(([mode, label]) => (
-                <button key={mode} onClick={() => setAddMode(mode)}
-                  className={`px-4 py-2.5 text-[12px] font-semibold border-b-2 -mb-px transition-colors rounded-t
-                    ${addMode === mode ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-200'}`}>
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {/* Modal body */}
-            <div className="flex-1 overflow-y-auto px-6 py-5">
-              {addMode === 'manual' ? (
-                <form id="add-guest-form" onSubmit={submitGuest}>
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className={`${labelCls} col-span-2`}>
-                      <span>Property</span>
-                      <CustomSelect onChange={v => setForm({ ...form, property_id: v })}
-                        options={properties.map(p => ({ label: p.name, value: p.id }))}
-                        placeholder="Select property" value={form.property_id} />
-                    </label>
-                    <label className={labelCls}>
-                      <span>Full name <span className="text-rose-400">*</span></span>
-                      <input className={inputCls} required placeholder="Aarav Mehta"
-                        value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
-                    </label>
-                    <label className={labelCls}>
-                      <span>Phone <span className="text-rose-400">*</span></span>
-                      <input className={inputCls} required placeholder="+91 98765 43210"
-                        value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} />
-                    </label>
-                    <label className={labelCls}>
-                      <span>Email</span>
-                      <input className={inputCls} type="email" placeholder="guest@example.com"
-                        value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} />
-                    </label>
-                    <label className={labelCls}>
-                      <span>ID proof <span className="text-rose-400">*</span></span>
-                      <input className={inputCls} required placeholder="PASSPORT-M1234567"
-                        value={form.id_proof} onChange={e => setForm({ ...form, id_proof: e.target.value })} />
-                    </label>
-                    <label className={`${labelCls} col-span-2`}>
-                      <span>Address <span className="text-rose-400">*</span></span>
-                      <textarea className={`${inputCls} min-h-[4rem] resize-none`} required
-                        placeholder="Bandra West, Mumbai, Maharashtra 400050"
-                        value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} />
-                    </label>
-                  </div>
-                  {actionError && (
-                    <p className="mt-3 text-[12px] text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{actionError}</p>
-                  )}
-                </form>
-              ) : (
-                <div className="space-y-4">
-                  <div className="bg-sky-50 border border-sky-100 rounded-xl p-4 flex gap-3">
-                    <svg className="w-5 h-5 text-sky-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-                      <circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>
-                    </svg>
-                    <p className="text-[12px] text-sky-800 font-medium leading-relaxed">
-                      Guests from the OTA reservation feed are automatically created when channel-manager reservations are imported. Use the list on the left to view and search them.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <p className="text-[10.5px] font-bold uppercase tracking-wider text-slate-500">Look up by reservation ID</p>
-                    <div className="flex gap-2">
-                      <input className={`${inputCls} flex-1`} placeholder="e.g. BKG-12345678" />
-                      <button type="button"
-                        className="h-9 px-4 rounded-lg text-[12px] font-semibold bg-sky-600 text-white hover:bg-sky-700 transition-colors flex-shrink-0">
-                        Look up
-                      </button>
-                    </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Paste a reservation ID from your OTA channel to find and preview the associated guest record from the reservation feed.
-                    </p>
-                  </div>
-
-                  <div className="border-t border-slate-100 pt-4">
-                    <p className="text-[10.5px] font-bold uppercase tracking-wider text-slate-500 mb-2">Switch to manual entry?</p>
-                    <button onClick={() => setAddMode('manual')}
-                      className="h-9 px-4 rounded-lg text-[12px] font-semibold border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors">
-                      Enter guest details manually →
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Modal footer */}
-            <div className="flex justify-end gap-2 px-6 py-4 border-t border-slate-100 bg-slate-50/60 flex-shrink-0">
-              <button onClick={() => setShowAdd(false)}
-                className="h-9 px-4 rounded-lg text-[12px] font-semibold border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors">
-                Cancel
-              </button>
-              {addMode === 'manual' && (
-                <button form="add-guest-form" type="submit" disabled={submitting}
-                  className="h-9 px-5 rounded-lg text-[12px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors">
-                  {submitting ? 'Adding…' : 'Add guest'}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

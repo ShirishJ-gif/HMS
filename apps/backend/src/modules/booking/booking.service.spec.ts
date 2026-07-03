@@ -1,4 +1,12 @@
-import { BookingStatus, ChannelConnectionStatus, PaymentStatus, Prisma, RoomStatus } from '@prisma/client';
+import {
+  BookingStatus,
+  ChannelConnectionStatus,
+  PaymentProvider,
+  PaymentStatus,
+  PaymentTransactionStatus,
+  Prisma,
+  RoomStatus,
+} from '@prisma/client';
 import { BookingService } from './booking.service';
 
 describe('BookingService', () => {
@@ -6,12 +14,29 @@ describe('BookingService', () => {
   const originalShowDetachedOtaReservationHistory = process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
 
   const tx = {
+    property: {
+      findUnique: jest.fn(),
+    },
+    roomCategory: {
+      findUnique: jest.fn(),
+    },
+    ratePlan: {
+      findUnique: jest.fn(),
+    },
+    guest: {
+      findUnique: jest.fn(),
+      create: jest.fn(),
+    },
     reservationRoom: {
+      create: jest.fn(),
       findUnique: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
     },
     reservationGroup: {
+      findFirst: jest.fn(),
+      create: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
       update: jest.fn(),
     },
     room: {
@@ -20,6 +45,10 @@ describe('BookingService', () => {
     },
     billing: {
       findUnique: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+    },
+    paymentTransaction: {
       create: jest.fn(),
     },
     housekeepingTask: {
@@ -33,6 +62,7 @@ describe('BookingService', () => {
 
   const backgroundJobService = {
     enqueue: jest.fn(),
+    queueInventorySyncsForProperty: jest.fn(),
   };
 
   const auditLogService = {
@@ -46,6 +76,10 @@ describe('BookingService', () => {
 
   const pricingService = {
     calculateStayPricing: jest.fn(),
+  };
+
+  const paymentProviderService = {
+    collect: jest.fn(),
   };
 
   const reservationRoom = {
@@ -87,6 +121,81 @@ describe('BookingService', () => {
     },
   };
 
+  const directGuest = {
+    id: 'guest-1',
+    propertyId: 'property-1',
+    name: 'Direct Guest',
+    phone: '+911234567890',
+    email: 'direct@test.local',
+    idProof: 'DL-1234',
+    address: 'Marine Drive',
+  };
+
+  const directReservationGroup = {
+    id: 'group-direct-1',
+    propertyId: 'property-1',
+    primaryGuestId: directGuest.id,
+    channelConnectionId: null,
+    externalReservationId: 'HBR-D-260623-ABCD',
+    externalReservationVersion: '1',
+    externalStatus: 'CONFIRMED',
+    source: 'DIRECT',
+    currency: 'INR',
+    totalAmount: new Prisma.Decimal('8400.00'),
+    status: BookingStatus.BOOKED,
+    remarks: 'Late arrival',
+    bookedAt: new Date('2026-06-23T12:00:00.000Z'),
+    modifiedAt: new Date('2026-06-23T12:00:00.000Z'),
+    createdAt: new Date('2026-06-23T12:00:00.000Z'),
+    updatedAt: new Date('2026-06-23T12:00:00.000Z'),
+    property: {
+      id: 'property-1',
+      name: 'Harbour',
+      code: 'HBR',
+      phone: '+919876543210',
+    },
+    primaryGuest: directGuest,
+    channelConnection: null,
+    rooms: [
+      {
+        ...reservationRoom,
+        id: 'direct-room-1',
+        reservationGroupId: 'group-direct-1',
+        externalRoomReservationId: 'HBR-D-260623-ABCD-1',
+        externalRoomId: 'DIRECT:STANDARD',
+        arrivalDate: new Date('2026-06-25T00:00:00.000Z'),
+        departureDate: new Date('2026-06-27T00:00:00.000Z'),
+        totalAmount: new Prisma.Decimal('4200.00'),
+        status: BookingStatus.BOOKED,
+        guestName: directGuest.name,
+        roomCategory: {
+          ...reservationRoom.roomCategory,
+          name: 'Deluxe',
+          code: 'DELUXE',
+        },
+        room: null,
+      },
+      {
+        ...reservationRoom,
+        id: 'direct-room-2',
+        reservationGroupId: 'group-direct-1',
+        externalRoomReservationId: 'HBR-D-260623-ABCD-2',
+        externalRoomId: 'DIRECT:STANDARD',
+        arrivalDate: new Date('2026-06-25T00:00:00.000Z'),
+        departureDate: new Date('2026-06-27T00:00:00.000Z'),
+        totalAmount: new Prisma.Decimal('4200.00'),
+        status: BookingStatus.BOOKED,
+        guestName: directGuest.name,
+        roomCategory: {
+          ...reservationRoom.roomCategory,
+          name: 'Deluxe',
+          code: 'DELUXE',
+        },
+        room: null,
+      },
+    ],
+  };
+
   let service: BookingService;
 
   beforeEach(() => {
@@ -95,6 +204,36 @@ describe('BookingService', () => {
     tx.reservationRoom.findUnique.mockResolvedValue(reservationRoom);
     tx.room.update.mockResolvedValue(null);
     tx.room.updateMany.mockResolvedValue({ count: 1 });
+    tx.property.findUnique.mockResolvedValue({
+      id: 'property-1',
+      code: 'HBR',
+      name: 'Harbour',
+      phone: '+919876543210',
+    });
+    tx.roomCategory.findUnique.mockResolvedValue({
+      id: 'category-1',
+      propertyId: 'property-1',
+      name: 'Deluxe',
+      code: 'DELUXE',
+    });
+    tx.ratePlan.findUnique.mockResolvedValue({
+      id: 'rate-1',
+      propertyId: 'property-1',
+      roomCategoryId: 'category-1',
+      name: 'Deluxe Flexible',
+      code: 'DELUXE-FLEX',
+      baseRate: new Prisma.Decimal('4200.00'),
+      currency: 'INR',
+      pricingRules: [],
+    });
+    tx.guest.findUnique.mockResolvedValue(directGuest);
+    tx.guest.create.mockResolvedValue(directGuest);
+    tx.reservationGroup.findFirst.mockResolvedValue(null);
+    tx.reservationGroup.create.mockResolvedValue({ id: 'group-direct-1' });
+    tx.reservationGroup.findUniqueOrThrow.mockResolvedValue(directReservationGroup);
+    tx.reservationRoom.create
+      .mockResolvedValueOnce({ id: 'direct-room-1' })
+      .mockResolvedValueOnce({ id: 'direct-room-2' });
     tx.reservationRoom.update.mockResolvedValue({
       ...reservationRoom,
       status: BookingStatus.CHECKED_OUT,
@@ -115,12 +254,31 @@ describe('BookingService', () => {
       total: new Prisma.Decimal('4200.00'),
       paymentStatus: PaymentStatus.PENDING,
     });
+    tx.billing.update.mockResolvedValue(null);
+    tx.paymentTransaction.create.mockResolvedValue({ id: 'payment-1' });
+    backgroundJobService.queueInventorySyncsForProperty.mockResolvedValue(undefined);
+    backgroundJobService.enqueue.mockResolvedValue(undefined);
+    inventoryService.allocateInventory.mockResolvedValue(undefined);
+    inventoryService.acquireInventoryAllocationLock.mockResolvedValue(undefined);
+    pricingService.calculateStayPricing.mockResolvedValue({
+      totalAmount: new Prisma.Decimal('4200.00'),
+      currency: 'INR',
+    });
+    paymentProviderService.collect.mockResolvedValue({
+      provider_reference: 'UPI-REF-1',
+      status: PaymentTransactionStatus.SUCCEEDED,
+      metadata: {
+        provider: PaymentProvider.UPI,
+        mode: 'local',
+      },
+    });
 
     service = new BookingService(
       prisma as never,
       backgroundJobService as never,
       auditLogService as never,
       inventoryService as never,
+      paymentProviderService as never,
       pricingService as never,
     );
   });
@@ -297,6 +455,155 @@ describe('BookingService', () => {
     expect(where).not.toHaveProperty('status');
   });
 
+  it('builds compact direct reservation references for staff-facing direct bookings', () => {
+    const reference = (
+      service as unknown as {
+        buildDirectReservationReference: (propertyCode?: string | null, now?: Date) => string;
+      }
+    ).buildDirectReservationReference('HBR', new Date('2026-06-23T12:00:00.000Z'));
+
+    expect(reference).toMatch(/^HBR-D-260623-[A-F0-9]{4}$/);
+  });
+
+  it('queues an owner notification when creating a direct reservation', async () => {
+    const response = await service.createDirectReservation({
+      property_id: 'property-1',
+      room_category_id: 'category-1',
+      rate_plan_id: 'rate-1',
+      check_in_date: '2026-06-25',
+      check_out_date: '2026-06-27',
+      room_count: 2,
+      guest_id: directGuest.id,
+      remarks: 'Late arrival',
+    });
+
+    expect(backgroundJobService.enqueue).toHaveBeenCalledWith({
+      type: 'NOTIFICATION_SEND',
+      propertyId: 'property-1',
+      dedupeKey: 'notification:direct-owner-reservation:group-direct-1',
+      entityType: 'notification',
+      entityId: 'direct-owner-reservation:group-direct-1',
+      payload: {
+        template: 'owner_reservation_notification',
+        owner_phone: '+919876543210',
+        property_name: 'Harbour',
+        guest_name: 'Direct Guest',
+        guest_phone: '+911234567890',
+        room_category_name: 'Deluxe x2',
+        check_in_date: '2026-06-25T00:00:00.000Z',
+        check_out_date: '2026-06-27T00:00:00.000Z',
+        total_amount: '8400',
+      },
+      maxAttempts: 3,
+    });
+    expect(backgroundJobService.queueInventorySyncsForProperty).toHaveBeenCalledWith('property-1', {
+      trigger: 'direct_reservation_created',
+      from: '2026-06-25',
+      to: '2026-06-26',
+    });
+    expect(response.external_reservation_id).toBe('HBR-D-260623-ABCD');
+  });
+
+  it('records an advance as partial folio payments during walk-in reservation creation', async () => {
+    await service.createDirectReservation({
+      property_id: 'property-1',
+      room_category_id: 'category-1',
+      rate_plan_id: 'rate-1',
+      check_in_date: '2026-06-25',
+      check_out_date: '2026-06-27',
+      room_count: 2,
+      guest_id: directGuest.id,
+      source: 'WALK_IN',
+      advance_amount: '5000.00',
+      advance_payment_provider: PaymentProvider.UPI,
+      advance_payment_reference: 'UPI123',
+    });
+
+    expect(tx.billing.create).toHaveBeenCalledTimes(2);
+    expect(tx.billing.create.mock.calls[0][0]).toMatchObject({
+      data: {
+        reservationRoomId: 'direct-room-1',
+        paymentStatus: PaymentStatus.PAID,
+      },
+    });
+    expect(tx.billing.create.mock.calls[1][0]).toMatchObject({
+      data: {
+        reservationRoomId: 'direct-room-2',
+        paymentStatus: PaymentStatus.PARTIAL,
+      },
+    });
+    expect(tx.paymentTransaction.create).toHaveBeenCalledTimes(2);
+    expect(tx.paymentTransaction.create.mock.calls[0][0]).toMatchObject({
+      data: {
+        billingId: 'billing-1',
+        provider: PaymentProvider.UPI,
+      },
+    });
+    expect(tx.paymentTransaction.create.mock.calls[0][0].data.amount.toString()).toBe('4200');
+    expect(tx.paymentTransaction.create.mock.calls[1][0].data.amount.toString()).toBe('800');
+    expect(paymentProviderService.collect).toHaveBeenCalledWith({
+      amount: '4200.00',
+      provider: PaymentProvider.UPI,
+      providerReference: 'UPI123:group-direct-1:1',
+    });
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'PAYMENT_COLLECT',
+        entityType: 'reservation_group_folio',
+        entityId: 'group-direct-1',
+      }),
+    );
+  });
+
+  it('creates pending invoices for room lines not covered by a smaller walk-in advance', async () => {
+    tx.billing.create
+      .mockResolvedValueOnce({
+        id: 'billing-1',
+        total: new Prisma.Decimal('4200.00'),
+        paymentStatus: PaymentStatus.PARTIAL,
+      })
+      .mockResolvedValueOnce({
+        id: 'billing-2',
+        total: new Prisma.Decimal('4200.00'),
+        paymentStatus: PaymentStatus.PENDING,
+      });
+
+    await service.createDirectReservation({
+      property_id: 'property-1',
+      room_category_id: 'category-1',
+      rate_plan_id: 'rate-1',
+      check_in_date: '2026-06-25',
+      check_out_date: '2026-06-27',
+      room_count: 2,
+      guest_id: directGuest.id,
+      source: 'WALK_IN',
+      advance_amount: '2500.00',
+      advance_payment_provider: PaymentProvider.CASH,
+    });
+
+    expect(tx.billing.create).toHaveBeenCalledTimes(2);
+    expect(tx.billing.create.mock.calls[0][0]).toMatchObject({
+      data: {
+        reservationRoomId: 'direct-room-1',
+        paymentStatus: PaymentStatus.PARTIAL,
+      },
+    });
+    expect(tx.billing.create.mock.calls[1][0]).toMatchObject({
+      data: {
+        reservationRoomId: 'direct-room-2',
+        paymentStatus: PaymentStatus.PENDING,
+      },
+    });
+    expect(tx.paymentTransaction.create).toHaveBeenCalledTimes(1);
+    expect(tx.paymentTransaction.create.mock.calls[0][0]).toMatchObject({
+      data: {
+        billingId: 'billing-1',
+        provider: PaymentProvider.CASH,
+      },
+    });
+    expect(tx.paymentTransaction.create.mock.calls[0][0].data.amount.toString()).toBe('2500');
+  });
+
   it('hides detached or paused OTA reservation history in non-production reservation feeds', () => {
     process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
     delete process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
@@ -317,7 +624,7 @@ describe('BookingService', () => {
         {
           OR: [
             { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
-            { channelConnectionId: null, source: 'DIRECT' },
+            { channelConnectionId: null, source: { in: ['DIRECT', 'WALK_IN'] } },
           ],
         },
       ],

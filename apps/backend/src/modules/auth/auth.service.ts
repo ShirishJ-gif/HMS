@@ -10,6 +10,7 @@ import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { LoginDto } from './dto/login.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
+import { SignupPropertyDto } from './dto/signup-property.dto';
 import { PasswordService } from './password.service';
 import { AuthenticatedUser } from './auth.guard';
 import { assertCanCreateUser, propertyIdFilter } from './property-scope';
@@ -37,7 +38,7 @@ export class AuthService {
         name: dto.name,
         email: dto.email.toLowerCase(),
         passwordHash: await this.passwordService.hash(dto.password),
-        role: UserRole.SUPER_ADMIN,
+        role: UserRole.PLATFORM_OWNER,
       },
     });
 
@@ -62,12 +63,68 @@ export class AuthService {
     return this.issueToken(user);
   }
 
+  async signupProperty(dto: SignupPropertyDto) {
+    const propertyCode = (dto.property_code?.trim() || this.createPropertyCode(dto.property_name)).toUpperCase();
+
+    try {
+      const user = await this.prisma.$transaction(async (tx) => {
+        const organization = await tx.organization.create({
+          data: {
+            name: dto.property_name,
+            billingEmail: dto.admin_email.toLowerCase(),
+          },
+        });
+
+        const property = await tx.property.create({
+          data: {
+            organizationId: organization.id,
+            name: dto.property_name,
+            code: propertyCode,
+            phone: dto.phone,
+            email: dto.property_email ?? dto.admin_email.toLowerCase(),
+            address: dto.address,
+            timezone: dto.timezone ?? 'Asia/Kolkata',
+          },
+        });
+
+        return tx.user.create({
+          data: {
+            organizationId: organization.id,
+            propertyId: property.id,
+            name: dto.admin_name,
+            email: dto.admin_email.toLowerCase(),
+            passwordHash: await this.passwordService.hash(dto.password),
+            role: UserRole.ORG_OWNER,
+          },
+        });
+      });
+
+      return this.issueToken(user);
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const target = Array.isArray(error.meta?.target) ? error.meta.target.join(',') : String(error.meta?.target ?? '');
+        if (target.includes('code')) {
+          throw new ConflictException(`Property code ${propertyCode} already exists`);
+        }
+
+        if (target.includes('email')) {
+          throw new ConflictException(`Admin email ${dto.admin_email.toLowerCase()} already exists`);
+        }
+
+        throw new ConflictException('Property code or admin email already exists');
+      }
+
+      throw error;
+    }
+  }
+
   async createUser(dto: CreateUserDto, currentUser?: AuthenticatedUser) {
     assertCanCreateUser(currentUser, dto);
 
     try {
       const user = await this.prisma.user.create({
         data: {
+          organizationId: await this.organizationIdForNewUser(dto, currentUser),
           propertyId: dto.property_id,
           name: dto.name,
           email: dto.email.toLowerCase(),
@@ -214,15 +271,19 @@ export class AuthService {
     name: string;
     role: UserRole;
     propertyId: string | null;
+    organizationId: string | null;
     isActive: boolean;
     createdAt: Date;
     updatedAt: Date;
   }) {
+    const propertyIds = await this.accessiblePropertyIds(user);
     const accessToken = await this.jwtService.signAsync({
       sub: user.id,
       email: user.email,
       role: user.role,
+      organization_id: user.organizationId,
       property_id: user.propertyId,
+      property_ids: propertyIds,
     });
     const refreshToken = this.randomToken();
     await this.prisma.refreshSession.create({
@@ -240,8 +301,65 @@ export class AuthService {
     };
   }
 
+  private async accessiblePropertyIds(user: { role: UserRole; organizationId: string | null; propertyId: string | null }) {
+    if (user.role === UserRole.PLATFORM_OWNER) {
+      return null;
+    }
+
+    if (user.role === UserRole.ORG_OWNER && user.organizationId) {
+      const properties = await this.prisma.property.findMany({
+        where: { organizationId: user.organizationId },
+        select: { id: true },
+      });
+      return properties.map((property) => property.id);
+    }
+
+    return user.propertyId ? [user.propertyId] : [];
+  }
+
+  private async organizationIdForNewUser(dto: CreateUserDto, currentUser?: AuthenticatedUser) {
+    if (dto.role === UserRole.PLATFORM_OWNER) {
+      return null;
+    }
+
+    if (dto.role === UserRole.ORG_OWNER) {
+      if (currentUser?.role === UserRole.PLATFORM_OWNER && dto.property_id) {
+        const property = await this.prisma.property.findUnique({
+          where: { id: dto.property_id },
+          select: { organizationId: true },
+        });
+        return property?.organizationId ?? null;
+      }
+
+      return currentUser?.organization_id ?? null;
+    }
+
+    if (!dto.property_id) {
+      return currentUser?.organization_id ?? null;
+    }
+
+    const property = await this.prisma.property.findUnique({
+      where: { id: dto.property_id },
+      select: { organizationId: true },
+    });
+
+    return property?.organizationId ?? currentUser?.organization_id ?? null;
+  }
+
   private randomToken() {
     return randomBytes(48).toString('base64url');
+  }
+
+  private createPropertyCode(name: string) {
+    const base = name
+      .normalize('NFKD')
+      .replace(/[^\w\s-]/g, '')
+      .trim()
+      .replace(/[-\s]+/g, '-')
+      .slice(0, 28)
+      .toUpperCase();
+
+    return `${base || 'PROPERTY'}-${randomBytes(2).toString('hex').toUpperCase()}`;
   }
 
   private hashToken(token: string) {
@@ -259,6 +377,7 @@ export class AuthService {
   private toUserResponse(user: {
     id: string;
     propertyId: string | null;
+    organizationId: string | null;
     name: string;
     email: string;
     role: UserRole;
@@ -268,6 +387,7 @@ export class AuthService {
   }) {
     return {
       id: user.id,
+      organization_id: user.organizationId,
       property_id: user.propertyId,
       name: user.name,
       email: user.email,

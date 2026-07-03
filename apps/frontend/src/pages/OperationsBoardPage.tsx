@@ -1,24 +1,30 @@
 import { ReactNode, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api, getApiErrorMessage } from '../api/client';
-import { Billing, DashboardSummary, HousekeepingTask, Property, ReservationGroup } from '../api/types';
+import { Billing, DashboardSummary, Guest, HousekeepingTask, Property, ReservationGroup, Room } from '../api/types';
 import { fetchAllPages } from '../api/pagination';
 import { CustomSelect } from '../components/CustomSelect';
-import { formatCurrency } from '../utils/format';
+import { useScrollLock } from '../hooks/useScrollLock';
+import { capitalizeFirstLetter, formatCompactReservationId, formatCurrency } from '../utils/format';
 import { createPreviewData, isPreviewId } from './previewData';
+import { FloatingSuccessToast } from './ui';
 
 type BoardRow = {
   reservation_group_id: string;
   reservation_group_status: ReservationGroup['reservation_status'];
   external_reservation_id: string;
-  property: ReservationGroup['property'];
+  property: Property;
+  primary_guest: ReservationGroup['primary_guest'];
   primary_guest_name: string;
   room: ReservationGroup['rooms'][number];
 };
 type OperationsBoardData = {
   billings: Billing[];
   dashboard: DashboardSummary;
+  guests: Guest[];
   housekeeping: HousekeepingTask[];
   properties: Property[];
+  rooms: Room[];
   reservationGroups: ReservationGroup[];
 };
 type OperationsBoardState = { data: OperationsBoardData | null; error: string | null; loading: boolean };
@@ -34,33 +40,95 @@ function getLocalDate() {
 function fmtDate(d: string) {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(`${d}T00:00:00`));
 }
+function fmtPolicyTime(value?: string | null) {
+  const raw = value || '00:00';
+  const [hoursText, minutes = '00'] = raw.split(':');
+  const hours = Number(hoursText);
+  if (!Number.isFinite(hours)) return raw;
+  const suffix = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = hours % 12 || 12;
+  return `${displayHours}:${minutes} ${suffix}`;
+}
 function daysUntil(dep: string, today: string) {
   return Math.max(0, Math.round((new Date(dep + 'T00:00:00').getTime() - new Date(today + 'T00:00:00').getTime()) / 86_400_000));
 }
 function dayDiff(from: string, to: string) {
   return Math.round((new Date(to + 'T00:00:00').getTime() - new Date(from + 'T00:00:00').getTime()) / 86_400_000);
 }
+function formatGuestCount(adults?: number | null, children?: number | null) {
+  if (adults == null && children == null) return 'Guest count not set';
+  const adultCount = adults ?? 1;
+  const childCount = children ?? 0;
+  const adultLabel = `${adultCount} adult${adultCount === 1 ? '' : 's'}`;
+  if (childCount <= 0) return adultLabel;
+  return `${adultLabel} · ${childCount} child${childCount === 1 ? '' : 'ren'}`;
+}
+function dateTimeForPropertyPolicy(date: string, time: string) {
+  return new Date(`${date}T${time || '00:00'}:00`);
+}
+function stayProgressPct(row: BoardRow) {
+  if (row.room.reservation_status !== 'CHECKED_IN' || !row.room.checked_in_at) return 0;
+  const start = new Date(row.room.checked_in_at).getTime();
+  const end = dateTimeForPropertyPolicy(row.room.departure_date, row.property.default_check_out_time ?? '11:00').getTime();
+  const now = Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+  return Math.max(0, Math.min(100, Math.round(((now - start) / (end - start)) * 100)));
+}
+
+function isHousekeepingOpenStatus(status: HousekeepingTask['status']) {
+  return status !== 'CLEAN' && status !== 'INSPECTED';
+}
+
+function buildAssignableRooms(row: BoardRow, rooms: Room[], reservationGroups: ReservationGroup[]) {
+  return rooms
+    .filter((room) => {
+      if (room.property.id !== row.property.id) return false;
+      if (room.room_category.id !== row.room.room_category.id) return false;
+      if (room.status !== 'AVAILABLE') return false;
+
+      return reservationGroups.every((group) =>
+        group.rooms.every((reservationRoom) => {
+          if (reservationRoom.id === row.room.id) return true;
+          if (reservationRoom.room.id !== room.id) return true;
+          if (!['BOOKED', 'CHECKED_IN'].includes(reservationRoom.reservation_status)) return true;
+          return reservationRoom.departure_date <= row.room.arrival_date || reservationRoom.arrival_date >= row.room.departure_date;
+        }),
+      );
+    })
+    .sort((left, right) => left.room_number.localeCompare(right.room_number, undefined, { numeric: true }));
+}
 
 /* ── Category dot color — softer palette ── */
-const CAT_COLORS: Record<string, { dot: string }> = {
-  'Suite':           { dot: 'bg-amber-400' },
-  'Deluxe King':     { dot: 'bg-violet-400' },
-  'Superior Twin':   { dot: 'bg-indigo-400' },
-  'Classic Double':  { dot: 'bg-sky-400' },
-  'Standard Single': { dot: 'bg-slate-400' },
-};
-function catDot(name: string) { return CAT_COLORS[name]?.dot ?? 'bg-slate-400'; }
+const CATEGORY_TONE_PALETTE = [
+  { dot: 'bg-sky-400', bg: 'bg-sky-50', border: 'border-sky-200', text: 'text-sky-700' },
+  { dot: 'bg-emerald-400', bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700' },
+  { dot: 'bg-indigo-400', bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700' },
+  { dot: 'bg-rose-400', bg: 'bg-rose-50', border: 'border-rose-200', text: 'text-rose-700' },
+  { dot: 'bg-amber-400', bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700' },
+  { dot: 'bg-violet-400', bg: 'bg-violet-50', border: 'border-violet-200', text: 'text-violet-700' },
+  { dot: 'bg-cyan-400', bg: 'bg-cyan-50', border: 'border-cyan-200', text: 'text-cyan-700' },
+  { dot: 'bg-lime-400', bg: 'bg-lime-50', border: 'border-lime-200', text: 'text-lime-700' },
+];
+
+function catTone(name: string) {
+  let hash = 0;
+  for (let index = 0; index < name.length; index += 1) {
+    hash = (hash * 31 + name.charCodeAt(index)) >>> 0;
+  }
+  return CATEGORY_TONE_PALETTE[hash % CATEGORY_TONE_PALETTE.length];
+}
 
 /* ── Room badge — soft indigo ── */
-function RoomBadge({ num, size = 'md' }: { num: string | null; size?: 'sm' | 'md' | 'lg' }) {
+function RoomBadge({ categoryName, num, size = 'md' }: { categoryName?: string; num: string | null; size?: 'sm' | 'md' | 'lg' }) {
   const dim = size === 'sm' ? 'w-8 h-8 text-[10px]' : size === 'lg' ? 'w-11 h-11 text-[13px]' : 'w-[38px] h-[38px] text-[11px]';
   if (!num) return (
     <span className={`flex-shrink-0 ${dim} rounded-xl flex items-center justify-center font-extrabold bg-slate-50 text-slate-400 border border-slate-200`}>
       TBD
     </span>
   );
+  const tone = categoryName ? catTone(categoryName) : { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700' };
   return (
-    <span className={`flex-shrink-0 ${dim} rounded-xl flex items-center justify-center font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200`}>
+    <span className={`flex-shrink-0 ${dim} rounded-xl flex items-center justify-center font-extrabold border ${tone.bg} ${tone.border} ${tone.text}`}>
       {num}
     </span>
   );
@@ -75,26 +143,26 @@ function StatusBadge({ isLate, isDueOut, isOut }: { isLate?: boolean; isDueOut?:
 }
 
 /* ── Check-in card ── */
-function CheckInCard({ row, balanceDue, hkOpen, today, onCheckIn, onRemind, pending }: {
+function CheckInCard({ row, balanceDue, hkOpen, today, onVerify, onRemind, checkInPending, reminderPending }: {
   row: BoardRow; balanceDue: number; hkOpen: boolean; today: string;
-  onCheckIn: () => void; onRemind: () => void; pending: boolean;
+  onVerify: () => void; onRemind: () => void; checkInPending: boolean; reminderPending: boolean;
 }) {
   const isLate = row.room.arrival_date < today && row.room.reservation_status === 'BOOKED';
-  const guestName = row.room.guest_name ?? row.primary_guest_name;
+  const guestName = capitalizeFirstLetter(row.room.guest_name ?? row.primary_guest_name);
   const roomNum = row.room.room.room_number ?? null;
 
   return (
     <div className="bg-white rounded-2xl border border-black/[0.06] hover:border-black/[0.12] hover:shadow-sm transition-all">
       <div className="p-4">
         <div className="flex items-start gap-3 mb-3">
-          <RoomBadge num={roomNum} size="lg" />
+          <RoomBadge categoryName={row.room.room_category.name} num={roomNum} size="lg" />
           <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between gap-2 mb-1">
               <p className="text-[13px] font-bold text-slate-800 truncate leading-tight">{guestName}</p>
               <StatusBadge isLate={isLate} />
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${catDot(row.room.room_category.name)}`} />
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${catTone(row.room.room_category.name).dot}`} />
               <span className="text-[11px] font-semibold text-slate-500">{row.room.room_category.name}</span>
               <span className="text-[11px] text-slate-400">{row.property.name}</span>
             </div>
@@ -102,22 +170,35 @@ function CheckInCard({ row, balanceDue, hkOpen, today, onCheckIn, onRemind, pend
         </div>
 
         <div className="flex items-center gap-2 text-[11px] text-slate-400 mb-3 flex-wrap">
-          <code className="font-mono bg-slate-50 border border-slate-100 rounded-md px-1.5 py-0.5 text-[10px] text-slate-500">{row.external_reservation_id}</code>
+          <code
+            className="max-w-full truncate font-mono bg-slate-50 border border-slate-100 rounded-md px-1.5 py-0.5 text-[10px] text-slate-500"
+            title={row.external_reservation_id}
+          >
+            {formatCompactReservationId(row.external_reservation_id)}
+          </code>
           <span>{fmtDate(row.room.arrival_date)} → {fmtDate(row.room.departure_date)}</span>
-          {hkOpen && <span className="text-[9.5px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-100">HK open</span>}
+          {hkOpen && <span className="text-[9.5px] font-bold px-2 py-0.5 rounded-full border border-sky-200 bg-sky-50 text-sky-700">HK open</span>}
         </div>
 
-        <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-50">
-          <div className="flex items-center gap-2">
+        <div className="pt-3 border-t border-slate-50 space-y-2.5">
+          <div className="flex items-center gap-2 flex-wrap">
             {row.room.total_amount != null && <span className="text-[13px] font-bold text-slate-800">{formatCurrency(row.room.total_amount)}</span>}
             {balanceDue > 0 && <span className="text-[11px] font-semibold text-rose-500">{formatCurrency(balanceDue)} due</span>}
           </div>
-          <div className="flex items-center gap-1.5">
-            <button disabled={pending} onClick={onRemind} className="h-7 px-3 text-[11px] font-semibold rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-40 transition-colors">
-              Remind
+          <div className="flex items-center gap-2">
+            <button
+              disabled={reminderPending}
+              onClick={onRemind}
+              className="h-8 flex-1 min-w-0 px-3 text-[11.5px] font-bold rounded-lg border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 disabled:opacity-40 transition-colors"
+            >
+              {reminderPending ? 'Sending…' : 'Remind'}
             </button>
-            <button disabled={pending} onClick={onCheckIn} className="h-7 px-3.5 text-[11px] font-bold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-40 transition-colors">
-              {pending ? 'Processing…' : 'Check in'}
+            <button
+              disabled={checkInPending}
+              onClick={onVerify}
+              className="h-8 flex-1 min-w-0 px-3 text-[11.5px] font-bold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-40 transition-colors"
+            >
+              {checkInPending ? 'Processing…' : 'Verify'}
             </button>
           </div>
         </div>
@@ -132,27 +213,32 @@ function DepartureCard({ row, balanceDue, today, onCheckOut, pending }: {
 }) {
   const isDueOut  = row.room.departure_date === today && row.room.reservation_status === 'CHECKED_IN';
   const isOut     = row.room.reservation_status === 'CHECKED_OUT';
-  const guestName = row.room.guest_name ?? row.primary_guest_name;
+  const guestName = capitalizeFirstLetter(row.room.guest_name ?? row.primary_guest_name);
   const roomNum   = row.room.room.room_number ?? null;
 
   return (
     <div className={`bg-white rounded-2xl border border-black/[0.06] hover:border-black/[0.12] hover:shadow-sm transition-all ${isOut ? 'opacity-50' : ''}`}>
       <div className="p-4">
         <div className="flex items-start gap-3 mb-3">
-          <RoomBadge num={roomNum} size="lg" />
+          <RoomBadge categoryName={row.room.room_category.name} num={roomNum} size="lg" />
           <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between gap-2 mb-1">
               <p className="text-[13px] font-bold text-slate-800 truncate leading-tight">{guestName}</p>
               <StatusBadge isDueOut={isDueOut && !isOut} isOut={isOut} />
             </div>
             <div className="flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${catDot(row.room.room_category.name)}`} />
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${catTone(row.room.room_category.name).dot}`} />
               <span className="text-[11px] font-semibold text-slate-500">{row.room.room_category.name}</span>
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2 text-[11px] text-slate-400 mb-3">
-          <code className="font-mono bg-slate-50 border border-slate-100 rounded-md px-1.5 py-0.5 text-[10px] text-slate-500">{row.external_reservation_id}</code>
+          <code
+            className="max-w-full truncate font-mono bg-slate-50 border border-slate-100 rounded-md px-1.5 py-0.5 text-[10px] text-slate-500"
+            title={row.external_reservation_id}
+          >
+            {formatCompactReservationId(row.external_reservation_id)}
+          </code>
           <span>{fmtDate(row.room.arrival_date)} → {fmtDate(row.room.departure_date)}</span>
         </div>
         <div className="flex items-center justify-between pt-3 border-t border-slate-50">
@@ -176,28 +262,31 @@ function RoomTile({ row, balanceDue, hkOpen, today, onOpen }: {
   row: BoardRow; balanceDue: number; hkOpen: boolean; today: string; onOpen: () => void;
 }) {
   const days    = daysUntil(row.room.departure_date, today);
-  const barPct  = Math.min((days / 7) * 100, 100);
-  const barColor = days <= 0 ? 'bg-amber-400' : days <= 3 ? 'bg-slate-400' : 'bg-emerald-400';
+  const barPct  = stayProgressPct(row);
+  const isFreshCheckIn = row.room.arrival_date === today;
+  const barColor = days <= 0 || barPct >= 100 ? 'bg-amber-400' : isFreshCheckIn ? 'bg-emerald-400' : 'bg-slate-400';
   const hasAlert = hkOpen || balanceDue > 0;
   const roomNum  = row.room.room.room_number ?? null;
   const guest    = row.room.guest_name ?? row.primary_guest_name;
   const parts    = guest.split(' ');
-  const shortName = parts.length >= 2 ? `${parts[0]} ${parts[parts.length - 1]}` : guest;
+  const shortName = capitalizeFirstLetter(parts.length >= 2 ? `${parts[0]} ${parts[parts.length - 1]}` : guest);
 
   return (
     <button type="button" onClick={onOpen} className={`relative w-full text-left bg-white rounded-xl border p-2.5 cursor-pointer hover:-translate-y-0.5 focus:ring-2 focus:ring-indigo-200 transition-all ${
-      hasAlert ? 'border-amber-200 bg-amber-50/20' : 'border-black/[0.06] hover:border-black/[0.12]'
+      hasAlert ? 'border-sky-200 bg-sky-50/20' : 'border-black/[0.06] hover:border-black/[0.12]'
     }`}>
       {/* Alert badges */}
       {(hkOpen || balanceDue > 0) && (
         <div className="absolute top-1.5 right-1.5 flex gap-0.5">
-          {hkOpen      && <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-600">HK</span>}
+          {hkOpen      && <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-sky-100 text-sky-700">HK</span>}
           {balanceDue > 0 && <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-rose-100 text-rose-600">BAL</span>}
         </div>
       )}
       {/* Room badge */}
-      <div className={`text-[11px] font-extrabold w-10 h-7 rounded-lg flex items-center justify-center mb-2 ${
-        !roomNum ? 'bg-slate-100 text-slate-400' : 'bg-indigo-50 text-indigo-600 border border-indigo-100'
+      <div className={`text-[11px] font-extrabold w-10 h-7 rounded-lg flex items-center justify-center mb-2 border ${
+        !roomNum
+          ? 'bg-slate-100 text-slate-400 border-slate-200'
+          : `${catTone(row.room.room_category.name).bg} ${catTone(row.room.room_category.name).text} ${catTone(row.room.room_category.name).border}`
       }`}>
         {roomNum ?? 'TBD'}
       </div>
@@ -205,7 +294,7 @@ function RoomTile({ row, balanceDue, hkOpen, today, onOpen }: {
       <p className="text-[11px] font-semibold text-slate-800 leading-tight truncate mb-0.5">{shortName}</p>
       {/* Category */}
       <div className="flex items-center gap-1 mb-2.5">
-        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${catDot(row.room.room_category.name)}`} />
+        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${catTone(row.room.room_category.name).dot}`} />
         <span className="text-[9.5px] text-slate-400 truncate">{row.room.room_category.name}</span>
       </div>
       {/* Days bar */}
@@ -214,9 +303,9 @@ function RoomTile({ row, balanceDue, hkOpen, today, onOpen }: {
       </div>
       <div className="flex items-center justify-between text-[9.5px]">
         <span className={days <= 0 ? 'text-amber-500 font-bold' : 'text-slate-400'}>
-          {days === 0 ? 'Today' : `${days}d`}
+          {barPct}% used
         </span>
-        <span className="text-slate-400">{fmtDate(row.room.departure_date)}</span>
+        <span className="text-slate-400">Out by {fmtPolicyTime(row.property.default_check_out_time)}</span>
       </div>
       <span className="mt-2 block text-[9px] font-bold text-indigo-500">View stay details</span>
     </button>
@@ -227,7 +316,7 @@ function RoomTile({ row, balanceDue, hkOpen, today, onOpen }: {
 const HK_STATUS: Record<string, { dot: string; bg: string; text: string; label: string }> = {
   CLEAN:          { dot: 'bg-emerald-400', bg: 'bg-emerald-50', text: 'text-emerald-600', label: 'Clean' },
   DIRTY:          { dot: 'bg-rose-400',    bg: 'bg-rose-50',    text: 'text-rose-600',    label: 'Dirty' },
-  CLEANING:       { dot: 'bg-amber-400',   bg: 'bg-amber-50',   text: 'text-amber-600',   label: 'Cleaning' },
+  CLEANING:       { dot: 'bg-sky-400',     bg: 'bg-sky-50',     text: 'text-sky-700',     label: 'Cleaning' },
   INSPECTED:      { dot: 'bg-violet-400',  bg: 'bg-violet-50',  text: 'text-violet-600',  label: 'Inspected' },
   OUT_OF_SERVICE: { dot: 'bg-slate-400',   bg: 'bg-slate-100',  text: 'text-slate-600',   label: 'Out of service' },
 };
@@ -259,47 +348,17 @@ function EmptyCol({ label }: { label: string }) {
   );
 }
 
-function FloatingSuccessToast({ message, onClose }: { message: string | null; onClose: () => void }) {
-  if (!message) return null;
-
-  return (
-    <div className="pointer-events-none fixed left-4 right-4 top-20 z-50 flex justify-center lg:left-auto lg:right-6 lg:top-6 lg:justify-end">
-      <div className="pointer-events-auto w-full max-w-xl rounded-2xl border border-emerald-500/70 bg-emerald-500 text-white shadow-[0_18px_40px_-20px_rgba(22,163,74,0.5)]">
-        <div className="flex items-center gap-3 px-5 py-4">
-          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-white text-emerald-500">
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-              <path d="M20 6 9 17l-5-5" />
-            </svg>
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[15px] font-semibold leading-5 text-white">{message}</p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-white/90 transition hover:bg-white/10 hover:text-white"
-            aria-label="Dismiss success message"
-          >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ── Main page ── */
 export function OperationsBoardPage({ previewDataEnabled = false }: { previewDataEnabled?: boolean }) {
   const [reloadKey, setReloadKey]         = useState(0);
   const [propertyFilter, setPropertyFilter] = useState('ALL');
   const [searchQuery, setSearchQuery]     = useState('');
   const [activeTab, setActiveTab]         = useState<'board' | 'housekeeping'>('board');
+  const [selectedArrivalRow, setSelectedArrivalRow] = useState<BoardRow | null>(null);
   const [selectedInHouseRow, setSelectedInHouseRow] = useState<BoardRow | null>(null);
   const [actionError, setActionError]     = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
-  const [pendingId, setPendingId]         = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<{ id: string; type: 'checkin' | 'checkout' | 'reminder' } | null>(null);
   const [boardState, setBoardState]       = useState<OperationsBoardState>(() => ({
     data: operationsBoardCache, error: null, loading: !operationsBoardCache,
   }));
@@ -319,12 +378,14 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
     Promise.all([
       api.get<DashboardSummary>('/dashboard/summary'),
       fetchAllPages<ReservationGroup>('/bookings/groups'),
+      fetchAllPages<Guest>('/guests'),
       fetchAllPages<Property>('/properties'),
+      fetchAllPages<Room>('/rooms'),
       fetchAllPages<HousekeepingTask>('/housekeeping'),
       fetchAllPages<Billing>('/billings'),
-    ]).then(([dashRes, groups, props, hk, bills]) => {
+    ]).then(([dashRes, groups, guests, props, rooms, hk, bills]) => {
       if (!active) return;
-      const next: OperationsBoardData = { billings: bills, dashboard: dashRes.data, housekeeping: hk, properties: props, reservationGroups: groups };
+      const next: OperationsBoardData = { billings: bills, dashboard: dashRes.data, guests, housekeeping: hk, properties: props, rooms, reservationGroups: groups };
       operationsBoardCache = next; operationsBoardCacheUpdatedAt = Date.now();
       setBoardState({ data: next, error: null, loading: false });
     }).catch((err: unknown) => {
@@ -340,18 +401,34 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
     setActionError('Sample preview records are read-only. Turn off sample data to work with live records.');
     return true;
   }
-  async function checkIn(id: string)      { if (blockPreviewAction(id)) return; setActionError(null); setActionSuccess(null); setPendingId(id); try { await api.put(`/bookings/groups/rooms/${id}/checkin`);          setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); } }
-  async function checkOut(id: string)     { if (blockPreviewAction(id)) return; setActionError(null); setActionSuccess(null); setPendingId(id); try { await api.put(`/bookings/groups/rooms/${id}/checkout`);         setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); } }
-  async function sendReminder(id: string) { if (blockPreviewAction(id)) return; setActionError(null); setActionSuccess(null); setPendingId(id); try { await api.post(`/bookings/groups/rooms/${id}/checkin-reminder`); setActionSuccess('Reminder sent successfully.'); setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); } }
+  async function checkIn(id: string, roomId: string)      { if (blockPreviewAction(id)) return; setActionError(null); setActionSuccess(null); setPendingAction({ id, type: 'checkin' }); try { await api.put(`/bookings/groups/rooms/${id}/checkin`, { room_id: roomId }); setSelectedArrivalRow(null); setActionSuccess('Guest checked in successfully.'); setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingAction(null); } }
+  async function checkOut(id: string)     { if (blockPreviewAction(id)) return; setActionError(null); setActionSuccess(null); setPendingAction({ id, type: 'checkout' }); try { await api.put(`/bookings/groups/rooms/${id}/checkout`); setSelectedInHouseRow((current) => current?.room.id === id ? null : current); setReloadKey(v => v + 1); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingAction(null); } }
+  async function sendReminder(id: string) { if (blockPreviewAction(id)) return; setActionError(null); setActionSuccess(null); setPendingAction({ id, type: 'reminder' }); try { await api.post(`/bookings/groups/rooms/${id}/checkin-reminder`); setActionSuccess('Reminder sent successfully.'); } catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingAction(null); } }
 
   const previewData  = previewDataEnabled ? createPreviewData() : null;
-  const data         = previewData ? { billings: previewData.billings, dashboard: previewData.dashboard, housekeeping: previewData.housekeeping, properties: previewData.properties, reservationGroups: previewData.reservationGroups } : boardState.data;
+  const data         = previewData ? { billings: previewData.billings, dashboard: previewData.dashboard, guests: [], housekeeping: previewData.housekeeping, properties: previewData.properties, rooms: previewData.rooms, reservationGroups: previewData.reservationGroups } : boardState.data;
   const properties   = data?.properties ?? [];
+  const rooms        = data?.rooms ?? [];
+  const guests       = data?.guests ?? [];
+  const selectedPolicyProperty =
+    propertyFilter !== 'ALL'
+      ? properties.find((property) => property.id === propertyFilter) ?? null
+      : properties.length === 1
+        ? properties[0]
+        : null;
+  const checkInPolicyLabel = selectedPolicyProperty
+    ? `Check-in from ${fmtPolicyTime(selectedPolicyProperty.default_check_in_time)}`
+    : 'Check-in from 12:00 PM';
+  const checkOutPolicyLabel = selectedPolicyProperty
+    ? `Checkout by ${fmtPolicyTime(selectedPolicyProperty.default_check_out_time)}`
+    : 'Checkout by 11:00 AM';
   const normalizedQ  = searchQuery.trim().toLowerCase();
   const reservations = (data?.reservationGroups ?? []).filter(g => propertyFilter === 'ALL' || g.property.id === propertyFilter);
   const hkTasks      = (data?.housekeeping ?? []).filter(t => propertyFilter === 'ALL' || t.property.id === propertyFilter);
   const billings     = (data?.billings ?? []).filter(b => propertyFilter === 'ALL' || b.reservation_room.property.id === propertyFilter);
 
+  const guestById = new Map(guests.map((guest) => [guest.id, guest] as const));
+  const propertyById = new Map(properties.map((property) => [property.id, property] as const));
   const roomBalanceMap  = new Map<string, number>();
   const groupBalanceMap = new Map<string, number>();
   for (const b of billings) {
@@ -361,7 +438,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
 
   const openTasksByRoomId = new Map<string, HousekeepingTask[]>();
   for (const task of hkTasks) {
-    if (task.status === 'CLEAN') continue;
+    if (!isHousekeepingOpenStatus(task.status)) continue;
     const cur = openTasksByRoomId.get(task.room_id) ?? [];
     cur.push(task); openTasksByRoomId.set(task.room_id, cur);
   }
@@ -369,7 +446,19 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
   const allRows: BoardRow[] = reservations.flatMap(g =>
     g.rooms.map(r => ({
       reservation_group_id: g.id, reservation_group_status: g.reservation_status,
-      external_reservation_id: g.external_reservation_id, property: g.property,
+      external_reservation_id: g.external_reservation_id,
+      property: propertyById.get(g.property.id) ?? {
+        ...g.property,
+        phone: null,
+        email: null,
+        address: '',
+        timezone: 'Asia/Kolkata',
+        default_check_in_time: '12:00',
+        default_check_out_time: '11:00',
+        is_active: true,
+        images: [],
+      },
+      primary_guest: g.primary_guest,
       primary_guest_name: g.primary_guest?.name ?? 'Imported guest', room: r,
     }))
   );
@@ -380,7 +469,14 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
   const lateArrivalCutoffDays = 2;
   const arrivals     = filteredRows.filter(r => r.room.arrival_date === today && r.room.reservation_status === 'BOOKED');
   const inHouse      = filteredRows.filter(r => r.room.reservation_status === 'CHECKED_IN').sort((a, b) => a.room.departure_date.localeCompare(b.room.departure_date));
-  const departures   = filteredRows.filter(r => r.room.departure_date === today && ['CHECKED_IN', 'CHECKED_OUT'].includes(r.room.reservation_status)).sort((a, b) => a.primary_guest_name.localeCompare(b.primary_guest_name));
+  const departures   = filteredRows
+    .filter(r => r.room.departure_date === today && ['CHECKED_IN', 'CHECKED_OUT'].includes(r.room.reservation_status))
+    .sort((a, b) => {
+      const aCleared = a.room.reservation_status === 'CHECKED_OUT';
+      const bCleared = b.room.reservation_status === 'CHECKED_OUT';
+      if (aCleared !== bCleared) return aCleared ? 1 : -1;
+      return a.primary_guest_name.localeCompare(b.primary_guest_name);
+    });
   const lateArrivals = filteredRows.filter(r =>
     r.room.arrival_date < today &&
     r.room.reservation_status === 'BOOKED' &&
@@ -398,6 +494,11 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
   const totalBalance   = normalizedQ
     ? Array.from(new Set(filteredRows.map(r => r.reservation_group_id)), id => groupBalanceMap.get(id) ?? 0).reduce((s, v) => s + v, 0)
     : (data?.dashboard.pending_balance_total ?? 0);
+  const visibleRoomCategories = Array.from(
+    new Set(filteredRows.map((row) => row.room.room_category.name)),
+  )
+    .sort((left, right) => left.localeCompare(right))
+    .slice(0, 4);
 
   const depCleared   = departures.filter(r => r.room.reservation_status === 'CHECKED_OUT').length;
   const occupancyDone = data?.dashboard.occupied_rooms ?? inHouse.length;
@@ -405,7 +506,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
   const occupancyPct = occupancyTotal > 0 ? Math.round((occupancyDone / occupancyTotal) * 100) : 0;
   const checkInTotal = checkedInToday + arrivals.length;
   const hasAlerts    = lateArrivals.length > 0 || hkBlockedRows.length > 0 || balanceDueRows.length > 0;
-  const hkOpen       = hkTasks.filter(t => t.status !== 'CLEAN');
+  const hkOpen       = hkTasks.filter(t => isHousekeepingOpenStatus(t.status));
   const hkStatuses   = ['DIRTY', 'CLEANING', 'CLEAN', 'INSPECTED', 'OUT_OF_SERVICE'] as const;
 
   const dateLabel = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(`${today}T00:00:00`));
@@ -490,12 +591,6 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
             ))}
           </div>
 
-          {(propertyFilter !== 'ALL' || normalizedQ) && (
-            <button onClick={() => { setPropertyFilter('ALL'); setSearchQuery(''); }} className="text-[11px] font-semibold text-slate-400 hover:text-slate-700 transition-colors">
-              Reset ×
-            </button>
-          )}
-
         </div>
 
         {/* Tab row */}
@@ -541,10 +636,10 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
 
         {/* ── Alert banner ── */}
         {hasAlerts && activeTab === 'board' && (
-          <div className="bg-white rounded-2xl border border-amber-200 overflow-hidden">
-            <div className="flex items-center gap-2.5 px-5 py-2.5 bg-amber-50/60 border-b border-amber-100">
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
-              <p className="text-[11.5px] font-bold text-amber-800">
+          <div className="bg-white rounded-2xl border border-sky-200 overflow-hidden">
+            <div className="flex items-center gap-2.5 px-5 py-2.5 bg-sky-50/70 border-b border-sky-100">
+              <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse flex-shrink-0" />
+              <p className="text-[11.5px] font-bold text-sky-800">
                 {[
                   lateArrivals.length > 0    && `${lateArrivals.length} late arrival${lateArrivals.length > 1 ? 's' : ''}`,
                   hkBlockedRows.length > 0   && `${hkBlockedRows.length} HK alert${hkBlockedRows.length > 1 ? 's' : ''}`,
@@ -555,19 +650,19 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
             <div className="px-5 py-3 flex flex-wrap gap-2">
               {lateArrivals.map(r => (
                 <div key={r.room.id} className="flex items-center gap-2 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2">
-                  <RoomBadge num={r.room.room.room_number ?? null} size="sm" />
+                  <RoomBadge categoryName={r.room.room_category.name} num={r.room.room.room_number ?? null} size="sm" />
                   <div><p className="text-[11px] font-bold text-rose-700">{r.room.guest_name ?? r.primary_guest_name}</p><p className="text-[10px] text-rose-500">Late since {fmtDate(r.room.arrival_date)}</p></div>
                 </div>
               ))}
               {hkBlockedRows.map(r => (
-                <div key={r.room.id} className="flex items-center gap-2 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
-                  <RoomBadge num={r.room.room.room_number ?? null} size="sm" />
-                  <div><p className="text-[11px] font-bold text-amber-700">{r.room.guest_name ?? r.primary_guest_name}</p><p className="text-[10px] text-amber-500">HK task open</p></div>
+                <div key={r.room.id} className="flex items-center gap-2 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2">
+                  <RoomBadge categoryName={r.room.room_category.name} num={r.room.room.room_number ?? null} size="sm" />
+                  <div><p className="text-[11px] font-bold text-sky-700">{r.room.guest_name ?? r.primary_guest_name}</p><p className="text-[10px] text-sky-600">HK task open</p></div>
                 </div>
               ))}
               {balanceDueRows.map(r => (
                 <div key={r.room.id} className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
-                  <RoomBadge num={r.room.room.room_number ?? null} size="sm" />
+                  <RoomBadge categoryName={r.room.room_category.name} num={r.room.room.room_number ?? null} size="sm" />
                   <div><p className="text-[11px] font-bold text-slate-700">{r.room.guest_name ?? r.primary_guest_name}</p><p className="text-[10px] text-rose-500">{formatCurrency(groupBalanceMap.get(r.reservation_group_id) ?? 0)} due</p></div>
                 </div>
               ))}
@@ -582,7 +677,12 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
             {/* Col 1 — Check-in queue */}
             <div>
               <ColHeader label="Arrivals today" title="Check-in queue" count={checkInQueue.length}
-                right={lateArrivals.length > 0 ? <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-100">{lateArrivals.length} late</span> : undefined} />
+                right={
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">{checkInPolicyLabel}</span>
+                    {lateArrivals.length > 0 && <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-100">{lateArrivals.length} late</span>}
+                  </div>
+                } />
               <div className="space-y-2.5">
                 {checkInQueue.length === 0 ? <EmptyCol label="No arrivals queued" /> : checkInQueue.map(row => (
                   <CheckInCard
@@ -591,8 +691,9 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
                     balanceDue={groupBalanceMap.get(row.reservation_group_id) ?? 0}
                     hkOpen={(row.room.room.id ? (openTasksByRoomId.get(row.room.room.id) ?? []) : []).length > 0}
                     today={today}
-                    pending={pendingId === row.room.id}
-                    onCheckIn={() => void checkIn(row.room.id)}
+                    checkInPending={pendingAction?.id === row.room.id && pendingAction.type === 'checkin'}
+                    reminderPending={pendingAction?.id === row.room.id && pendingAction.type === 'reminder'}
+                    onVerify={() => setSelectedArrivalRow(row)}
                     onRemind={() => void sendReminder(row.room.id)}
                   />
                 ))}
@@ -611,9 +712,9 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
                     <span className="h-5 min-w-[20px] px-1.5 rounded-full bg-emerald-100 text-[10px] font-bold text-emerald-600 flex items-center justify-center">{inHouse.length}</span>
                   </div>
                   <div className="flex items-center gap-3 flex-shrink-0">
-                    {Object.entries(CAT_COLORS).slice(0, 4).map(([cat, { dot }]) => (
+                    {visibleRoomCategories.map((cat) => (
                       <span key={cat} className="flex items-center gap-1 text-[9.5px] text-slate-400">
-                        <i className={`w-2 h-2 rounded-full not-italic ${dot}`} />{cat.split(' ')[0]}
+                        <i className={`w-2 h-2 rounded-full not-italic ${catTone(cat).dot}`} />{cat}
                       </span>
                     ))}
                   </div>
@@ -640,11 +741,11 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
                 )}
                 <div className="px-5 py-2.5 border-t border-black/[0.04] bg-[#f9f9f7] flex items-center justify-between">
                   <div className="flex items-center gap-4 text-[10.5px] text-slate-400">
-                    <span className="flex items-center gap-1.5"><i className="not-italic w-1.5 h-1.5 rounded-full bg-emerald-400" />Plenty of time</span>
-                    <span className="flex items-center gap-1.5"><i className="not-italic w-1.5 h-1.5 rounded-full bg-slate-400" />Departing soon</span>
+                    <span className="flex items-center gap-1.5"><i className="not-italic w-1.5 h-1.5 rounded-full bg-emerald-400" />Checked in today</span>
+                    <span className="flex items-center gap-1.5"><i className="not-italic w-1.5 h-1.5 rounded-full bg-slate-400" />Stay in progress</span>
                     <span className="flex items-center gap-1.5"><i className="not-italic w-1.5 h-1.5 rounded-full bg-amber-400" />Today / due out</span>
                   </div>
-                  <span className="text-[10.5px] font-semibold text-slate-400">Select a tile to view stay details</span>
+                  <span className="text-[10.5px] font-semibold text-slate-400">{checkOutPolicyLabel}</span>
                 </div>
               </div>
             </div>
@@ -656,14 +757,14 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
                   right={<span className="text-[10.5px] font-semibold text-slate-400">{depCleared}/{departures.length} cleared</span>} />
                 <div className="space-y-2.5">
                   {departures.length === 0 ? <EmptyCol label="No departures today" /> : departures.map(row => (
-                    <DepartureCard
-                      key={row.room.id}
-                      row={row}
-                      balanceDue={groupBalanceMap.get(row.reservation_group_id) ?? 0}
-                      today={today}
-                      pending={pendingId === row.room.id}
-                      onCheckOut={() => void checkOut(row.room.id)}
-                    />
+                      <DepartureCard
+                        key={row.room.id}
+                        row={row}
+                        balanceDue={groupBalanceMap.get(row.reservation_group_id) ?? 0}
+                        today={today}
+                        pending={pendingAction?.id === row.room.id && pendingAction.type === 'checkout'}
+                        onCheckOut={() => void checkOut(row.room.id)}
+                      />
                   ))}
                 </div>
               </div>
@@ -677,7 +778,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
                 <div className="divide-y divide-black/[0.03]">
                   {checkInQueue.filter(r => r.room.arrival_date >= today).slice(0, 5).map(r => (
                     <div key={r.room.id} className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50/50 transition-colors">
-                      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${catDot(r.room.room_category.name)}`} />
+                      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${catTone(r.room.room_category.name).dot}`} />
                       <div className="flex-1 min-w-0">
                         <p className="text-[11.5px] font-bold text-slate-700 truncate">{r.room.guest_name ?? r.primary_guest_name}</p>
                         <p className="text-[10px] text-slate-400">{r.room.room_category.name} · {fmtDate(r.room.arrival_date)}</p>
@@ -757,32 +858,196 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
 
       </div>
 
+      {selectedArrivalRow && (
+        <ModalPortal>
+          <ArrivalVerificationModal
+            assignableRooms={buildAssignableRooms(selectedArrivalRow, rooms, reservations)}
+            balanceDue={groupBalanceMap.get(selectedArrivalRow.reservation_group_id) ?? 0}
+            checkInPending={pendingAction?.id === selectedArrivalRow.room.id && pendingAction.type === 'checkin'}
+            guestProfile={selectedArrivalRow.primary_guest?.id ? (guestById.get(selectedArrivalRow.primary_guest.id) ?? null) : null}
+            hkOpen={Boolean(selectedArrivalRow.room.room.id && (openTasksByRoomId.get(selectedArrivalRow.room.room.id) ?? []).length > 0)}
+            onClose={() => setSelectedArrivalRow(null)}
+            onConfirm={(roomId) => void checkIn(selectedArrivalRow.room.id, roomId)}
+            row={selectedArrivalRow}
+            today={today}
+          />
+        </ModalPortal>
+      )}
+
       {selectedInHouseRow && (
-        <InHouseStayModal
-          balanceDue={groupBalanceMap.get(selectedInHouseRow.reservation_group_id) ?? 0}
-          hkOpen={Boolean(selectedInHouseRow.room.room.id && (openTasksByRoomId.get(selectedInHouseRow.room.room.id) ?? []).length > 0)}
-          onClose={() => setSelectedInHouseRow(null)}
-          row={selectedInHouseRow}
-          today={today}
-        />
+        <ModalPortal>
+          <InHouseStayModal
+            balanceDue={groupBalanceMap.get(selectedInHouseRow.reservation_group_id) ?? 0}
+            hkOpen={Boolean(selectedInHouseRow.room.room.id && (openTasksByRoomId.get(selectedInHouseRow.room.room.id) ?? []).length > 0)}
+            checkOutPending={pendingAction?.id === selectedInHouseRow.room.id && pendingAction.type === 'checkout'}
+            onClose={() => setSelectedInHouseRow(null)}
+            onCheckOut={() => void checkOut(selectedInHouseRow.room.id)}
+            row={selectedInHouseRow}
+            today={today}
+          />
+        </ModalPortal>
       )}
     </div>
   );
 }
 
-function InHouseStayModal({ balanceDue, hkOpen, onClose, row, today }: {
+function ModalPortal({ children }: { children: ReactNode }) {
+  return createPortal(children, document.body);
+}
+
+function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending, guestProfile, hkOpen, onClose, onConfirm, row, today }: {
+  assignableRooms: Room[];
   balanceDue: number;
+  checkInPending: boolean;
+  guestProfile: Guest | null;
   hkOpen: boolean;
   onClose: () => void;
+  onConfirm: (roomId: string) => void;
   row: BoardRow;
   today: string;
 }) {
-  const guestName = row.room.guest_name ?? row.primary_guest_name;
+  const [selectedRoomId, setSelectedRoomId] = useState('');
+  const guestName = capitalizeFirstLetter(row.room.guest_name ?? row.primary_guest_name);
+  const isLate = row.room.arrival_date < today && row.room.reservation_status === 'BOOKED';
+  const guestPhone = guestProfile?.phone ?? row.primary_guest?.phone ?? '—';
+  const guestEmail = guestProfile?.email ?? row.primary_guest?.email ?? '—';
+  const guestIdProof = guestProfile?.id_proof ?? '—';
+  const guestAddress = guestProfile?.address ?? 'Imported from reservation feed';
+  const selectedRoom = assignableRooms.find((room) => room.id === selectedRoomId) ?? null;
+
+  useScrollLock(true);
+
+  useEffect(() => {
+    setSelectedRoomId('');
+  }, [row.room.id]);
+
+  return (
+    <>
+      <button aria-label="Close arrival verification" className="fixed inset-0 z-40 bg-slate-900/20" onClick={onClose} type="button" />
+      <section aria-label="Arrival verification details" className="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-3rem)] w-[calc(100vw_-_2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-3.5">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-500">Arrival verification</p>
+            <h3 className="mt-1 text-[17px] font-black text-slate-900">{guestName}</h3>
+            <p className="mt-0.5 text-[12px] text-slate-400">{row.property.name}</p>
+          </div>
+          <button aria-label="Close arrival verification" className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onClick={onClose} type="button">×</button>
+        </div>
+        <div className="min-h-0 space-y-3 overflow-y-auto p-4">
+          <div className="flex items-center gap-3 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+            <RoomBadge categoryName={row.room.room_category.name} num={selectedRoom?.room_number ?? row.room.room.room_number ?? null} size="lg" />
+            <div className="min-w-0">
+              <p className="text-[13px] font-bold text-slate-800">{row.room.room_category.name}</p>
+              <p className="text-[11px] text-slate-500">{row.room.rate_plan.name}</p>
+              <p className="mt-1 text-[10.5px] font-semibold text-indigo-600">
+                {selectedRoom ? `Assigning room ${selectedRoom.room_number}` : 'Select a room for check-in'}
+              </p>
+            </div>
+          </div>
+          <div className="space-y-2 rounded-xl border border-slate-100 bg-slate-50/70 p-3.5">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Room assignment</p>
+              <span className="text-[10.5px] font-semibold text-slate-400">{assignableRooms.length} available</span>
+            </div>
+            <CustomSelect
+              options={assignableRooms.map((room) => ({
+                label: `Room ${room.room_number}`,
+                value: room.id,
+              }))}
+              placeholder={assignableRooms.length === 0 ? 'No room available for this stay' : 'Select room to assign'}
+              value={selectedRoomId}
+              onChange={setSelectedRoomId}
+            />
+            {assignableRooms.length === 0 ? (
+              <p className="text-[11px] font-medium text-rose-500">No available room matches this stay window and room category.</p>
+            ) : (
+              <p className="text-[11px] text-slate-500">Check-in will assign the selected room and move the stay into that room on the timeline.</p>
+            )}
+          </div>
+          <div>
+            <p className="mb-2.5 text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Guest details</p>
+            <div className="grid grid-cols-2 gap-2.5">
+              <ArrivalGuestField label="Phone" value={guestPhone} />
+              <ArrivalGuestField label="Email" value={guestEmail} />
+              <ArrivalGuestField label="ID proof" value={guestIdProof} mono />
+              <ArrivalGuestField label="Address" value={guestAddress} />
+            </div>
+          </div>
+          <div>
+            <p className="mb-2.5 text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Stay details</p>
+            <dl className="divide-y divide-slate-100 rounded-xl border border-slate-100 px-4">
+              {[
+                ['Reservation', row.external_reservation_id],
+                ['Arrival', fmtDate(row.room.arrival_date)],
+                ['Departure', fmtDate(row.room.departure_date)],
+                ['Guests', formatGuestCount(row.room.adults, row.room.children)],
+                ['Stay total', row.room.total_amount == null ? '—' : formatCurrency(row.room.total_amount)],
+              ].map(([label, value]) => (
+                <div className="flex items-start justify-between gap-3 py-2.5" key={label}>
+                  <dt className="text-[11px] font-semibold text-slate-400">{label}</dt>
+                  <dd className="text-right text-[12px] font-bold text-slate-700">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+          {/* <div className="space-y-2 rounded-xl border border-slate-100 p-3.5">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Verification checks</p>
+            <div className="flex flex-wrap gap-2">
+              <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${isLate ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                {isLate ? `Late since ${fmtDate(row.room.arrival_date)}` : 'Arrival date is valid'}
+              </span>
+              <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${hkOpen ? 'bg-sky-50 text-sky-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                {hkOpen ? 'Housekeeping task open' : 'Room ready'}
+              </span>
+              <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${balanceDue > 0 ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                {balanceDue > 0 ? `${formatCurrency(balanceDue)} balance due` : 'Folio clear'}
+              </span>
+            </div>
+          </div> */}
+        </div>
+        <div className="flex items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/80 px-5 py-3.5">
+          <p className="text-[11px] text-slate-500">Review guest and room details before completing check-in.</p>
+          <button
+            className="h-9 rounded-lg bg-indigo-600 px-4 text-[12px] font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
+            disabled={checkInPending || !selectedRoomId}
+            onClick={() => onConfirm(selectedRoomId)}
+            type="button"
+          >
+            {checkInPending ? 'Checking in…' : 'Confirm check in'}
+          </button>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function ArrivalGuestField({ label, mono = false, value }: { label: string; mono?: boolean; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+      <p className="mb-1.5 text-[9.5px] font-bold uppercase tracking-wider text-slate-400">{label}</p>
+      <p className={`text-[12.5px] font-semibold text-slate-700 leading-snug ${mono ? 'font-mono text-[11.5px]' : ''}`}>{value}</p>
+    </div>
+  );
+}
+
+function InHouseStayModal({ balanceDue, checkOutPending, hkOpen, onClose, onCheckOut, row, today }: {
+  balanceDue: number;
+  checkOutPending: boolean;
+  hkOpen: boolean;
+  onClose: () => void;
+  onCheckOut: () => void;
+  row: BoardRow;
+  today: string;
+}) {
+  const guestName = capitalizeFirstLetter(row.room.guest_name ?? row.primary_guest_name);
   const remainingDays = daysUntil(row.room.departure_date, today);
+
+  useScrollLock(true);
+
   return (
     <>
       <button aria-label="Close stay details" className="fixed inset-0 z-40 bg-slate-900/20" onClick={onClose} type="button" />
-      <section aria-label="In-house stay details" className="fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-[calc(100vw_-_2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl">
+      <section aria-label="In-house stay details" className="fixed left-1/2 top-12 z-50 max-h-[calc(100vh-4rem)] w-[calc(100vw_-_2rem)] max-w-lg -translate-x-1/2 overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl sm:top-14">
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-500">In-house stay</p>
@@ -793,7 +1058,7 @@ function InHouseStayModal({ balanceDue, hkOpen, onClose, row, today }: {
         </div>
         <div className="space-y-4 p-5">
           <div className="flex items-center gap-3 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
-            <RoomBadge num={row.room.room.room_number ?? null} size="lg" />
+            <RoomBadge categoryName={row.room.room_category.name} num={row.room.room.room_number ?? null} size="lg" />
             <div>
               <p className="text-[13px] font-bold text-slate-800">{row.room.room_category.name}</p>
               <p className="text-[11px] text-slate-500">{row.room.rate_plan.name}</p>
@@ -805,7 +1070,7 @@ function InHouseStayModal({ balanceDue, hkOpen, onClose, row, today }: {
               ['Arrival', fmtDate(row.room.arrival_date)],
               ['Departure', fmtDate(row.room.departure_date)],
               ['Remaining', remainingDays === 0 ? 'Due out today' : `${remainingDays} day${remainingDays === 1 ? '' : 's'}`],
-              ['Guests', `${row.room.adults ?? 0} adult${row.room.adults === 1 ? '' : 's'} · ${row.room.children ?? 0} child${row.room.children === 1 ? '' : 'ren'}`],
+              ['Guests', formatGuestCount(row.room.adults, row.room.children)],
               ['Stay total', row.room.total_amount == null ? '—' : formatCurrency(row.room.total_amount)],
             ].map(([label, value]) => (
               <div className="flex items-start justify-between gap-3 py-3" key={label}>
@@ -817,7 +1082,7 @@ function InHouseStayModal({ balanceDue, hkOpen, onClose, row, today }: {
           <div className="space-y-2 rounded-xl border border-slate-100 p-4">
             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Operational status</p>
             <div className="flex flex-wrap gap-2">
-              <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${hkOpen ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+              <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${hkOpen ? 'bg-sky-50 text-sky-700' : 'bg-emerald-50 text-emerald-700'}`}>
                 {hkOpen ? 'Housekeeping task open' : 'No housekeeping blocker'}
               </span>
               <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${balanceDue > 0 ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>
@@ -825,6 +1090,17 @@ function InHouseStayModal({ balanceDue, hkOpen, onClose, row, today }: {
               </span>
             </div>
           </div>
+        </div>
+        <div className="flex items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/80 px-5 py-4">
+          <p className="text-[11px] text-slate-500">Use checkout when the guest is leaving and the room should return to available status.</p>
+          <button
+            className="h-9 min-w-[8.5rem] rounded-lg bg-slate-700 px-5 text-[12px] font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
+            disabled={checkOutPending}
+            onClick={onCheckOut}
+            type="button"
+          >
+            {checkOutPending ? 'Processing…' : 'Check out'}
+          </button>
         </div>
       </section>
     </>

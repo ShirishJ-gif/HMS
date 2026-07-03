@@ -2,12 +2,13 @@ import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'reac
 import '@daypicker/react/style.css';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
+import { getStoredAuthUser } from '../api/session';
 import { PricingRule, PricingRuleType, Property, RatePlan, Room, RoomCategory } from '../api/types';
 import { CalendarDatePickerField, formatDatePickerLabel, InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
-import { labelCls, inputCls, primaryBtn, secondaryBtn, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
+import { labelCls, inputCls, primaryBtn, secondaryBtn, ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
 
 /* ── Color palette (one per property, cycles) ────────────────── */
 const PROPERTY_COLORS = [
@@ -18,6 +19,28 @@ const PROPERTY_COLORS = [
   { bg: 'bg-violet-600',  text: 'text-violet-600',  border: 'border-violet-500',  ring: 'stroke-violet-500',  bar: 'bg-violet-500'  },
 ];
 function getColor(idx: number) { return PROPERTY_COLORS[idx % PROPERTY_COLORS.length]; }
+function formatPropertyTime(value: string) {
+  const [hoursText, minutes = '00'] = value.split(':');
+  const hours = Number(hoursText);
+  if (!Number.isFinite(hours)) return value;
+  const suffix = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = hours % 12 || 12;
+  return `${displayHours}:${minutes} ${suffix}`;
+}
+function parsePolicyTime(value: string) {
+  const [hoursText, minutesText = '00'] = value.split(':');
+  const hours24 = Number(hoursText);
+  const minute = Number(minutesText);
+  return {
+    hour12: hours24 % 12 || 12,
+    minute: Number.isFinite(minute) ? minute : 0,
+    period: hours24 >= 12 ? 'PM' : 'AM',
+  };
+}
+function buildPolicyTime(hour12: number, minute: number, period: string) {
+  const normalizedHour = period === 'PM' ? (hour12 === 12 ? 12 : hour12 + 12) : (hour12 === 12 ? 0 : hour12);
+  return `${String(normalizedHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
 const SETUP_PROGRESS_COLOR = {
   text: 'text-emerald-600',
   border: 'border-emerald-500',
@@ -66,6 +89,109 @@ function computeSetup(p: Property, cats: RoomCategory[], rps: RatePlan[], rules:
     physicalRooms: hasPhysicalRooms,
     ota:          hasRoomTypes && hasRatePlans && hasPricingRules && hasPhysicalRooms,
   };
+}
+
+export function TimePolicyPicker({ invalid = false, onChange, value }: { invalid?: boolean; onChange: (value: string) => void; value: string }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const { hour12, minute, period } = parsePolicyTime(value);
+  const hours = Array.from({ length: 12 }, (_, index) => index + 1);
+  const minutes = Array.from({ length: 12 }, (_, index) => index * 5);
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [open]);
+
+  function commit(nextHour = hour12, nextMinute = minute, nextPeriod = period) {
+    onChange(buildPolicyTime(nextHour, nextMinute, nextPeriod));
+  }
+
+  return (
+    <div className="relative" ref={rootRef}>
+      <button
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        className={`flex h-11 w-full items-center justify-between rounded-xl border bg-white px-3.5 text-left shadow-sm shadow-slate-950/[0.03] outline-none transition ${invalid ? 'border-rose-300 ring-4 ring-rose-500/10' : open ? 'border-slate-400 ring-4 ring-slate-900/5' : 'border-slate-200 hover:border-slate-300'}`}
+        onClick={() => setOpen((current) => !current)}
+        type="button"
+      >
+        <span className="text-[13px] font-bold text-slate-900">{formatPropertyTime(value)}</span>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-[18rem] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/15">
+          <div className="flex items-center justify-between border-b border-slate-100 bg-stone-50 px-3.5 py-2.5">
+            <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Select time</span>
+            <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 ring-1 ring-slate-200">{formatPropertyTime(value)}</span>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 p-3">
+            <div>
+              <p className="mb-2 text-center text-[9.5px] font-bold uppercase tracking-[0.14em] text-slate-400">Hour</p>
+              <div className="scrollbar-none max-h-44 space-y-1 overflow-y-auto rounded-xl bg-slate-50 p-1">
+                {hours.map((hour) => (
+                  <button
+                    className={`w-full rounded-lg px-2 py-2.5 text-[12px] font-bold transition ${hour === hour12 ? 'bg-white text-slate-900 ring-1 ring-slate-300 shadow-sm' : 'text-slate-600 hover:bg-white hover:text-slate-900'}`}
+                    key={hour}
+                    onClick={() => commit(hour)}
+                    type="button"
+                  >
+                    {hour}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-2 text-center text-[9.5px] font-bold uppercase tracking-[0.14em] text-slate-400">Min</p>
+              <div className="scrollbar-none max-h-44 space-y-1 overflow-y-auto rounded-xl bg-slate-50 p-1">
+                {minutes.map((option) => (
+                  <button
+                    className={`w-full rounded-lg px-2 py-2.5 text-[12px] font-bold transition ${option === minute ? 'bg-white text-slate-900 ring-1 ring-slate-300 shadow-sm' : 'text-slate-600 hover:bg-white hover:text-slate-900'}`}
+                    key={option}
+                    onClick={() => commit(hour12, option)}
+                    type="button"
+                  >
+                    {String(option).padStart(2, '0')}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-2 text-center text-[9.5px] font-bold uppercase tracking-[0.14em] text-slate-400">AM/PM</p>
+              <div className="scrollbar-none max-h-44 space-y-1 overflow-y-auto rounded-xl bg-slate-50 p-1">
+                {['AM', 'PM'].map((option) => (
+                  <button
+                    className={`w-full rounded-lg px-2 py-2.5 text-[12px] font-bold transition ${option === period ? 'bg-white text-slate-900 ring-1 ring-slate-300 shadow-sm' : 'text-slate-600 hover:bg-white hover:text-slate-900'}`}
+                    key={option}
+                    onClick={() => commit(hour12, minute, option)}
+                    type="button"
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="border-t border-slate-100 bg-white px-3 py-2.5">
+            <button
+              className="h-9 w-full rounded-xl border border-slate-200 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-700 transition hover:bg-slate-100"
+              onClick={() => setOpen(false)}
+              type="button"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ── Health ring SVG ─────────────────────────────────────────── */
@@ -230,7 +356,7 @@ const TIMEZONE_OPTIONS = [
   // { label: 'America/New_York', value: 'America/New_York' },
   // { label: 'America/Los_Angeles', value: 'America/Los_Angeles' },
 ];
-const defaultPropertyForm    = { name: '', code: '', phone: '', email: '', address: '', timezone: 'Asia/Kolkata' };
+const defaultPropertyForm    = { name: '', code: '', phone: '', email: '', address: '', timezone: 'Asia/Kolkata', default_check_in_time: '12:00', default_check_out_time: '11:00' };
 const defaultCategoryForm    = { property_id: '', name: '', code: '', description: '', max_occupancy: '2' };
 const defaultRatePlanForm    = { property_id: '', room_category_id: '', name: '', code: '', base_rate: '', currency: 'INR' };
 const defaultPricingRuleForm = { property_id: '', rate_plan_id: '', name: '', type: 'WEEKEND', adjustment_percent: '', start_date: '', end_date: '', occupancy_threshold: '' };
@@ -274,9 +400,11 @@ export function PropertySetupPage({
   const [addingPricingRule,   setAddingPricingRule]   = useState(false);
   const [addingPropertyImage, setAddingPropertyImage] = useState(false);
   const [addingRoomImage,     setAddingRoomImage]     = useState(false);
+  const [editingProperty, setEditingProperty] = useState(false);
 
   /* ── form state ── */
   const [propertyForm,    setPropertyForm]    = useState(defaultPropertyForm);
+  const [propertyEditForm, setPropertyEditForm] = useState(defaultPropertyForm);
   const [categoryForm,    setCategoryForm]    = useState(defaultCategoryForm);
   const [ratePlanForm,    setRatePlanForm]    = useState(defaultRatePlanForm);
   const [pricingRuleForm, setPricingRuleForm] = useState(defaultPricingRuleForm);
@@ -305,6 +433,8 @@ export function PropertySetupPage({
   const isLoadingProperties = propertiesState.loading && properties.length === 0;
   const loadError = propertiesState.error ?? categoriesState.error ?? ratePlansState.error ?? pricingRulesState.error ?? roomsState.error;
   const selectedPropertyId = controlledSelectedPropertyId !== undefined ? controlledSelectedPropertyId : internalSelectedPropertyId;
+  const currentUser = getStoredAuthUser();
+  const canEditSelectedProperty = currentUser?.role === 'ORG_OWNER';
 
   function selectPropertyId(propertyId: string | null) {
     setInternalSelectedPropertyId(propertyId);
@@ -345,6 +475,7 @@ export function PropertySetupPage({
     setSelectedPricingRuleId(null);
     setAddingCategory(false); setAddingRatePlan(false);
     setAddingPricingRule(false); setAddingPropertyImage(false); setAddingRoomImage(false);
+    setEditingProperty(false);
     rightPanelRef.current?.scrollTo({ top: 0 });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPropertyId]);
@@ -367,6 +498,20 @@ export function PropertySetupPage({
     ...(selectedProperty?.images ?? []).map((img) => ({ ...img, label: selectedProperty!.name, sub: 'Property photo' })),
     ...selectedCategories.flatMap((cat) => cat.images.map((img) => ({ ...img, label: cat.name, sub: 'Room type photo' }))),
   ];
+
+  useEffect(() => {
+    if (!selectedProperty || editingProperty) return;
+    setPropertyEditForm({
+      name: selectedProperty.name,
+      code: selectedProperty.code,
+      phone: selectedProperty.phone ?? '',
+      email: selectedProperty.email ?? '',
+      address: selectedProperty.address,
+      timezone: selectedProperty.timezone,
+      default_check_in_time: selectedProperty.default_check_in_time,
+      default_check_out_time: selectedProperty.default_check_out_time,
+    });
+  }, [editingProperty, selectedProperty]);
 
   /* ── action runner ── */
   useEffect(() => {
@@ -408,6 +553,37 @@ export function PropertySetupPage({
       setSelectedRatePlanId(null);
       setSelectedPricingRuleId(null);
       setActionStatus('Property deleted.');
+      reload();
+    });
+  }
+  function startEditingProperty(property: Property) {
+    setPropertyEditForm({
+      name: property.name,
+      code: property.code,
+      phone: property.phone ?? '',
+      email: property.email ?? '',
+      address: property.address,
+      timezone: property.timezone,
+      default_check_in_time: property.default_check_in_time,
+      default_check_out_time: property.default_check_out_time,
+    });
+    setEditingProperty(true);
+  }
+  async function submitPropertyEdit(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedProperty) return;
+    await runAction(`update-property:${selectedProperty.id}`, async () => {
+      await api.patch(`/properties/${selectedProperty.id}`, {
+        name: propertyEditForm.name,
+        phone: propertyEditForm.phone || undefined,
+        email: propertyEditForm.email || undefined,
+        address: propertyEditForm.address,
+        timezone: propertyEditForm.timezone,
+        default_check_in_time: propertyEditForm.default_check_in_time,
+        default_check_out_time: propertyEditForm.default_check_out_time,
+      });
+      setEditingProperty(false);
+      setActionStatus('Property details updated.');
       reload();
     });
   }
@@ -673,11 +849,7 @@ export function PropertySetupPage({
       {/* ══ Right panel ════════════════════════════════════════════ */}
       <div ref={rightPanelRef} className="h-full min-w-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-6 scrollbar-none lg:p-8">
 
-        {actionStatus && (
-          <div className="fixed right-5 top-5 z-50 w-[min(24rem,calc(100vw-2.5rem))]">
-            <SuccessMsg>{actionStatus}</SuccessMsg>
-          </div>
-        )}
+        <FloatingSuccessToast message={actionStatus} onClose={() => setActionStatus(null)} />
         {actionError  && <ErrorMsg>{actionError}</ErrorMsg>}
         {loadError    && <ErrorMsg>{loadError}</ErrorMsg>}
 
@@ -718,9 +890,15 @@ export function PropertySetupPage({
                   placeholder="Select timezone"
                 />
               </label>
+              <label className={labelCls}><span>Check-in from</span>
+                <TimePolicyPicker value={propertyForm.default_check_in_time} onChange={(default_check_in_time) => setPropertyForm({ ...propertyForm, default_check_in_time })} />
+              </label>
+              <label className={labelCls}><span>Checkout by</span>
+                <TimePolicyPicker value={propertyForm.default_check_out_time} onChange={(default_check_out_time) => setPropertyForm({ ...propertyForm, default_check_out_time })} />
+              </label>
               <div className="md:col-span-3">
                 <label className={`${labelCls} w-full max-w-lg`}><span>Address</span>
-                  <input className={`${inputCls} h-11`} value={propertyForm.address} onChange={(e) => setPropertyForm({ ...propertyForm, address: e.target.value })} placeholder="Mumbai, Maharashtra" required />
+                  <textarea className={`${inputCls} min-h-28 resize-none py-3`} value={propertyForm.address} onChange={(e) => setPropertyForm({ ...propertyForm, address: e.target.value })} placeholder="Mumbai, Maharashtra" required />
                 </label>
               </div>
             </div>
@@ -749,10 +927,19 @@ export function PropertySetupPage({
                       {selectedProperty.is_active ? 'Active' : 'Archived'}
                     </span>
                   </div>
-                  <p className="text-[12px] text-slate-500">{selectedProperty.address ?? 'No address'} · {selectedProperty.timezone}</p>
+                  <p className="text-[12px] text-slate-500">
+                    {selectedProperty.address ?? 'No address'} · {selectedProperty.timezone} · Check-in from {formatPropertyTime(selectedProperty.default_check_in_time)} · Checkout by {formatPropertyTime(selectedProperty.default_check_out_time)}
+                  </p>
                 </div>
               </div>
               <div className="flex flex-shrink-0 items-center gap-2">
+                {canEditSelectedProperty && (
+                  <button type="button"
+                    onClick={() => startEditingProperty(selectedProperty)}
+                    className="h-8 px-3 rounded-lg text-[11.5px] font-semibold border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 transition-colors">
+                    Edit
+                  </button>
+                )}
                 <button type="button" disabled={pendingAction === `toggle-property:${selectedProperty.id}`}
                   onClick={() => void togglePropertyArchive(selectedProperty)}
                   className={`h-8 px-3 rounded-lg text-[11.5px] font-semibold border transition-colors disabled:opacity-50 ${selectedProperty.is_active ? 'border-slate-200 text-slate-700 bg-white hover:bg-slate-50' : 'border-emerald-100 text-emerald-700 bg-emerald-50 hover:bg-emerald-100'}`}>
@@ -765,6 +952,90 @@ export function PropertySetupPage({
                 </button>
               </div>
             </div>
+
+            {editingProperty && (
+              <form onSubmit={submitPropertyEdit} className="rounded-xl border border-slate-200 bg-white px-5 py-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Property details</p>
+                    <p className="mt-0.5 text-[12px] text-slate-500">Update the hotel profile, address, timezone, and arrival policy.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="submit"
+                      disabled={pendingAction === `update-property:${selectedProperty.id}`}
+                      className="h-8 rounded-lg bg-slate-900 px-3 text-[11.5px] font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
+                    >
+                      {pendingAction === `update-property:${selectedProperty.id}` ? 'Saving…' : 'Save'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingProperty(false)}
+                      className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-[11.5px] font-semibold text-slate-600 transition hover:bg-slate-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <label className={labelCls}><span>Hotel/property name</span>
+                    <input
+                      className={inputCls}
+                      value={propertyEditForm.name}
+                      onChange={(event) => setPropertyEditForm({ ...propertyEditForm, name: event.target.value })}
+                      required
+                    />
+                  </label>
+                  <label className={labelCls}><span>Phone</span>
+                    <input
+                      className={inputCls}
+                      value={propertyEditForm.phone}
+                      onChange={(event) => setPropertyEditForm({ ...propertyEditForm, phone: event.target.value })}
+                      placeholder="+91..."
+                    />
+                  </label>
+                  <label className={labelCls}><span>Email</span>
+                    <input
+                      className={inputCls}
+                      type="email"
+                      value={propertyEditForm.email}
+                      onChange={(event) => setPropertyEditForm({ ...propertyEditForm, email: event.target.value })}
+                      placeholder="hotel@example.com"
+                    />
+                  </label>
+                  <div className="md:col-span-3">
+                    <label className={`${labelCls} w-full`}><span>Address</span>
+                      <textarea
+                        className={`${inputCls} min-h-24 resize-none py-3`}
+                        value={propertyEditForm.address}
+                        onChange={(event) => setPropertyEditForm({ ...propertyEditForm, address: event.target.value })}
+                        required
+                      />
+                    </label>
+                  </div>
+                  <label className={labelCls}><span>Timezone</span>
+                    <CustomSelect
+                      value={propertyEditForm.timezone}
+                      onChange={(timezone) => setPropertyEditForm({ ...propertyEditForm, timezone })}
+                      options={TIMEZONE_OPTIONS}
+                      placeholder="Select timezone"
+                    />
+                  </label>
+                  <label className={labelCls}><span>Check-in from</span>
+                    <TimePolicyPicker
+                      value={propertyEditForm.default_check_in_time}
+                      onChange={(default_check_in_time) => setPropertyEditForm({ ...propertyEditForm, default_check_in_time })}
+                    />
+                  </label>
+                  <label className={labelCls}><span>Checkout by</span>
+                    <TimePolicyPicker
+                      value={propertyEditForm.default_check_out_time}
+                      onChange={(default_check_out_time) => setPropertyEditForm({ ...propertyEditForm, default_check_out_time })}
+                    />
+                  </label>
+                </div>
+              </form>
+            )}
 
             {/* Setup progress bar */}
             <SetupBar setup={selectedSetup} />
@@ -1237,8 +1508,14 @@ export function PropertySetupPage({
                   placeholder="Select timezone"
                 />
               </label>
+              <label className={labelCls}><span>Check-in from</span>
+                <TimePolicyPicker value={propertyForm.default_check_in_time} onChange={(default_check_in_time) => setPropertyForm({ ...propertyForm, default_check_in_time })} />
+              </label>
+              <label className={labelCls}><span>Checkout by</span>
+                <TimePolicyPicker value={propertyForm.default_check_out_time} onChange={(default_check_out_time) => setPropertyForm({ ...propertyForm, default_check_out_time })} />
+              </label>
               <label className={`${labelCls} sm:col-span-2`}><span>Address</span>
-                <textarea className={`${inputCls} min-h-24 resize-none`} value={propertyForm.address} onChange={(e) => setPropertyForm({ ...propertyForm, address: e.target.value })} placeholder="Mumbai, Maharashtra" required />
+                <textarea className={`${inputCls} min-h-32 resize-none py-3`} value={propertyForm.address} onChange={(e) => setPropertyForm({ ...propertyForm, address: e.target.value })} placeholder="Mumbai, Maharashtra" required />
               </label>
             </div>
 
@@ -1291,6 +1568,7 @@ function FileUploadBox({ files, id, inputKey, onFilesChange, onPrimaryIndexChang
 }
 
 function formatAdjustmentPercent(value: number) { return `${value > 0 ? '+' : ''}${value}%`; }
+
 function EyeIcon({ className = '' }: { className?: string }) {
   return <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 24 24"><path d="M2.8 12s3.4-6 9.2-6 9.2 6 9.2 6-3.4 6-9.2 6-9.2-6-9.2-6Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" /><path d="M12 14.8a2.8 2.8 0 1 0 0-5.6 2.8 2.8 0 0 0 0 5.6Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" /></svg>;
 }

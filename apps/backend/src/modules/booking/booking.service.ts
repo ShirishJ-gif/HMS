@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   AuditAction,
   BookingStatus,
@@ -8,10 +8,12 @@ import {
   HousekeepingPriority,
   HousekeepingStatus,
   PaymentStatus,
+  PaymentProvider,
+  PaymentTransactionStatus,
   Prisma,
   RoomStatus,
 } from '@prisma/client';
-import { randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { BackgroundJobService } from '../background-job/background-job.service';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginatedResponse, paginationParams } from '../../common/pagination/paginated-response';
@@ -19,8 +21,10 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty, propertyIdFilter } from '../auth/property-scope';
 import { InventoryService } from '../inventory/inventory.service';
+import { PaymentProviderService } from '../payment/payment-provider.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CheckInReservationRoomDto } from './dto/check-in-reservation-room.dto';
 import { CreateDirectReservationDto } from './dto/create-direct-reservation.dto';
 import { FindReservationFeedQueryDto } from './dto/find-reservation-feed-query.dto';
 
@@ -38,6 +42,13 @@ type ReservationGroupWithRelations = Prisma.ReservationGroupGetPayload<{
     };
   };
 }>;
+
+type DirectAdvancePaymentSummary = {
+  amount: Prisma.Decimal;
+  paymentCount: number;
+  provider: string;
+  providerReferences: string[];
+};
 
 type ReservationGroupResponse = {
   id: string;
@@ -110,6 +121,7 @@ export class BookingService {
     private readonly backgroundJobService: BackgroundJobService,
     private readonly auditLogService: AuditLogService,
     private readonly inventoryService: InventoryService,
+    private readonly paymentProviderService: PaymentProviderService,
     private readonly pricingService: PricingService,
   ) {}
 
@@ -123,9 +135,25 @@ export class BookingService {
 
     const roomCount = dto.room_count ?? 1;
 
+    const advanceAmount = dto.advance_amount ? new Prisma.Decimal(dto.advance_amount) : null;
+    if (advanceAmount && advanceAmount.lte(0)) {
+      throw new BadRequestException('Advance payment amount must be greater than zero');
+    }
+    const advanceProvider = dto.advance_payment_provider ?? PaymentProvider.CASH;
+    const supportedAdvanceProviders: PaymentProvider[] = [
+      PaymentProvider.MOCK,
+      PaymentProvider.CASH,
+      PaymentProvider.CARD,
+      PaymentProvider.UPI,
+    ];
+    if (advanceAmount && !supportedAdvanceProviders.includes(advanceProvider)) {
+      throw new BadRequestException('Walk-in advance payment supports CASH, CARD, UPI, or MOCK only');
+    }
+
     let reservationGroup: ReservationGroupWithRelations;
+    let advancePayment: DirectAdvancePaymentSummary | null = null;
     try {
-      reservationGroup = await this.prisma.$transaction(
+      const result = await this.prisma.$transaction(
         async (tx) => {
           const [property, roomCategory, ratePlan] = await Promise.all([
             tx.property.findUnique({ where: { id: dto.property_id } }),
@@ -163,6 +191,8 @@ export class BookingService {
             checkInDate,
             checkOutDate,
           });
+          const adults = dto.adults ?? 1;
+          const children = dto.children ?? 0;
 
           await this.inventoryService.allocateInventory(tx, {
             propertyId: dto.property_id,
@@ -172,8 +202,12 @@ export class BookingService {
             roomCount,
           });
 
-          const reservationReference = `DIRECT-${randomUUID()}`;
+          const reservationReference = await this.generateDirectReservationReference(tx, property.code);
           const totalAmount = pricing.totalAmount.mul(new Prisma.Decimal(roomCount));
+          if (advanceAmount && advanceAmount.gt(totalAmount)) {
+            throw new BadRequestException('Advance payment amount exceeds reservation total');
+          }
+
           const group = await tx.reservationGroup.create({
             data: {
               propertyId: dto.property_id,
@@ -192,12 +226,20 @@ export class BookingService {
               rawPayload: {
                 mode: 'direct_reservation',
                 room_count: roomCount,
+                adults,
+                children,
+                check_in_time: dto.check_in_time ?? property.defaultCheckInTime,
+                check_out_time: dto.check_out_time ?? property.defaultCheckOutTime,
               } satisfies Prisma.InputJsonObject,
             },
           });
 
+          let remainingAdvance = advanceAmount;
+          const providerReferences: string[] = [];
+          let paymentCount = 0;
+
           for (let index = 0; index < roomCount; index += 1) {
-            await tx.reservationRoom.create({
+            const reservationRoom = await tx.reservationRoom.create({
               data: {
                 reservationGroupId: group.id,
                 propertyId: dto.property_id,
@@ -211,17 +253,79 @@ export class BookingService {
                 currency: pricing.currency,
                 status: BookingStatus.BOOKED,
                 guestName: guest.name,
-                adults: null,
-                children: null,
+                adults,
+                children,
                 rawPayload: {
                   mode: 'direct_reservation_room',
                   line_number: index + 1,
+                  adults,
+                  children,
+                  check_in_time: dto.check_in_time ?? property.defaultCheckInTime,
+                  check_out_time: dto.check_out_time ?? property.defaultCheckOutTime,
                 } satisfies Prisma.InputJsonObject,
               },
             });
+
+            if (advanceAmount) {
+              const allocation = remainingAdvance && remainingAdvance.gt(0)
+                ? remainingAdvance.lessThan(pricing.totalAmount)
+                  ? remainingAdvance
+                  : pricing.totalAmount
+                : null;
+              const billing = await tx.billing.create({
+                data: {
+                  reservationRoomId: reservationRoom.id,
+                  amount: pricing.totalAmount,
+                  tax: new Prisma.Decimal(0),
+                  total: pricing.totalAmount,
+                  paymentStatus: allocation
+                    ? allocation.gte(pricing.totalAmount)
+                      ? PaymentStatus.PAID
+                      : PaymentStatus.PARTIAL
+                    : PaymentStatus.PENDING,
+                },
+              });
+
+              if (!allocation) {
+                continue;
+              }
+              const providerResult = await this.paymentProviderService.collect({
+                amount: allocation.toFixed(2),
+                provider: advanceProvider,
+                providerReference: dto.advance_payment_reference
+                  ? `${dto.advance_payment_reference}:${group.id}:${index + 1}`
+                  : undefined,
+              });
+
+              await tx.paymentTransaction.create({
+                data: {
+                  billingId: billing.id,
+                  amount: allocation,
+                  provider: advanceProvider,
+                  providerReference: providerResult.provider_reference,
+                  status: providerResult.status,
+                  metadata: {
+                    ...providerResult.metadata,
+                    mode: 'direct_reservation_advance',
+                    reservation_group_id: group.id,
+                  },
+                },
+              });
+
+              if (providerResult.status !== PaymentTransactionStatus.SUCCEEDED) {
+                await tx.billing.update({
+                  where: { id: billing.id },
+                  data: { paymentStatus: PaymentStatus.PENDING },
+                });
+              }
+
+              paymentCount += 1;
+              providerReferences.push(providerResult.provider_reference);
+              remainingAdvance = remainingAdvance!.sub(allocation);
+            }
           }
 
-          return tx.reservationGroup.findUniqueOrThrow({
+          const reservationGroup = await tx.reservationGroup.findUniqueOrThrow({
             where: { id: group.id },
             include: {
               property: true,
@@ -237,9 +341,23 @@ export class BookingService {
               },
             },
           });
+
+          return {
+            reservationGroup,
+            advancePayment: advanceAmount
+              ? {
+                  amount: advanceAmount,
+                  paymentCount,
+                  provider: advanceProvider,
+                  providerReferences,
+                }
+              : null,
+          };
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       );
+      reservationGroup = result.reservationGroup;
+      advancePayment = result.advancePayment;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
         throw new ConflictException('Concurrent inventory update detected. Please retry the reservation.');
@@ -262,8 +380,29 @@ export class BookingService {
       user,
     });
 
+    if (advancePayment) {
+      await this.auditLogService.record({
+        action: AuditAction.PAYMENT_COLLECT,
+        entityType: 'reservation_group_folio',
+        entityId: reservationGroup.id,
+        propertyId: reservationGroup.propertyId,
+        summary: `Collected advance ${advancePayment.amount.toString()} against ${reservationGroup.externalReservationId}`,
+        metadata: {
+          reservation_group_id: reservationGroup.id,
+          external_reservation_id: reservationGroup.externalReservationId,
+          payment_count: advancePayment.paymentCount,
+          provider: advancePayment.provider,
+          provider_references: advancePayment.providerReferences,
+        },
+        user,
+      });
+    }
+
+    await this.queueDirectReservationNotifications(reservationGroup);
     await this.backgroundJobService.queueInventorySyncsForProperty(reservationGroup.propertyId, {
       trigger: 'direct_reservation_created',
+      from: this.formatDateOnly(checkInDate),
+      to: this.formatDateOnly(this.addDays(checkOutDate, -1)),
     });
 
     return this.toReservationGroupResponse(reservationGroup);
@@ -377,7 +516,7 @@ export class BookingService {
     return paginatedResponse(data, total, page, limit);
   }
 
-  async checkInReservationRoom(id: string, user?: AuthenticatedUser) {
+  async checkInReservationRoom(id: string, dto: CheckInReservationRoomDto, user?: AuthenticatedUser) {
     const reservationRoom = await this.prisma.$transaction(async (tx) => {
       const existingRoomLine = await tx.reservationRoom.findUnique({
         where: { id },
@@ -405,37 +544,49 @@ export class BookingService {
         existingRoomLine.roomCategoryId,
       );
 
-      const assignedRoom =
-        existingRoomLine.room ??
-        (await tx.room.findFirst({
-          where: {
-            propertyId: existingRoomLine.propertyId,
-            roomCategoryId: existingRoomLine.roomCategoryId,
-            status: RoomStatus.AVAILABLE,
-            reservationRooms: {
-              none: {
-                id: {
-                  not: existingRoomLine.id,
-                },
-                status: {
-                  in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN],
-                },
-                arrivalDate: {
-                  lt: existingRoomLine.departureDate,
-                },
-                departureDate: {
-                  gt: existingRoomLine.arrivalDate,
-                },
-              },
+      const roomAvailabilityWhere = {
+        propertyId: existingRoomLine.propertyId,
+        roomCategoryId: existingRoomLine.roomCategoryId,
+        status: RoomStatus.AVAILABLE,
+        reservationRooms: {
+          none: {
+            id: {
+              not: existingRoomLine.id,
+            },
+            status: {
+              in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN],
+            },
+            arrivalDate: {
+              lt: existingRoomLine.departureDate,
+            },
+            departureDate: {
+              gt: existingRoomLine.arrivalDate,
             },
           },
-          orderBy: {
-            roomNumber: 'asc',
-          },
-        }));
+        },
+      } satisfies Prisma.RoomWhereInput;
+
+      const assignedRoom = dto.room_id
+        ? await tx.room.findFirst({
+            where: {
+              ...roomAvailabilityWhere,
+              id: dto.room_id,
+            },
+          })
+        : existingRoomLine.room ??
+          (await tx.room.findFirst({
+            where: roomAvailabilityWhere,
+            orderBy: {
+              roomNumber: 'asc',
+            },
+          }));
 
       if (!assignedRoom) {
-        throw new ConflictException('No physical room available to assign for this imported room stay');
+        throw new ConflictException(
+          dto.room_id
+            ? 'Selected room is not available to assign for this room stay'
+            : 'No physical room available to assign for this imported room stay',
+        );
       }
 
       const claimedRoom = await tx.room.updateMany({
@@ -456,6 +607,8 @@ export class BookingService {
         data: {
           status: BookingStatus.CHECKED_IN,
           roomId: assignedRoom.id,
+          checkedInAt: new Date(),
+          checkedOutAt: null,
         },
         include: {
           reservationGroup: true,
@@ -522,6 +675,7 @@ export class BookingService {
         where: { id },
         data: {
           status: BookingStatus.CHECKED_OUT,
+          checkedOutAt: new Date(),
         },
         include: {
           reservationGroup: true,
@@ -633,6 +787,40 @@ export class BookingService {
     });
   }
 
+  private async queueDirectReservationNotifications(reservationGroup: ReservationGroupWithRelations) {
+    const firstRoom = reservationGroup.rooms[0];
+    if (!firstRoom) {
+      return;
+    }
+
+    const lastDeparture = reservationGroup.rooms.reduce<Date>(
+      (latest, room) => (room.departureDate > latest ? room.departureDate : latest),
+      firstRoom.departureDate,
+    );
+
+    await this.enqueueNotification(
+      reservationGroup.propertyId,
+      `direct-owner-reservation:${reservationGroup.id}`,
+      'owner_reservation_notification',
+      {
+        owner_phone: reservationGroup.property.phone,
+        property_name: reservationGroup.property.name,
+        guest_name: reservationGroup.primaryGuest?.name ?? 'Guest',
+        guest_phone: reservationGroup.primaryGuest?.phone ?? 'Guest phone unavailable',
+        room_category_name: this.describeDirectReservationRooms(reservationGroup),
+        check_in_date: firstRoom.arrivalDate.toISOString(),
+        check_out_date: lastDeparture.toISOString(),
+        total_amount: reservationGroup.totalAmount?.toString() ?? '0.00',
+      },
+    );
+  }
+
+  private describeDirectReservationRooms(reservationGroup: ReservationGroupWithRelations) {
+    const firstCategoryName = reservationGroup.rooms[0]?.roomCategory.name?.trim();
+    const baseLabel = firstCategoryName || 'Room';
+    return reservationGroup.rooms.length > 1 ? `${baseLabel} x${reservationGroup.rooms.length}` : baseLabel;
+  }
+
   private async recomputeReservationGroupStatus(tx: Prisma.TransactionClient, reservationGroupId: string) {
     const rooms = await tx.reservationRoom.findMany({
       where: { reservationGroupId },
@@ -711,12 +899,70 @@ export class BookingService {
     });
   }
 
+  private async generateDirectReservationReference(tx: Prisma.TransactionClient, propertyCode?: string | null) {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const candidate = this.buildDirectReservationReference(propertyCode);
+      const existing = await tx.reservationGroup.findFirst({
+        where: {
+          channelConnectionId: null,
+          externalReservationId: candidate,
+        },
+        select: { id: true },
+      });
+      if (!existing) {
+        return candidate;
+      }
+    }
+
+    throw new ConflictException('Unable to generate a unique direct reservation reference');
+  }
+
+  private buildDirectReservationReference(propertyCode?: string | null, now = new Date()) {
+    const code = this.normalizeDirectReservationPropertyCode(propertyCode);
+    const date = this.formatDirectReservationReferenceDate(now);
+    const suffix = this.generateDirectReservationSuffix();
+    return `${code}-D-${date}-${suffix}`;
+  }
+
+  private normalizeDirectReservationPropertyCode(propertyCode?: string | null) {
+    const normalized = propertyCode?.replace(/[^a-z0-9]/gi, '').toUpperCase().slice(0, 4);
+    return normalized || 'DIR';
+  }
+
+  private formatDirectReservationReferenceDate(value: Date) {
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      year: '2-digit',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const parts = formatter.formatToParts(value);
+    const day = parts.find((part) => part.type === 'day')?.value ?? '00';
+    const month = parts.find((part) => part.type === 'month')?.value ?? '00';
+    const year = parts.find((part) => part.type === 'year')?.value ?? '00';
+    return `${year}${month}${day}`;
+  }
+
+  private generateDirectReservationSuffix() {
+    return randomBytes(3).toString('hex').toUpperCase().slice(0, 4);
+  }
+
   private parseDateOnly(value: string, field: string) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
       throw new ConflictException(`${field} must use YYYY-MM-DD format`);
     }
 
     return new Date(`${value}T00:00:00.000Z`);
+  }
+
+  private addDays(date: Date, days: number) {
+    const next = new Date(date);
+    next.setUTCDate(next.getUTCDate() + days);
+    return next;
+  }
+
+  private formatDateOnly(date: Date) {
+    return date.toISOString().slice(0, 10);
   }
 
   private toReservationGroupResponse(group: ReservationGroupWithRelations) {
@@ -776,6 +1022,8 @@ export class BookingService {
         guest_name: room.guestName,
         adults: room.adults,
         children: room.children,
+        checked_in_at: room.checkedInAt?.toISOString() ?? null,
+        checked_out_at: room.checkedOutAt?.toISOString() ?? null,
         room_category: {
           id: room.roomCategory.id,
           name: room.roomCategory.name,
@@ -824,7 +1072,7 @@ export class BookingService {
   }
 
   private async findProviderOnlyReservationFailures(
-    scopedPropertyId: string | null,
+    scopedPropertyId: string | Prisma.StringFilter | null,
     importedReservationIds: Set<string>,
     search: string,
     statusFilter?: BookingStatus,
@@ -934,7 +1182,7 @@ export class BookingService {
   }
 
   private reservationFeedImportedWhere(
-    propertyId: string | null,
+    propertyId: string | Prisma.StringFilter | null,
     search: string,
     status?: BookingStatus,
     includeCancelled = false,
@@ -988,7 +1236,7 @@ export class BookingService {
         { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
         {
           channelConnectionId: null,
-          source: 'DIRECT',
+          source: { in: ['DIRECT', 'WALK_IN'] },
         },
       ],
     };
@@ -1308,6 +1556,8 @@ export class BookingService {
     guestName: string | null;
     adults: number | null;
     children: number | null;
+    checkedInAt: Date | null;
+    checkedOutAt: Date | null;
     roomCategory: { id: string; name: string; code: string };
     ratePlan: { id: string; name: string; code: string; baseRate: Prisma.Decimal; currency: string };
     room: { id: string; roomNumber: string; status: RoomStatus } | null;
@@ -1326,6 +1576,8 @@ export class BookingService {
       guest_name: room.guestName,
       adults: room.adults,
       children: room.children,
+      checked_in_at: room.checkedInAt?.toISOString() ?? null,
+      checked_out_at: room.checkedOutAt?.toISOString() ?? null,
       room_category: {
         id: room.roomCategory.id,
         name: room.roomCategory.name,

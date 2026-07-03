@@ -13,6 +13,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { RevokeSessionDto } from './dto/revoke-session.dto';
+import { SignupPropertyDto } from './dto/signup-property.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -28,6 +29,12 @@ export class AuthController {
   @Post('login')
   login(@Body() loginDto: LoginDto) {
     return this.authService.login(loginDto);
+  }
+
+  @Public()
+  @Post('signup-property')
+  signupProperty(@Body() dto: SignupPropertyDto) {
+    return this.authService.signupProperty(dto);
   }
 
   @Public()
@@ -53,13 +60,13 @@ export class AuthController {
     return this.authService.confirmPasswordReset(dto);
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.PLATFORM_OWNER, UserRole.ORG_OWNER, UserRole.SUPER_ADMIN, UserRole.ADMIN)
   @Post('users')
   createUser(@CurrentUser() user: AuthenticatedUser, @Body() createUserDto: CreateUserDto) {
     return this.authService.createUser(createUserDto, user);
   }
 
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(UserRole.PLATFORM_OWNER, UserRole.ORG_OWNER, UserRole.SUPER_ADMIN, UserRole.ADMIN)
   @Get('users')
   findUsers(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationQueryDto) {
     return this.authService.findUsers(query, user);

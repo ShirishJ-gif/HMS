@@ -10,6 +10,6 @@ import { PaymentService } from './payment.service';
   imports: [AuditLogModule, MetricsModule],
   controllers: [PaymentController],
   providers: [IdempotencyService, PaymentService, PaymentProviderService],
-  exports: [PaymentService],
+  exports: [PaymentService, PaymentProviderService],
 })
 export class PaymentModule {}

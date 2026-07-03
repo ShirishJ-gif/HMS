@@ -254,7 +254,22 @@ describe('ChannelService provider reservation creation', () => {
     expect(reservationId).toBe('9355237');
   });
 
-  it('fetches and imports the reservation immediately after successful Zodomus creation', async () => {
+  it('queues a delayed webhook fallback after successful Zodomus test reservation creation', async () => {
+    const fallbackSyncLog = {
+      id: 'sync-log-1',
+      channelConnectionId: 'connection-1',
+      syncType: ChannelSyncType.BOOKINGS,
+      status: ChannelSyncStatus.QUEUED,
+      requestPayload: {},
+      responsePayload: null,
+      errorMessage: null,
+      createdAt: new Date('2026-05-15T00:00:00.000Z'),
+    };
+    const prisma = {
+      channelSyncLog: {
+        create: jest.fn().mockResolvedValue(fallbackSyncLog),
+      },
+    };
     const providerService = {
       createTestReservation: jest.fn().mockResolvedValue({
         provider: ChannelProvider.ZODOMUS,
@@ -265,41 +280,24 @@ describe('ChannelService provider reservation creation', () => {
           },
         },
       }),
-      getReservation: jest.fn().mockResolvedValue({
-        response: {
-          reservations: {
-            reservation: { id: '9355237', status: 'booked' },
-            customer: { name: 'Channel Guest' },
-            rooms: [
-              {
-                id: '10001',
-                arrivalDate: '2026-06-10',
-                departureDate: '2026-06-12',
-              },
-            ],
-          },
-        },
-      }),
+      getReservation: jest.fn(),
     };
     const backgroundJobService = {
-      finalizeImportedReservationImport: jest.fn().mockResolvedValue(undefined),
+      enqueue: jest.fn().mockResolvedValue(undefined),
     };
-    const zodomusReservationImportService = {
-      importFromSync: jest.fn().mockResolvedValue({
-        created: 1,
-        created_reservation_group_ids: ['group-1'],
-      }),
+    const metricsService = {
+      recordChannelSyncQueued: jest.fn(),
     };
     const service = new ChannelService(
-      {} as never,
+      prisma as never,
       providerService as never,
       {} as never,
       {} as never,
       backgroundJobService as never,
       {} as never,
       {} as never,
+      metricsService as never,
       {} as never,
-      zodomusReservationImportService as never,
     );
     jest.spyOn(service as unknown as { findAccessibleConnection: () => Promise<typeof connection> }, 'findAccessibleConnection').mockResolvedValue(connection);
 
@@ -312,41 +310,42 @@ describe('ChannelService provider reservation creation', () => {
       status: 'new',
       reservation_id: undefined,
     });
-    expect(providerService.getReservation).toHaveBeenCalledWith({
-      provider: ChannelProvider.ZODOMUS,
-      external_hotel_id: 'hotel-1',
-      credentials: connection.credentials,
-      reservation_id: '9355237',
-    });
-    expect(zodomusReservationImportService.importFromSync).toHaveBeenCalledWith({
-      channelConnectionId: 'connection-1',
-      propertyId: 'property-1',
-      responsePayload: {
-        reservations: [
-          {
-            reservations: {
-              reservation: { id: '9355237', status: 'booked' },
-              customer: { name: 'Channel Guest' },
-              rooms: [
-                {
-                  id: '10001',
-                  arrivalDate: '2026-06-10',
-                  departureDate: '2026-06-12',
-                },
-              ],
-            },
+    expect(providerService.getReservation).not.toHaveBeenCalled();
+    expect(prisma.channelSyncLog.create).toHaveBeenCalledWith({
+      data: {
+        channelConnectionId: connection.id,
+        syncType: ChannelSyncType.BOOKINGS,
+        status: ChannelSyncStatus.QUEUED,
+        requestPayload: {
+          reservation_import: {
+            mode: 'webhook_trigger',
+            webhook_event_id: null,
+            event_type: 'test_reservation_fallback',
+            external_event_id: null,
+            provider_property_id: 'hotel-1',
+            provider_channel_id: '1',
+            reservation_id: '9355237',
+            reservation_ids: ['9355237'],
           },
-        ],
+          trigger: 'test_reservation_webhook_fallback',
+        },
       },
     });
-    expect(backgroundJobService.finalizeImportedReservationImport).toHaveBeenCalledWith({
-      sourceConnectionId: 'connection-1',
-      propertyId: 'property-1',
-      importSummary: {
-        created: 1,
-        created_reservation_group_ids: ['group-1'],
-      },
-    });
+    expect(backgroundJobService.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'CHANNEL_SYNC',
+        propertyId: 'property-1',
+        dedupeKey: 'test-reservation-webhook-fallback:connection-1:9355237',
+        entityType: 'channel_sync_log',
+        entityId: fallbackSyncLog.id,
+        payload: {
+          channel_sync_log_id: fallbackSyncLog.id,
+        },
+        maxAttempts: 1,
+      }),
+    );
+    expect(backgroundJobService.enqueue.mock.calls[0][0].runAt).toBeInstanceOf(Date);
+    expect(metricsService.recordChannelSyncQueued).toHaveBeenCalledWith(ChannelSyncType.BOOKINGS, ChannelProvider.ZODOMUS);
     expect(result).toEqual({
       provider: ChannelProvider.ZODOMUS,
       response: {
@@ -356,10 +355,9 @@ describe('ChannelService provider reservation creation', () => {
         },
       },
       reservation_id: '9355237',
-      import_summary: {
-        created: 1,
-        created_reservation_group_ids: ['group-1'],
-      },
+      import_summary: null,
+      import_strategy: 'webhook_first_with_delayed_fallback',
+      fallback_sync_log_id: fallbackSyncLog.id,
     });
   });
 
@@ -919,6 +917,102 @@ describe('ChannelService reservation summary backfill', () => {
     );
 
     await expect(service.backfillReservationsSummary('connection-1')).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('ChannelService mapping saves', () => {
+  it('does not queue provider availability syncs when saving room mappings', async () => {
+    const connection = {
+      id: 'connection-1',
+      propertyId: 'property-1',
+      provider: ChannelProvider.ZODOMUS,
+      credentials: {
+        setup_status: {
+          rooms_activated: true,
+          ready: true,
+        },
+      },
+    };
+    const roomCategory = {
+      id: 'category-1',
+      propertyId: 'property-1',
+      code: 'DLX',
+      name: 'Deluxe',
+    };
+    const createdRoomMapping = {
+      id: 'room-map-1',
+      channelConnectionId: connection.id,
+      roomCategoryId: roomCategory.id,
+      externalRoomId: 'EXP-101',
+      externalRoomName: null,
+      isActivationEnabled: true,
+      roomCategory,
+    };
+    const tx = {
+      channelRoomMapping: {
+        create: jest.fn().mockResolvedValue(createdRoomMapping),
+        findUnique: jest.fn(),
+      },
+      channelRateMapping: {
+        create: jest.fn(),
+      },
+    };
+    const prisma = {
+      channelConnection: {
+        findUnique: jest.fn().mockResolvedValue(connection),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      roomCategory: {
+        findMany: jest.fn().mockResolvedValue([roomCategory]),
+      },
+      ratePlan: {
+        findMany: jest.fn(),
+      },
+      channelRoomMapping: {
+        findMany: jest.fn(),
+      },
+      $transaction: jest.fn((callback) => callback(tx)),
+    };
+    const auditLogService = {
+      record: jest.fn().mockResolvedValue(undefined),
+    };
+    const backgroundJobService = {
+      queueInventorySyncsForProperty: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ChannelService(
+      prisma as never,
+      {} as never,
+      auditLogService as never,
+      {} as never,
+      backgroundJobService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await service.saveMappingsBatch(connection.id, {
+      room_mappings: [
+        {
+          room_category_id: roomCategory.id,
+          external_room_id: createdRoomMapping.externalRoomId,
+        },
+      ],
+    });
+
+    expect(backgroundJobService.queueInventorySyncsForProperty).not.toHaveBeenCalled();
+    expect(prisma.channelConnection.update).toHaveBeenCalledWith({
+      where: { id: connection.id },
+      data: {
+        credentials: {
+          setup_status: {
+            rooms_activated: false,
+            ready: false,
+            ready_at: null,
+          },
+        },
+      },
+    });
   });
 });
 

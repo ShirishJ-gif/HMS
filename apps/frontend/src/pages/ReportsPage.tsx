@@ -235,7 +235,7 @@ export function ReportsPage() {
 
   const kpis = [
     { label: 'Room nights sold',   value: roomNightsSold.toString(), delta: '+trend', up: true,  spark: SPARK_UP_A },
-    { label: 'Active res. groups', value: activeGroups.toString(),   delta: '+trend', up: true,  spark: SPARK_UP_B },
+    { label: 'Active res groups',  value: activeGroups.toString(),   delta: '+trend', up: true,  spark: SPARK_UP_B },
     { label: 'Billed total',       value: formatCurrency(billedTotal), delta: '+trend', up: true, spark: SPARK_UP_C },
     { label: 'Balance due',        value: formatCurrency(balanceDue),  delta: balanceDue > 0 ? 'Open' : 'Clear', up: balanceDue === 0, spark: SPARK_DOWN_A },
   ];
@@ -299,9 +299,9 @@ export function ReportsPage() {
         {/* ── KPI cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {kpis.map((k) => (
-            <div key={k.label} className="bg-white rounded-xl border border-black/[0.06] p-4 hover:shadow-sm transition-">
+            <div key={k.label} className="bg-white rounded-xl border border-black/[0.06] p-4 hover:shadow-sm transition-shadow">
               <div className="flex items-start justify-between mb-3">
-                <p className="text-[10.5px] font-semibold uppercase tracking-wide text-slate-400 leading-tight max-w-[110px]">{k.label}</p>
+                <p className="min-w-0 whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400 leading-tight">{k.label}</p>
                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap ${k.up ? 'bg-emerald-50 text-emerald-700' : balanceDue > 0 ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-700'}`}>
                   {k.delta}
                 </span>

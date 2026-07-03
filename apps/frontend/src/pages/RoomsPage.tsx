@@ -5,7 +5,7 @@ import { Property, ReservationGroup, Room, RoomCategory, RoomOutOfServicePeriod,
 import { InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
-import { inputCls, ErrorMsg, SuccessMsg, LoadingMsg } from './ui';
+import { inputCls, ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
 
 // ─── Status config ────────────────────────────────────────────────────────────
 const STATUS_CFG: Record<RoomStatus, { label: string; dot: string; cardBg: string; cardBorder: string; cardText: string; badge: string }> = {
@@ -61,7 +61,7 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
   const [detailTab, setDetailTab]               = useState<'info' | 'blocks'>('info');
   const [propFilter, setPropFilter]             = useState(propertyId ?? 'ALL');
   const [statusFilter, setStatusFilter]         = useState<RoomStatus | 'ALL'>('ALL');
-  const [successMsg, setSuccessMsg]             = useState<string | null>(null);
+  const [toastMessage, setToastMessage]         = useState<string | null>(null);
   const [actionError, setActionError]           = useState<string | null>(null);
   const [submitting, setSubmitting]             = useState(false);
   const [deletingRoomId, setDeletingRoomId]     = useState<string | null>(null);
@@ -72,6 +72,7 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
   const [deletingPeriodId, setDeletingPeriodId] = useState<string | null>(null);
   const [openBlockDatePicker, setOpenBlockDatePicker] = useState<'from' | 'to' | null>(null);
   const detailPanelRef = useRef<HTMLElement | null>(null);
+  const successTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!selectedRoomId) return;
@@ -86,6 +87,12 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
     document.addEventListener('pointerdown', closeDetailPanel);
     return () => document.removeEventListener('pointerdown', closeDetailPanel);
   }, [selectedRoomId]);
+
+  useEffect(() => () => {
+    if (successTimeoutRef.current) {
+      window.clearTimeout(successTimeoutRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (!propertyId) return;
@@ -143,7 +150,17 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
   const pageLoading      = roomsState.loading || reservationsState.loading || propertiesState.loading || categoriesState.loading;
   const pageError        = roomsState.error ?? reservationsState.error ?? propertiesState.error ?? categoriesState.error;
 
-  function flash(msg: string) { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(null), 3000); }
+  function flash(msg: string) {
+    if (successTimeoutRef.current) {
+      window.clearTimeout(successTimeoutRef.current);
+    }
+
+    setToastMessage(msg);
+    successTimeoutRef.current = window.setTimeout(() => {
+      setToastMessage(null);
+      successTimeoutRef.current = null;
+    }, 3000);
+  }
 
   async function submitRoom(e: FormEvent) {
     e.preventDefault(); setActionError(null); setSubmitting(true);
@@ -205,6 +222,7 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
 
   return (
     <div className={embedded ? 'flex min-h-full flex-col bg-white' : '-mx-5 lg:-mx-8 -my-6 lg:-my-8 flex flex-col'}>
+      <FloatingSuccessToast message={toastMessage} onClose={() => setToastMessage(null)} />
 
       {/* Page header */}
       <div className={`${embedded ? 'px-5 lg:px-6 pt-5' : 'px-5 lg:px-8 pt-6 lg:pt-8'} pb-4 flex items-center justify-between gap-4 flex-wrap`}>
@@ -301,10 +319,9 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
       )}
 
       {/* Flash messages */}
-      {(successMsg || actionError) && (
+      {actionError && (
         <div className="fixed right-5 top-5 z-50 w-[min(24rem,calc(100vw-2.5rem))]">
-          {successMsg && <SuccessMsg>{successMsg}</SuccessMsg>}
-          {actionError && <ErrorMsg>{actionError}</ErrorMsg>}
+          <ErrorMsg>{actionError}</ErrorMsg>
         </div>
       )}
 

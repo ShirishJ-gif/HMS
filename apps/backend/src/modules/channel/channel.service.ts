@@ -936,29 +936,63 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    const importResult = await this.importCreatedProviderTestReservation({
+    const fallbackSyncLog = await this.queueCreatedTestReservationWebhookFallback({
       connection,
       reservationId: createdReservationId,
-    });
-
-    await this.backgroundJobService.finalizeImportedReservationImport({
-      sourceConnectionId: connection.id,
-      propertyId: connection.propertyId,
-      importSummary: importResult.importSummary,
     });
 
     return {
       ...providerResponse,
       reservation_id: createdReservationId,
-      import_summary: importResult.importSummary,
-      ...(importResult.attempts > 1 ? { import_attempts: importResult.attempts } : {}),
-      ...(importResult.imported
-        ? {}
-        : {
-            import_skipped_reason:
-              'Zodomus accepted the test reservation but reservation detail was not available for import yet.',
-          }),
+      import_summary: null,
+      import_strategy: 'webhook_first_with_delayed_fallback',
+      fallback_sync_log_id: fallbackSyncLog.id,
     };
+  }
+
+  private async queueCreatedTestReservationWebhookFallback(input: {
+    connection: Awaited<ReturnType<ChannelService['findAccessibleConnection']>>;
+    reservationId: string;
+  }) {
+    const delayMs = this.readPositiveInteger(process.env.ZODOMUS_TEST_RESERVATION_FALLBACK_DELAY_MS, 60_000);
+    const runAt = new Date(Date.now() + delayMs);
+    const syncLog = await this.prisma.channelSyncLog.create({
+      data: {
+        channelConnectionId: input.connection.id,
+        syncType: ChannelSyncType.BOOKINGS,
+        status: ChannelSyncStatus.QUEUED,
+        requestPayload: {
+          reservation_import: {
+            mode: 'webhook_trigger',
+            webhook_event_id: null,
+            event_type: 'test_reservation_fallback',
+            external_event_id: null,
+            provider_property_id: input.connection.externalHotelId,
+            provider_channel_id: readZodomusConnectionConfig(input.connection.credentials).channel_code,
+            reservation_id: input.reservationId,
+            reservation_ids: [input.reservationId],
+          },
+          trigger: 'test_reservation_webhook_fallback',
+        } satisfies Prisma.InputJsonObject,
+      },
+    });
+
+    await this.backgroundJobService.enqueue({
+      type: 'CHANNEL_SYNC',
+      propertyId: input.connection.propertyId,
+      dedupeKey: `test-reservation-webhook-fallback:${input.connection.id}:${input.reservationId}`,
+      entityType: 'channel_sync_log',
+      entityId: syncLog.id,
+      payload: {
+        channel_sync_log_id: syncLog.id,
+      },
+      maxAttempts: 1,
+      runAt,
+    });
+
+    this.metricsService.recordChannelSyncQueued(ChannelSyncType.BOOKINGS, input.connection.provider);
+
+    return syncLog;
   }
 
   private normalizeProviderReservationId(status: string, reservationId: string | undefined) {
@@ -1791,12 +1825,6 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
             external_room_id: mapping.external_room_id,
           },
           user,
-        });
-      }
-
-      if (result.room_mappings.length > 0) {
-        await this.backgroundJobService.queueInventorySyncsForProperty(connection.propertyId, {
-          trigger: 'room_mapping_created',
         });
       }
 

@@ -1,6 +1,7 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { AuthResponse } from './types';
 import {
+  activePageStorageKey,
   clearStoredSession,
   getStoredAccessToken,
   getStoredRefreshToken,
@@ -8,7 +9,36 @@ import {
 } from './session';
 
 const requestIdHeader = 'x-request-id';
+const screenHeader = 'x-hms-screen';
 type RetryableRequestConfig = InternalAxiosRequestConfig & { _retry?: boolean };
+
+const screenLabels: Record<string, string> = {
+  dashboard: 'Dashboard',
+  operations: 'Operations Board',
+  reports: 'Reports & Analytics',
+  graphs: 'Graph Insights',
+  setup: 'Property Setup',
+  availability: 'Availability & Rates',
+  mapping: 'OTA Mapping',
+  rooms: 'Rooms',
+  bookings: 'Reservations',
+  guests: 'Guests',
+  housekeeping: 'Housekeeping',
+  payments: 'Payments & Folios',
+  channels: 'Channels',
+  webhooks: 'Webhooks & Sync Logs',
+  'api-testing': 'API Testing Trace',
+  support: 'Support Console',
+  audit: 'Audit Logs',
+  notifications: 'Notifications',
+  'org-users': 'Organization Users',
+  'platform-overview': 'Platform API Health',
+  'platform-api-sample': 'Platform API Sample',
+  'platform-api-monitor': 'Platform API Monitor',
+  'platform-properties': 'Platform Properties',
+  'platform-integrations': 'Platform Integrations',
+  'platform-logs': 'Platform System Logs',
+};
 
 function createRequestId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -18,8 +48,32 @@ function createRequestId() {
   return `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
+
+function resolveApiBaseUrl(baseUrl: string) {
+  if (typeof window === 'undefined') {
+    return baseUrl;
+  }
+
+  try {
+    const url = new URL(baseUrl);
+    const pageHostname = window.location.hostname;
+    const isLocalApiHost = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+    const isLocalPageHost = pageHostname === 'localhost' || pageHostname === '127.0.0.1';
+
+    if (isLocalApiHost && !isLocalPageHost) {
+      url.hostname = pageHostname;
+      return url.toString().replace(/\/$/, '');
+    }
+  } catch {
+    return baseUrl;
+  }
+
+  return baseUrl;
+}
+
 export const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000',
+  baseURL: resolveApiBaseUrl(configuredApiBaseUrl),
   headers: {
     'Content-Type': 'application/json',
   },
@@ -34,9 +88,22 @@ api.interceptors.request.use((config) => {
   }
 
   config.headers[requestIdHeader] = requestId;
+  const screenName = getCurrentScreenName();
+  if (screenName) {
+    config.headers[screenHeader] = screenName;
+  }
 
   return config;
 });
+
+function getCurrentScreenName() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const activePage = window.sessionStorage.getItem(activePageStorageKey);
+  return activePage ? screenLabels[activePage] ?? activePage : null;
+}
 
 let refreshPromise: Promise<string | null> | null = null;
 

@@ -1,4 +1,4 @@
-import { IsEmail, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 export class CreatePropertyDto {
   @IsString()
@@ -27,4 +27,14 @@ export class CreatePropertyDto {
   @IsString()
   @MaxLength(80)
   timezone?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+  default_check_in_time?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+  default_check_out_time?: string;
 }

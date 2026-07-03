@@ -140,7 +140,7 @@ export class DashboardService {
     return {
       OR: [
         { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
-        { channelConnectionId: null, source: 'DIRECT' },
+        { channelConnectionId: null, source: { in: ['DIRECT', 'WALK_IN'] } },
       ],
     };
   }

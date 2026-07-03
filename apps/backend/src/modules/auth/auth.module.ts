@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import type { SignOptions } from 'jsonwebtoken';
+import { ApiCallTraceModule } from '../../common/api-call-trace/api-call-trace.module';
 import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
@@ -9,6 +10,7 @@ import { PasswordService } from './password.service';
 
 @Module({
   imports: [
+    ApiCallTraceModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET ?? 'dev-only-change-me',
       signOptions: {

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { CatalogList, formatConnectionLabel, formatDateTime } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
 import { CustomSelect } from '../components/CustomSelect';
+import { useScrollLock } from '../hooks/useScrollLock';
 import { PropertySetupPage } from './PropertySetupPage';
 import { RoomsPage } from './RoomsPage';
 import {
@@ -11,8 +12,8 @@ import {
   primaryBtn,
   secondaryBtn,
   ErrorMsg,
+  FloatingSuccessToast,
   LoadingMsg,
-  SuccessMsg,
 } from './ui';
 
 /* ─── OTA brand colours ─── */
@@ -1066,18 +1067,7 @@ function OtaConnectionSetup({
 type PanelTab = 'mappings' | 'logs';
 type PropertySetupDrawerTab = 'property' | 'rooms';
 const expandedOtaCardStorageKey = 'hms_ota_mapping_expanded_connection_id';
-
-function FloatingSuccessToast({ message }: { message: string | null }) {
-  if (!message) return null;
-
-  return (
-    <div className="pointer-events-none fixed left-4 right-4 top-16 z-50 flex justify-center lg:left-auto lg:right-6 lg:justify-end">
-      <div className="w-full max-w-md shadow-2xl shadow-emerald-950/10">
-        <SuccessMsg>{message}</SuccessMsg>
-      </div>
-    </div>
-  );
-}
+const otaMappingOuterManualSyncDays = 7;
 
 function PropertySetupDrawer({
   activeTab,
@@ -1233,8 +1223,8 @@ function InlinePanel({
   const isSelected = workspace.selectedConnection?.id === connectionId;
 
   const ensureSelected = () => { if (!isSelected) workspace.selectConnection(connectionId); };
-  const syncInventory = () => { ensureSelected(); void workspace.runInventorySync(); };
-  const syncRates = () => { ensureSelected(); void workspace.runRatesSync(); };
+  const syncInventory = () => { ensureSelected(); void workspace.runInventorySync(otaMappingOuterManualSyncDays); };
+  const syncRates = () => { ensureSelected(); void workspace.runRatesSync(otaMappingOuterManualSyncDays); };
   const refreshLogs = () => { ensureSelected(); void workspace.loadSyncLogs(connectionId); };
 
   return (
@@ -1312,7 +1302,6 @@ function InlinePanel({
           )}
           {workspace.loading && <LoadingMsg>Working…</LoadingMsg>}
           {workspace.error && isSelected && <ErrorMsg>{workspace.error}</ErrorMsg>}
-          {isSelected && <FloatingSuccessToast message={workspace.status} />}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
             <div>
@@ -1327,6 +1316,7 @@ function InlinePanel({
                   disabled={!canSync || workspace.pendingAction === 'inventory-sync'}
                   className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed transition"
                 >
+                  {workspace.pendingAction === 'inventory-sync' && <span className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-700" />}
                   {workspace.pendingAction === 'inventory-sync' ? 'Syncing…' : 'Sync inventory'}
                 </button>
               </div>
@@ -1373,6 +1363,7 @@ function InlinePanel({
                   disabled={!canSync || workspace.pendingAction === 'rates-sync'}
                   className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed transition"
                 >
+                  {workspace.pendingAction === 'rates-sync' && <span className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-700" />}
                   {workspace.pendingAction === 'rates-sync' ? 'Syncing…' : 'Sync rates'}
                 </button>
               </div>
@@ -1515,6 +1506,9 @@ export function OtaMappingPage({
   const allCards = [...channelCards, ...extraCards];
   const removeTarget = workspace.zodomusConnections.find(c => c.id === removeTargetId) ?? null;
   const mappedExternalRoomIds = Array.from(new Set(conn?.room_mappings.map(mapping => mapping.external_room_id).filter(Boolean) ?? []));
+  const overlayOpen = backfillConfirm || roomsCancelConfirm || propertySetupDrawerOpen || removeChoiceIds.length > 0 || Boolean(removeTarget);
+
+  useScrollLock(overlayOpen);
 
   useEffect(() => {
     onFullWorkspaceChange?.(Boolean(detailId));
@@ -1802,7 +1796,7 @@ export function OtaMappingPage({
           <main className="flex-1 min-w-0 p-5 space-y-2.5">
             {workspace.loading && <div className="mb-1"><LoadingMsg>Loading…</LoadingMsg></div>}
             {workspace.error && <div className="mb-1"><ErrorMsg>{workspace.error}</ErrorMsg></div>}
-            <FloatingSuccessToast message={workspace.status} />
+            <FloatingSuccessToast message={workspace.status} onClose={workspace.clearStatus} />
 
             {/* Mobile-only identity (shown when sidebar is hidden) */}
             <div className="hidden">
@@ -1843,11 +1837,13 @@ export function OtaMappingPage({
 
                   <div className="flex flex-wrap items-center gap-1.5 xl:justify-end">
                     <button type="button" onClick={() => void workspace.runInventorySync()} disabled={!automationSaved || workspace.pendingAction === 'inventory-sync'}
-                      className="h-7 rounded-lg border border-slate-200 bg-white px-2.5 text-[10.5px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-40">
+                      className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[10.5px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-40">
+                      {workspace.pendingAction === 'inventory-sync' && <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-200 border-t-slate-600" />}
                       {workspace.pendingAction === 'inventory-sync' ? 'Working…' : 'Sync inventory'}
                     </button>
                     <button type="button" onClick={() => void workspace.runRatesSync()} disabled={!automationSaved || workspace.pendingAction === 'rates-sync'}
-                      className="h-7 rounded-lg border border-slate-200 bg-white px-2.5 text-[10.5px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-40">
+                      className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[10.5px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-40">
+                      {workspace.pendingAction === 'rates-sync' && <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-200 border-t-slate-600" />}
                       {workspace.pendingAction === 'rates-sync' ? 'Working…' : 'Sync rates'}
                     </button>
                   </div>
@@ -2119,8 +2115,8 @@ export function OtaMappingPage({
         </div>
 
         {/* Rooms cancellation confirm modal */}
-        {roomsCancelConfirm && conn && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm">
+        {roomsCancelConfirm && conn && createPortal(
+          <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/25 px-4 py-6" role="dialog" aria-modal="true" aria-label="Cancel mapped room associations">
             <div className="w-full max-w-lg bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden">
               <div className="p-5 border-b border-slate-100">
                 <p className="text-[9.5px] font-bold uppercase tracking-wider text-rose-500 mb-1">Zodomus room cancellation</p>
@@ -2152,12 +2148,13 @@ export function OtaMappingPage({
                 </button>
               </div>
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
 
         {/* Backfill confirm modal */}
-        {backfillConfirm && conn && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm">
+        {backfillConfirm && conn && createPortal(
+          <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/25 px-4 py-6" role="dialog" aria-modal="true" aria-label="Backfill future Zodomus reservations">
             <div className="w-full max-w-lg bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden">
               <div className="p-5 border-b border-slate-100">
                 <p className="text-[9.5px] font-bold uppercase tracking-wider text-indigo-500 mb-1">Go-live backfill</p>
@@ -2173,7 +2170,8 @@ export function OtaMappingPage({
                 </button>
               </div>
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
       </div>
     );
@@ -2243,7 +2241,7 @@ export function OtaMappingPage({
 
       {workspace.loading && <LoadingMsg>Loading channel data…</LoadingMsg>}
       {workspace.error && <ErrorMsg>{workspace.error}</ErrorMsg>}
-      <FloatingSuccessToast message={workspace.status} />
+      <FloatingSuccessToast message={workspace.status} onClose={workspace.clearStatus} />
       {propertySetupDrawerOpen && createPortal(
         <PropertySetupDrawer
           activeTab={propertySetupDrawerTab}
@@ -2409,7 +2407,7 @@ export function OtaMappingPage({
           )}
 
           {removeChoiceIds.length > 0 && createPortal(
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm">
+            <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/25 px-4 py-6">
               <div className="w-full max-w-lg bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden">
                 <div className="p-5 border-b border-slate-100">
                   <p className="text-[9.5px] font-bold uppercase tracking-wider text-rose-500 mb-1">Choose connection</p>
@@ -2447,7 +2445,7 @@ export function OtaMappingPage({
           )}
 
           {removeTarget && createPortal(
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm">
+            <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/25 px-4 py-6">
               <div className="w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden">
                 <div className="p-5 border-b border-slate-100">
                   <p className="text-[9.5px] font-bold uppercase tracking-wider text-rose-500 mb-1">Remove connection</p>

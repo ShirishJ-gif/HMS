@@ -313,6 +313,8 @@ export class RoomService {
 
     await this.backgroundJobService.queueInventorySyncsForProperty(room.propertyId, {
       trigger: 'room_out_of_service_created',
+      from: this.formatDateOnly(fromDate),
+      to: this.formatDateOnly(toDate),
     });
 
     return this.toOutOfServicePeriodResponse(period);
@@ -352,6 +354,8 @@ export class RoomService {
 
     await this.backgroundJobService.queueInventorySyncsForProperty(room.propertyId, {
       trigger: 'room_out_of_service_deleted',
+      from: this.formatDateOnly(period.fromDate),
+      to: this.formatDateOnly(period.toDate),
     });
 
     return { id: periodId, deleted: true };
@@ -440,6 +444,10 @@ export class RoomService {
       created_at: period.createdAt,
       updated_at: period.updatedAt,
     };
+  }
+
+  private formatDateOnly(date: Date) {
+    return date.toISOString().slice(0, 10);
   }
 
   private parseDateOnly(value: string, field: string) {

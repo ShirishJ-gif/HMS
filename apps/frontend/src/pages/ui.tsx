@@ -1,4 +1,5 @@
 import { ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 // ── Shared Tailwind class strings ──────────────────────────────────────
 export const inputCls = 'w-full border border-slate-200 rounded-lg px-3 py-2.5 text-slate-900 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition bg-white placeholder:text-slate-400';
@@ -280,14 +281,33 @@ export function ErrorMsg({ children }: { children: ReactNode }) {
     </div>
   );
 }
-export function SuccessMsg({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex items-start gap-2.5 text-sm font-medium text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-4 py-3">
-      <svg className="w-4 h-4 flex-shrink-0 mt-px" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>
-      </svg>
-      <span>{children}</span>
-    </div>
+export function FloatingSuccessToast({ message, onClose }: { message: string | null; onClose: () => void }) {
+  if (!message) return null;
+
+  return createPortal(
+    <div className="pointer-events-none fixed left-4 right-4 top-20 z-[70] flex justify-center lg:left-auto lg:right-6 lg:top-6 lg:justify-end">
+      <div className="pointer-events-auto w-full max-w-xl rounded-2xl border border-emerald-500/70 bg-emerald-500 text-white shadow-[0_18px_40px_-20px_rgba(22,163,74,0.5)]">
+        <div className="flex items-center gap-3 px-5 py-4">
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-white text-emerald-500">
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+          </div>
+          <p className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-5 text-white">{message}</p>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-white/90 transition hover:bg-white/10 hover:text-white"
+            aria-label="Dismiss success message"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 export function LoadingMsg({ children = 'Loading…' }: { children?: ReactNode }) {

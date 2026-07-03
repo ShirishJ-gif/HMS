@@ -42,13 +42,14 @@ async function main() {
   await prisma.webhookEvent.deleteMany();
   await prisma.user.deleteMany();
   await prisma.property.deleteMany();
+  await prisma.organization.deleteMany();
 
   await prisma.user.create({
     data: {
       name: 'System Admin',
       email: 'admin@hms.local',
       passwordHash: await hashPassword('Admin@12345'),
-      role: UserRole.SUPER_ADMIN,
+      role: UserRole.PLATFORM_OWNER,
     },
   });
 }

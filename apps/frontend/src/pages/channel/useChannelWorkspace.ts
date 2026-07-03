@@ -69,6 +69,7 @@ type ChannelWorkspaceCache = {
   properties: Property[];
   providerCatalog: ChannelProviderCatalog | null;
   providerPriceModels: ChannelProviderPriceModel[];
+  providerPriceModelsConnectionId: string;
   providerPriceModelsError: string | null;
   providerReservationEventStatus: ProviderReservationEventStatus;
   providerReservationId: string;
@@ -173,6 +174,7 @@ function buildEmptyWorkspaceCache(enabled: boolean): ChannelWorkspaceCache {
     properties: [],
     providerCatalog: null,
     providerPriceModels: [],
+    providerPriceModelsConnectionId: '',
     providerPriceModelsError: null,
     providerReservationEventStatus: 'new',
     providerReservationId: '',
@@ -319,6 +321,9 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   const [providerCatalog, setProviderCatalog] = useState<ChannelProviderCatalog | null>(() => cachedState.providerCatalog);
   const [providerPriceModels, setProviderPriceModels] = useState<ChannelProviderPriceModel[]>(
     () => cachedState.providerPriceModels,
+  );
+  const [providerPriceModelsConnectionId, setProviderPriceModelsConnectionId] = useState(
+    () => cachedState.providerPriceModelsConnectionId,
   );
   const [providerPriceModelsLoading, setProviderPriceModelsLoading] = useState(false);
   const [providerPriceModelsError, setProviderPriceModelsError] = useState<string | null>(
@@ -640,6 +645,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setExternalRateRoomId(nextState.externalRateRoomId);
     setProviderCatalog(nextState.providerCatalog);
     setProviderPriceModels(nextState.providerPriceModels);
+    setProviderPriceModelsConnectionId(nextState.providerPriceModelsConnectionId);
     setProviderPriceModelsError(nextState.providerPriceModelsError);
     setCatalogConnectionId(nextState.catalogConnectionId);
     setCatalogLoaded(nextState.catalogLoaded);
@@ -743,6 +749,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       properties,
       providerCatalog,
       providerPriceModels,
+      providerPriceModelsConnectionId,
       providerPriceModelsError,
       providerReservationEventStatus,
       providerReservationId,
@@ -788,6 +795,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     properties,
     providerCatalog,
     providerPriceModels,
+    providerPriceModelsConnectionId,
     providerPriceModelsError,
     providerReservationEventStatus,
     providerReservationId,
@@ -1001,14 +1009,20 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   }
 
   async function loadProviderPriceModels(connectionId: string) {
+    if (providerPriceModelsConnectionId === connectionId && providerPriceModels.length > 0) {
+      return;
+    }
+
     setProviderPriceModelsLoading(true);
     setProviderPriceModelsError(null);
     try {
       const response = await api.get<ChannelProviderPriceModels>(`/channels/${connectionId}/provider-price-models`);
       const models = extractPriceModels(response.data);
       setProviderPriceModels(models.length > 0 ? models : fallbackZodomusPriceModels);
+      setProviderPriceModelsConnectionId(connectionId);
     } catch (loadError) {
       setProviderPriceModels(fallbackZodomusPriceModels);
+      setProviderPriceModelsConnectionId(connectionId);
       setProviderPriceModelsError(getApiErrorMessage(loadError));
     } finally {
       setProviderPriceModelsLoading(false);
@@ -1053,16 +1067,6 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     });
   }, [diagnosticsEnabled, enabled, resolvedSessionKey, selectedConnectionId, selectedPropertyScopeId]);
 
-  useEffect(() => {
-    if (!enabled || !selectedConnectionId) {
-      setProviderPriceModels([]);
-      setProviderPriceModelsError(null);
-      return;
-    }
-
-    void loadProviderPriceModels(selectedConnectionId);
-  }, [enabled, selectedConnectionId]);
-
   function selectConnection(connectionId: string) {
     if (connectionId === selectedConnectionId) {
       setStatus(null);
@@ -1075,6 +1079,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     setCatalogLoaded(false);
     setProviderCatalog(null);
     setProviderPriceModels([]);
+    setProviderPriceModelsConnectionId('');
     setProviderPriceModelsError(null);
     setExternalRoomId('');
     setExternalRateId('');
@@ -1111,6 +1116,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       setCatalogLoaded(response.data.setup_status.catalog_loaded);
       setZodomusPropertyId('');
       setStatus(`${selectedProperty ? selectedProperty.name : 'Property'} connection saved for ${selectedOtaLabel}. Run certification steps next.`);
+      await loadProviderPriceModels(response.data.connection.id);
       await loadData();
       setSelectedConnectionId(response.data.connection.id);
     });
@@ -1131,6 +1137,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       const response = await api.get<ChannelProviderPriceModels>(`/channels/${selectedConnection.id}/provider-price-models`);
       const models = extractPriceModels(response.data);
       setProviderPriceModels(models.length > 0 ? models : fallbackZodomusPriceModels);
+      setProviderPriceModelsConnectionId(selectedConnection.id);
       rememberCertificationResponse('Get price models', response.data);
       setStatus('Zodomus price models fetched.');
     });
@@ -1641,9 +1648,9 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     });
   }
 
-  async function runInventorySync() {
+  async function runInventorySync(windowDaysOverride?: number) {
     if (!selectedConnection) return;
-    const syncWindow = buildSyncWindow(Number(syncWindowDays));
+    const syncWindow = buildSyncWindow(Number(windowDaysOverride ?? syncWindowDays));
     await runAction('inventory-sync', async () => {
       const response = await api.post(`/channels/${selectedConnection.id}/sync`, {
         sync_type: 'INVENTORY',
@@ -1651,17 +1658,17 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         to: syncWindow.to,
       });
       rememberCertificationResponse('Post availability', response.data);
-      await loadData();
+      setStatus(`Queued inventory sync for ${syncWindow.from} to ${syncWindow.to}.`);
+      await loadData({ background: true });
       await loadInventoryReconciliation(selectedConnection.id);
       await loadInventoryRowResults(selectedConnection.id);
       await loadSyncLogs(selectedConnection.id);
-      setStatus(`Queued inventory sync for ${syncWindow.from} to ${syncWindow.to}.`);
     });
   }
 
-  async function runRatesSync() {
+  async function runRatesSync(windowDaysOverride?: number) {
     if (!selectedConnection) return;
-    const syncWindow = buildSyncWindow(Number(syncWindowDays));
+    const syncWindow = buildSyncWindow(Number(windowDaysOverride ?? syncWindowDays));
     await runAction('rates-sync', async () => {
       const response = await api.post(`/channels/${selectedConnection.id}/sync`, {
         sync_type: 'RATES',
@@ -1669,9 +1676,9 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         to: syncWindow.to,
       });
       rememberCertificationResponse('Post rates', response.data);
-      await loadData();
-      await loadSyncLogs(selectedConnection.id);
       setStatus(`Queued rates sync for ${syncWindow.from} to ${syncWindow.to}.`);
+      await loadData({ background: true });
+      await loadSyncLogs(selectedConnection.id);
     });
   }
 
@@ -1685,11 +1692,11 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         from: syncWindow.from,
         to: syncWindow.to,
       });
-      await loadData();
+      setStatus(`Queued full inventory sync for ${syncWindow.from} to ${syncWindow.to}.`);
+      await loadData({ background: true });
       await loadInventoryReconciliation(selectedConnection.id);
       await loadInventoryRowResults(selectedConnection.id);
       await loadSyncLogs(selectedConnection.id);
-      setStatus(`Queued full inventory sync for ${syncWindow.from} to ${syncWindow.to}.`);
     });
   }
 
@@ -1703,9 +1710,9 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         from: syncWindow.from,
         to: syncWindow.to,
       });
-      await loadData();
-      await loadSyncLogs(selectedConnection.id);
       setStatus(`Queued full rates sync for ${syncWindow.from} to ${syncWindow.to}.`);
+      await loadData({ background: true });
+      await loadSyncLogs(selectedConnection.id);
     });
   }
 
@@ -1836,6 +1843,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     categories,
     certificationResponse,
     channelWarnings,
+    clearStatus: () => setStatus(null),
     connections,
     createConnection,
     createRateMapping,

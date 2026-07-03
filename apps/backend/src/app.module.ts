@@ -1,5 +1,6 @@
 import { BillingModule } from './modules/billing/billing.module';
 import { Module } from '@nestjs/common';
+import { ApiCallTraceModule } from './common/api-call-trace/api-call-trace.module';
 import { IdempotencyService } from './common/idempotency/idempotency.service';
 import { AuthModule } from './modules/auth/auth.module';
 import { AuditLogModule } from './modules/audit-log/audit-log.module';
@@ -15,6 +16,7 @@ import { InventoryModule } from './modules/inventory/inventory.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { PaymentModule } from './modules/payment/payment.module';
+import { PlatformAdminModule } from './modules/platform-admin/platform-admin.module';
 import { PricingModule } from './modules/pricing/pricing.module';
 import { PropertyModule } from './modules/property/property.module';
 import { RoomModule } from './modules/room/room.module';
@@ -23,6 +25,7 @@ import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
   imports: [
+    ApiCallTraceModule,
     PrismaModule,
     AuditLogModule,
     BackgroundJobModule,
@@ -41,6 +44,7 @@ import { PrismaModule } from './prisma/prisma.module';
     HousekeepingModule,
     MetricsModule,
     PaymentModule,
+    PlatformAdminModule,
     PricingModule,
     WebhookModule,
   ],

@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   ParseUUIDPipe,
   Post,
   Put,
@@ -22,6 +23,7 @@ import { CreatePricingRuleDto } from './dto/create-pricing-rule.dto';
 import { CreateRatePlanDto } from './dto/create-rate-plan.dto';
 import { CreateRoomCategoryDto } from './dto/create-room-category.dto';
 import { UpdatePricingRuleDto } from './dto/update-pricing-rule.dto';
+import { UpdatePropertyDto } from './dto/update-property.dto';
 import { UpdatePropertyStatusDto } from './dto/update-property-status.dto';
 import { UpdateRoomCategoryDto } from './dto/update-room-category.dto';
 import { PropertyService } from './property.service';
@@ -31,15 +33,15 @@ export class PropertyController {
   constructor(private readonly propertyService: PropertyService) {}
 
   @Post('properties')
-  @Roles(UserRole.SUPER_ADMIN)
-  createProperty(@Body() createPropertyDto: CreatePropertyDto) {
-    return this.propertyService.createProperty(createPropertyDto);
+  @Roles(UserRole.PLATFORM_OWNER, UserRole.ORG_OWNER)
+  createProperty(@CurrentUser() user: AuthenticatedUser, @Body() createPropertyDto: CreatePropertyDto) {
+    return this.propertyService.createProperty(createPropertyDto, user);
   }
 
   @Post('hotels')
-  @Roles(UserRole.SUPER_ADMIN)
-  createHotel(@Body() createPropertyDto: CreatePropertyDto) {
-    return this.propertyService.createProperty(createPropertyDto);
+  @Roles(UserRole.PLATFORM_OWNER, UserRole.ORG_OWNER)
+  createHotel(@CurrentUser() user: AuthenticatedUser, @Body() createPropertyDto: CreatePropertyDto) {
+    return this.propertyService.createProperty(createPropertyDto, user);
   }
 
   @Get('properties')
@@ -48,13 +50,23 @@ export class PropertyController {
   }
 
   @Put('properties/:id/status')
-  @Roles(UserRole.SUPER_ADMIN)
+  @Roles(UserRole.PLATFORM_OWNER)
   updatePropertyStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdatePropertyStatusDto) {
     return this.propertyService.updatePropertyStatus(id, dto);
   }
 
+  @Patch('properties/:id')
+  @Roles(UserRole.PLATFORM_OWNER, UserRole.ORG_OWNER)
+  updateProperty(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdatePropertyDto,
+  ) {
+    return this.propertyService.updateProperty(id, dto, user);
+  }
+
   @Delete('properties/:id')
-  @Roles(UserRole.SUPER_ADMIN)
+  @Roles(UserRole.PLATFORM_OWNER)
   removeProperty(@Param('id', ParseUUIDPipe) id: string) {
     return this.propertyService.removeProperty(id);
   }

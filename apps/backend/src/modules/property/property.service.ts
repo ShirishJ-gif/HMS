@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import { dirname, join } from 'node:path';
 import { renameSync } from 'node:fs';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -12,6 +12,7 @@ import { CreatePricingRuleDto } from './dto/create-pricing-rule.dto';
 import { CreateRatePlanDto } from './dto/create-rate-plan.dto';
 import { CreateRoomCategoryDto } from './dto/create-room-category.dto';
 import { UpdatePricingRuleDto } from './dto/update-pricing-rule.dto';
+import { UpdatePropertyDto } from './dto/update-property.dto';
 import { UpdatePropertyStatusDto } from './dto/update-property-status.dto';
 import { UpdateRoomCategoryDto } from './dto/update-room-category.dto';
 
@@ -19,16 +20,23 @@ import { UpdateRoomCategoryDto } from './dto/update-room-category.dto';
 export class PropertyService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async createProperty(dto: CreatePropertyDto) {
+  async createProperty(dto: CreatePropertyDto, user?: AuthenticatedUser) {
+    if (user?.role === UserRole.ORG_OWNER && !user.organization_id) {
+      throw new BadRequestException('Organization owner is not assigned to an organization');
+    }
+
     try {
       const property = await this.prisma.property.create({
         data: {
+          organizationId: user?.role === UserRole.ORG_OWNER ? user.organization_id : undefined,
           name: dto.name,
           code: dto.code,
           phone: dto.phone,
           email: dto.email,
           address: dto.address,
           timezone: dto.timezone,
+          defaultCheckInTime: dto.default_check_in_time,
+          defaultCheckOutTime: dto.default_check_out_time,
         },
       });
 
@@ -96,6 +104,41 @@ export class PropertyService {
       return this.toPropertyResponse({ ...property, isActive: dto.is_active });
     } catch (error) {
       this.handlePrismaError(error, 'Property code already exists');
+    }
+  }
+
+  async updateProperty(id: string, dto: UpdatePropertyDto, user?: AuthenticatedUser) {
+    const existing = await this.prisma.property.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Property not found');
+    }
+
+    assertCanAccessProperty(user, id);
+
+    try {
+      const property = await this.prisma.property.update({
+        where: { id },
+        data: {
+          name: dto.name,
+          phone: dto.phone,
+          email: dto.email,
+          address: dto.address,
+          timezone: dto.timezone,
+          defaultCheckInTime: dto.default_check_in_time,
+          defaultCheckOutTime: dto.default_check_out_time,
+        },
+        include: {
+          images: { orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }] },
+        },
+      });
+
+      return this.toPropertyResponse(property);
+    } catch (error) {
+      this.handlePrismaError(error, 'Property update failed');
     }
   }
 
@@ -809,6 +852,8 @@ export class PropertyService {
     email: string | null;
     address: string;
     timezone: string;
+    defaultCheckInTime: string;
+    defaultCheckOutTime: string;
     isActive?: boolean;
     images?: Array<{
       id: string;
@@ -829,6 +874,8 @@ export class PropertyService {
       email: property.email,
       address: property.address,
       timezone: property.timezone,
+      default_check_in_time: property.defaultCheckInTime,
+      default_check_out_time: property.defaultCheckOutTime,
       is_active: property.isActive ?? true,
       images: property.images?.map((image) => this.toImageResponse(image)) ?? [],
       created_at: property.createdAt,

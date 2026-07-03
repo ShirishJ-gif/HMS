@@ -12,15 +12,19 @@ import {
 } from './api/session';
 import { AuthResponse, AuthUser, Property } from './api/types';
 import { AuditLogsPage } from './pages/AuditLogsPage';
+import { ApiTestingPage } from './pages/ApiTestingPage';
 import { BookingsPage } from './pages/BookingsPage';
 import { AvailabilityPage } from './pages/AvailabilityPage';
 import { DashboardPage } from './pages/DashboardPage';
+// import { GraphInsightsPage } from './pages/GraphInsightsPage';
 import { GuestsPage } from './pages/GuestsPage';
 import { HousekeepingPage } from './pages/HousekeepingPage';
 import { OtaMappingPage } from './pages/OtaMappingPage';
 import { OperationsBoardPage } from './pages/OperationsBoardPage';
 import { PaymentsPage } from './pages/PaymentsPage';
+import { PlatformOwnerPage } from './pages/PlatformOwnerPage';
 import { PropertySetupPage } from './pages/PropertySetupPage';
+import { OrganizationUsersPage } from './pages/OrganizationUsersPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { RoomsPage } from './pages/RoomsPage';
 import { SupportConsolePage } from './pages/SupportConsolePage';
@@ -30,17 +34,40 @@ import { WebhookSyncLogsPage } from './pages/WebhookSyncLogsPage';
 import { readPreviewDataEnabled, writePreviewDataEnabled } from './pages/previewData';
 
 type Page =
-  | 'dashboard' | 'operations' | 'reports' | 'setup'
+  | 'dashboard' | 'operations' | 'reports' | 'graphs' | 'setup'
   | 'availability' | 'mapping' | 'rooms' | 'bookings'
   | 'guests' | 'housekeeping' | 'payments' | 'channels'
-  | 'webhooks' | 'support' | 'audit' | 'notifications';
+  | 'webhooks' | 'api-testing' | 'support' | 'audit' | 'notifications'
+  | 'org-users'
+  | 'platform-overview' | 'platform-api-sample' | 'platform-api-monitor' | 'platform-properties' | 'platform-integrations' | 'platform-integration-sample' | 'platform-logs';
 
 const navGroups = [
+  {
+    section: 'Platform',
+    ownerOnly: true,
+    pages: [
+      { id: 'platform-overview' as Page, label: 'API Health', icon: 'pulse' },
+      { id: 'platform-api-sample' as Page, label: 'API Sample', icon: 'activity' },
+      { id: 'platform-api-monitor' as Page, label: 'API Monitor', icon: 'pulse' },
+      { id: 'platform-properties' as Page, label: 'Properties', icon: 'bed' },
+      { id: 'platform-integrations' as Page, label: 'Integrations', icon: 'puzzle' },
+      { id: 'platform-integration-sample' as Page, label: 'Sample Map', icon: 'activity' },
+      { id: 'platform-logs' as Page, label: 'System Logs', icon: 'activity' },
+    ],
+  },
+  {
+    section: 'Organization',
+    orgOwnerOnly: true,
+    pages: [
+      { id: 'org-users' as Page, label: 'Users', icon: 'guest' },
+    ],
+  },
   {
     section: 'Overview',
     pages: [
       { id: 'dashboard' as Page, label: 'Dashboard', icon: 'dashboard' },
       { id: 'reports' as Page, label: 'Reports & Analytics', icon: 'clipboard' },
+      // { id: 'graphs' as Page, label: 'Graph Insights', icon: 'chart' },
     ],
   },
   {
@@ -69,11 +96,28 @@ const navGroups = [
     section: 'Admin',
     pages: [
       { id: 'webhooks' as Page, label: 'Webhooks & Sync Logs', icon: 'activity' },
+      { id: 'api-testing' as Page, label: 'API Testing Trace', icon: 'activity' },
       { id: 'support' as Page, label: 'Support Console', icon: 'activity' },
       { id: 'audit' as Page, label: 'Audit Logs', icon: 'shield' },
     ],
   },
 ];
+
+function visibleNavGroups(user: AuthUser | null) {
+  if (user?.role === 'PLATFORM_OWNER') {
+    return navGroups.filter((group) => 'ownerOnly' in group && group.ownerOnly);
+  }
+
+  return navGroups.filter((group) => {
+    if ('ownerOnly' in group && group.ownerOnly) return false;
+    if ('orgOwnerOnly' in group && group.orgOwnerOnly) return user?.role === 'ORG_OWNER';
+    return true;
+  });
+}
+
+function isPlatformPage(page: Page): page is Extract<Page, `platform-${string}`> {
+  return page.startsWith('platform-');
+}
 
 export function App() {
   const [activePage, setActivePage] = useState<Page>(() => {
@@ -105,16 +149,17 @@ export function App() {
   const headerSearchRef = useRef<HTMLInputElement>(null);
 
   const sidebarNavRef = useRef<HTMLElement | null>(null);
+  const pageScrollRef = useRef<HTMLElement | null>(null);
   const activeGroup = navGroups.find((g) => g.pages.some((p) => p.id === activePage));
   const activePageMeta = activePage === 'notifications'
     ? { id: 'notifications' as Page, label: 'Notifications', icon: 'bell' }
     : navGroups.flatMap((g) => g.pages).find((p) => p.id === activePage) ?? navGroups[0].pages[0];
   const searchResults = useMemo(() => {
     const query = searchValue.trim().toLowerCase();
-    const pages = navGroups.flatMap((group) => group.pages.map((page) => ({ ...page, section: group.section })));
+    const pages = visibleNavGroups(user).flatMap((group) => group.pages.map((page) => ({ ...page, section: group.section })));
     if (!query) return [];
     return pages.filter((page) => `${page.label} ${page.section}`.toLowerCase().includes(query)).slice(0, 6);
-  }, [searchValue]);
+  }, [searchValue, user]);
   const channelWorkspaceActive = isChannelWorkspacePage(activePage);
   const channelWorkspace = useChannelWorkspace({
     enabled: Boolean(user) && channelWorkspaceActive,
@@ -123,6 +168,26 @@ export function App() {
   });
 
   useEffect(() => subscribeToSessionUpdates(setUser), []);
+
+  useEffect(() => {
+    if (user?.role === 'PLATFORM_OWNER' && !isPlatformPage(activePage)) {
+      setActivePage('platform-overview');
+      setStoredActivePage('platform-overview');
+      setPageKey((key) => key + 1);
+    }
+
+    if (user && user.role !== 'PLATFORM_OWNER' && isPlatformPage(activePage)) {
+      setActivePage('dashboard');
+      setStoredActivePage('dashboard');
+      setPageKey((key) => key + 1);
+    }
+
+    if (user && user.role !== 'ORG_OWNER' && activePage === 'org-users') {
+      setActivePage('dashboard');
+      setStoredActivePage('dashboard');
+      setPageKey((key) => key + 1);
+    }
+  }, [activePage, user]);
 
   // Fetch properties for property selector
   useEffect(() => {
@@ -198,6 +263,13 @@ export function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  useEffect(() => {
+    const scroller = pageScrollRef.current;
+    setStoredActivePage(activePage);
+    if (scroller) scroller.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [activePage]);
+
   function handlePageSelect(pageId: Page) {
     if (pageId === activePage) {
       setMobileNavOpen(false);
@@ -243,6 +315,8 @@ export function App() {
 
   if (!user) return <LoginPage onLogin={setUser} />;
 
+  const isPlatformOwner = user.role === 'PLATFORM_OWNER';
+
   return (
     <div className="flex h-dvh min-h-dvh overflow-hidden overscroll-none bg-[#f9f9f8]">
 
@@ -262,7 +336,9 @@ export function App() {
           </span>
           <div className={`min-w-0 flex-1 ${collapseSidebar ? 'lg:hidden' : ''}`}>
             <h1 className="text-[13px] font-bold text-slate-800 tracking-tight leading-none">HMS Admin</h1>
-            <p className="text-[10px] text-slate-400 font-medium mt-[3px] leading-none">Hotel operations</p>
+            <p className="text-[10px] text-slate-400 font-medium mt-[3px] leading-none">
+              {isPlatformOwner ? 'Platform console' : 'Hotel operations'}
+            </p>
           </div>
           <button
             type="button"
@@ -280,7 +356,7 @@ export function App() {
           className="flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-none px-2 py-1 space-y-3"
           aria-label="Admin pages"
         >
-          {navGroups.map((group) => (
+          {visibleNavGroups(user).map((group) => (
             <div key={group.section}>
               <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400 px-2.5 py-0.5 ${collapseSidebar ? 'lg:sr-only' : ''}`}>
                 {group.section}
@@ -384,6 +460,7 @@ export function App() {
             inputRef={headerSearchRef}
           />
 
+          {!isPlatformOwner && (
           <button
             type="button"
             aria-pressed={previewDataEnabled}
@@ -403,9 +480,10 @@ export function App() {
             <span className={`h-1.5 w-1.5 rounded-full ${previewDataEnabled ? 'bg-amber-500' : 'bg-slate-300'}`} />
             Sample data
           </button>
+          )}
 
           {/* Property selector — desktop */}
-          {properties.length > 0 && (
+          {!isPlatformOwner && properties.length > 0 && (
             <div className="relative hidden md:block" ref={propertyDropdownRef}>
               <button
                 type="button"
@@ -458,6 +536,7 @@ export function App() {
           )}
 
           {/* Notifications bell */}
+          {!isPlatformOwner && (
           <button
             type="button"
             aria-label="Notifications"
@@ -469,6 +548,7 @@ export function App() {
             </svg>
             <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-emerald-500 ring-1 ring-white" />
           </button>
+          )}
 
           {/* Divider */}
           <div className="w-px h-5 bg-slate-100 flex-shrink-0 hidden sm:block" />
@@ -503,7 +583,7 @@ export function App() {
                 </div>
 
                 {/* Property selector — mobile fallback inside user menu */}
-                {properties.length > 0 && (
+                {!isPlatformOwner && properties.length > 0 && (
                   <div className="md:hidden border-b border-slate-100 py-1">
                     <p className="px-4 pt-1.5 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">Property</p>
                     <button
@@ -542,21 +622,29 @@ export function App() {
         </header>
 
         {/* Page scroll area */}
-        <main className={`flex-1 min-h-0 overscroll-contain scrollbar-none ${activePage === 'setup' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+        <main
+          ref={pageScrollRef}
+          data-scroll-lock-root="true"
+          className={`flex-1 min-h-0 overscroll-contain scrollbar-none ${activePage === 'setup' ? 'overflow-hidden' : 'overflow-y-auto'}`}
+        >
           <div key={pageKey} className="px-5 lg:px-8 py-6 lg:py-8 animate-page-in">
             {activePage === 'dashboard'    && <DashboardPage />}
+            {isPlatformPage(activePage)     && <PlatformOwnerPage section={activePage} />}
+            {activePage === 'org-users'    && <OrganizationUsersPage />}
             {activePage === 'notifications' && <NotificationsPage />}
             {activePage === 'reports'      && <ReportsPage />}
+            {/* {activePage === 'graphs'       && <GraphInsightsPage />} */}
             {activePage === 'operations'   && <OperationsBoardPage previewDataEnabled={previewDataEnabled} />}
             {activePage === 'setup'        && <PropertySetupPage onAddRooms={() => handlePageSelect('rooms')} onConfigureOta={() => handlePageSelect('mapping')} />}
             {activePage === 'availability' && <AvailabilityPage previewDataEnabled={previewDataEnabled} />}
             {activePage === 'mapping'      && <OtaMappingPage onFullWorkspaceChange={setOtaMappingFullWorkspace} workspace={channelWorkspace} />}
             {activePage === 'rooms'        && <RoomsPage />}
             {activePage === 'bookings'     && <BookingsPage previewDataEnabled={previewDataEnabled} />}
-            {activePage === 'guests'       && <GuestsPage />}
+            {activePage === 'guests'       && <GuestsPage activePropertyId={selectedPropertyId} />}
             {activePage === 'housekeeping' && <HousekeepingPage previewDataEnabled={previewDataEnabled} />}
             {activePage === 'payments'     && <PaymentsPage previewDataEnabled={previewDataEnabled} />}
             {activePage === 'webhooks'     && <WebhookSyncLogsPage workspace={channelWorkspace} />}
+            {activePage === 'api-testing'  && <ApiTestingPage />}
             {activePage === 'support'      && <SupportConsolePage />}
             {activePage === 'audit'        && <AuditLogsPage />}
           </div>
@@ -692,18 +780,48 @@ function NavIcon({ name }: { name: string }) {
 }
 
 function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [signupStep, setSignupStep] = useState<1 | 2>(1);
   const [email, setEmail] = useState('admin@hms.local');
   const [password, setPassword] = useState('Admin@12345');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [propertyName, setPropertyName] = useState('');
+  const [propertyCode, setPropertyCode] = useState('');
+  const [propertyPhone, setPropertyPhone] = useState('');
+  const [propertyAddress, setPropertyAddress] = useState('');
+  const [adminName, setAdminName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [passwordVisible, setPasswordVisible] = useState(false);
+  const passwordsMismatch = mode === 'signup' && signupStep === 2 && password.length > 0 && confirmPassword.length > 0 && password !== confirmPassword;
 
   async function submitLogin(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
+
+    if (mode === 'signup' && signupStep === 1) {
+      setSignupStep(2);
+      return;
+    }
+
+    if (mode === 'signup' && password !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+
     setSubmitting(true);
     try {
-      const response = await api.post<AuthResponse>('/auth/login', { email, password });
+      const response = mode === 'signin'
+        ? await api.post<AuthResponse>('/auth/login', { email, password })
+        : await api.post<AuthResponse>('/auth/signup-property', {
+            property_name: propertyName,
+            property_code: propertyCode || undefined,
+            phone: propertyPhone || undefined,
+            address: propertyAddress,
+            admin_name: adminName,
+            admin_email: email,
+            password,
+          });
       storeAuthSession(response.data);
       onLogin(response.data.user);
     } catch (loginError) {
@@ -730,26 +848,126 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
           <form onSubmit={submitLogin} className="rounded-xl border border-black/[0.08] bg-white p-6 shadow-[0_18px_55px_rgba(15,23,42,0.10)] sm:p-8">
             <div className="mb-7">
               <p className="text-center text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">Secure access</p>
-              <h2 className="mt-2 text-center text-2xl font-bold tracking-tight text-slate-950">Sign in</h2>
-              <p className="mt-2 text-center text-sm leading-6 text-slate-500">Continue to your hotel workspace.</p>
+              <h2 className="mt-2 text-center text-2xl font-bold tracking-tight text-slate-950">
+                {mode === 'signin' ? 'Sign in' : 'Create property'}
+              </h2>
+              <p className="mt-2 text-center text-sm leading-6 text-slate-500">
+                {mode === 'signin' ? 'Continue to your hotel workspace.' : 'Create a hotel workspace and first admin account.'}
+              </p>
+              <div className="mt-5 grid grid-cols-2 rounded-lg bg-slate-100 p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('signin');
+                    setSignupStep(1);
+                    setEmail('admin@hms.local');
+                    setPassword('Admin@12345');
+                    setConfirmPassword('');
+                    setError(null);
+                  }}
+                  className={`h-8 rounded-md text-xs font-bold transition ${mode === 'signin' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Sign in
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('signup');
+                    setSignupStep(1);
+                    setEmail('');
+                    setPassword('');
+                    setConfirmPassword('');
+                    setError(null);
+                  }}
+                  className={`h-8 rounded-md text-xs font-bold transition ${mode === 'signup' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Sign up
+                </button>
+              </div>
             </div>
 
             <div className="flex flex-col gap-4">
-              <label className="flex flex-col gap-1.5">
-                <span className="text-xs font-semibold text-slate-600">Email</span>
+              {mode === 'signup' && (
+                <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold ${signupStep === 1 ? 'bg-slate-900 text-white' : 'bg-emerald-600 text-white'}`}>1</span>
+                  <span className={`text-xs font-bold ${signupStep === 1 ? 'text-slate-900' : 'text-slate-500'}`}>Property</span>
+                  <span className="h-px flex-1 bg-slate-200" />
+                  <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold ${signupStep === 2 ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-500'}`}>2</span>
+                  <span className={`text-xs font-bold ${signupStep === 2 ? 'text-slate-900' : 'text-slate-500'}`}>Account</span>
+                </div>
+              )}
+
+              {mode === 'signup' && signupStep === 1 && (
+                <>
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-semibold text-slate-600">Hotel/property name</span>
+                    <input
+                      type="text" required
+                      value={propertyName} onChange={(e) => setPropertyName(e.target.value)}
+                      placeholder="Harbour Grand"
+                      className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3.5 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10"
+                    />
+                  </label>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-xs font-semibold text-slate-600">Property code</span>
+                      <input
+                        type="text"
+                        value={propertyCode} onChange={(e) => setPropertyCode(e.target.value.toUpperCase())}
+                        placeholder="HARBOUR"
+                        className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3.5 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-xs font-semibold text-slate-600">Phone</span>
+                      <input
+                        type="tel"
+                        value={propertyPhone} onChange={(e) => setPropertyPhone(e.target.value)}
+                        placeholder="+91..."
+                        className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3.5 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10"
+                      />
+                    </label>
+                  </div>
+
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-semibold text-slate-600">Address</span>
+                    <textarea
+                      required
+                      value={propertyAddress} onChange={(e) => setPropertyAddress(e.target.value)}
+                      placeholder="Street, city, state"
+                      rows={3}
+                      className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50/70 px-3.5 py-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10"
+                    />
+                  </label>
+
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-semibold text-slate-600">Admin name</span>
+                    <input
+                      type="text" required
+                      value={adminName} onChange={(e) => setAdminName(e.target.value)}
+                      placeholder="Hotel owner name"
+                      className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3.5 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10"
+                    />
+                  </label>
+                </>
+              )}
+
+              {(mode === 'signin' || signupStep === 2) && <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-semibold text-slate-600">{mode === 'signin' ? 'Email' : 'Admin email'}</span>
                 <input
                   type="email" required autoComplete="email"
                   value={email} onChange={(e) => setEmail(e.target.value)}
-                  placeholder="admin@hms.local"
+                  placeholder={mode === 'signin' ? 'admin@hms.local' : 'owner@hotel.com'}
                   className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3.5 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10"
                 />
-              </label>
+              </label>}
 
-              <label className="flex flex-col gap-1.5">
+              {(mode === 'signin' || signupStep === 2) && <label className="flex flex-col gap-1.5">
                 <span className="text-xs font-semibold text-slate-600">Password</span>
                 <span className="relative block">
                   <input
-                    type={passwordVisible ? 'text' : 'password'} required autoComplete="current-password"
+                    type={passwordVisible ? 'text' : 'password'} required minLength={mode === 'signup' ? 10 : undefined} autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
                     value={password} onChange={(e) => setPassword(e.target.value)}
                     placeholder="Enter your password"
                     className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3.5 pr-16 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10"
@@ -762,7 +980,26 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
                     {passwordVisible ? 'Hide' : 'Show'}
                   </button>
                 </span>
-              </label>
+              </label>}
+
+              {mode === 'signup' && signupStep === 2 && (
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-semibold text-slate-600">Confirm password</span>
+                  <input
+                    type={passwordVisible ? 'text' : 'password'} required minLength={10} autoComplete="new-password"
+                    value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Enter password again"
+                    className={`h-11 w-full rounded-lg border bg-slate-50/70 px-3.5 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:bg-white ${
+                      passwordsMismatch
+                        ? 'border-rose-300 focus:border-rose-500 focus:ring-4 focus:ring-rose-500/10'
+                        : 'border-slate-200 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10'
+                    }`}
+                  />
+                  {passwordsMismatch && (
+                    <span className="text-[12px] font-semibold text-rose-600">Passwords do not match.</span>
+                  )}
+                </label>
+              )}
             </div>
 
             {error && (
@@ -771,19 +1008,35 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
               </p>
             )}
 
-            <button
-              type="submit" disabled={submitting}
-              className="mt-6 flex h-11 w-full items-center justify-center rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 active:bg-slate-950 disabled:cursor-not-allowed disabled:opacity-55"
-            >
-              {submitting ? 'Signing in...' : 'Continue'}
-            </button>
+            <div className={`mt-6 grid gap-3 ${mode === 'signup' && signupStep === 2 ? 'grid-cols-[0.8fr_1.2fr]' : ''}`}>
+              {mode === 'signup' && signupStep === 2 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSignupStep(1);
+                    setError(null);
+                  }}
+                  className="flex h-11 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  Back
+                </button>
+              )}
+              <button
+                type="submit" disabled={submitting}
+                className="flex h-11 w-full items-center justify-center rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 active:bg-slate-950 disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                {submitting
+                  ? (mode === 'signin' ? 'Signing in...' : 'Creating workspace...')
+                  : (mode === 'signin' ? 'Continue' : signupStep === 1 ? 'Next' : 'Create workspace')}
+              </button>
+            </div>
 
-            <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3">
+            {mode === 'signin' && <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3">
               <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Demo credentials</p>
               <p className="mt-2 break-all font-mono text-[12px] leading-5 text-slate-700">
                 admin@hms.local / Admin@12345
               </p>
-            </div>
+            </div>}
           </form>
 
           <p className="mt-5 text-center text-xs text-slate-500">Protected workspace for authorized staff.</p>

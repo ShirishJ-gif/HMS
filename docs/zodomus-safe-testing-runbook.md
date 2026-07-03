@@ -46,6 +46,45 @@ Stop immediately if you see:
 
 If one of those appears, fix the cause first. Do not continue to the next API.
 
+## API Call Trace
+
+HMS records an in-memory trace of incoming HMS API calls and outbound Zodomus API calls. Use it during production validation to confirm one UI action or curl step did not trigger extra provider calls.
+
+Trace records are separated by `kind`:
+
+- `SYSTEM` means an inbound HMS API endpoint was called
+- `ZODOMUS` means HMS made an outbound request to the Zodomus API
+
+Clear the current trace before a test action:
+
+```bash
+curl -s -X DELETE "$BASE_URL/api-call-traces" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Run exactly one HMS action, then inspect the calls:
+
+```bash
+curl -s "$BASE_URL/api-call-traces?limit=100" \
+  -H "Authorization: Bearer $TOKEN" | jq
+```
+
+To see only Zodomus calls:
+
+```bash
+curl -s "$BASE_URL/api-call-traces?kind=ZODOMUS&limit=100" \
+  -H "Authorization: Bearer $TOKEN" | jq
+```
+
+To inspect one request timeline in order, copy the `trace_id` from the HMS response header `x-request-id` or from the trace list:
+
+```bash
+curl -s "$BASE_URL/api-call-traces?trace_id=YOUR_TRACE_ID&limit=100" \
+  -H "Authorization: Bearer $TOKEN" | jq
+```
+
+Trace data is process-local and resets when the backend restarts. It stores method, path, status, timing, and request id only; it does not store request bodies, response bodies, bearer tokens, or Zodomus credentials.
+
 ## Base Values
 
 Replace these placeholders:

@@ -1,7 +1,7 @@
 import { CatalogList, formatConnectionLabel, MappingTable, SummaryTile } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
 import { CustomSelect } from '../components/CustomSelect';
-import { PageHeader, NoteStrip, labelCls, primaryBtn, secondaryBtn, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
+import { PageHeader, NoteStrip, labelCls, primaryBtn, secondaryBtn, ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
 
 export function OtaMappingPage({ workspace }: { workspace: ChannelWorkspace }) {
   const totalRoomMappings = workspace.zodomusConnections.reduce((total, connection) => total + connection.room_mappings.length, 0);
@@ -42,7 +42,7 @@ export function OtaMappingPage({ workspace }: { workspace: ChannelWorkspace }) {
 
       {workspace.loading && <LoadingMsg>Loading mapping data...</LoadingMsg>}
       {workspace.error && <ErrorMsg>{workspace.error}</ErrorMsg>}
-      {workspace.status && <SuccessMsg>{workspace.status}</SuccessMsg>}
+      <FloatingSuccessToast message={workspace.status} onClose={workspace.clearStatus} />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <SummaryTile label="Configured connections" value={workspace.zodomusConnections.length.toString()} detail="Saved OTA links in HMS" />

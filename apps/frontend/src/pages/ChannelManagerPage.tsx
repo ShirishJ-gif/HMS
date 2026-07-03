@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { formatConnectionLabel, SetupBadge, SummaryTile } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
 import { CustomSelect } from '../components/CustomSelect';
-import { PageHeader, labelCls, inputCls, primaryBtn, secondaryBtn, dangerBtn, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
+import { PageHeader, labelCls, inputCls, primaryBtn, secondaryBtn, dangerBtn, ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
 
 export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace }) {
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
@@ -119,7 +119,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
 
       {workspace.loading && <LoadingMsg>Loading channel data…</LoadingMsg>}
       {workspace.error && <ErrorMsg>{workspace.error}</ErrorMsg>}
-      {workspace.status && <SuccessMsg>{workspace.status}</SuccessMsg>}
+      <FloatingSuccessToast message={workspace.status} onClose={workspace.clearStatus} />
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <SummaryTile label="Configured connections" value={workspace.zodomusConnections.length.toString()} detail="Saved OTA links in HMS" />

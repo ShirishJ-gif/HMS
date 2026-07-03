@@ -4,7 +4,7 @@ import { fetchAllPages } from '../api/pagination';
 import { HousekeepingPriority, HousekeepingStatus, HousekeepingTask, Property, Room, RoomCategory } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
-import { ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
+import { ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
 import { createPreviewData, isPreviewId } from './previewData';
 
 // ── Real statuses / priorities ─────────────────────────────────────────────
@@ -87,7 +87,7 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
   const [form,         setForm]         = useState(defaultForm);
   const [submitting,   setSubmitting]   = useState(false);
   const [pendingId,    setPendingId]    = useState<string | null>(null);
-  const [successMsg,   setSuccessMsg]   = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [errorMsg,     setErrorMsg]     = useState<string | null>(null);
   const [showOos,      setShowOos]      = useState(false);
   const [taskOverrides, setTaskOverrides] = useState<Record<string, Partial<HousekeepingTask>>>({});
@@ -151,7 +151,7 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
   const total        = activeTasks.length + completedTodayTasks.length;
   const pct          = total > 0 ? Math.round(readyCount / total * 100) : 0;
 
-  function flash(msg: string) { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(null), 3000); }
+  function flash(msg: string) { setToastMessage(msg); setTimeout(() => setToastMessage(null), 3000); }
 
   function setF(key: keyof typeof defaultForm, val: string) {
     setForm(f => ({ ...f, [key]: val }));
@@ -303,7 +303,7 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
       </div> */}
 
       {/* Messages */}
-      {successMsg && <div className="mx-5 lg:mx-8 mt-3"><SuccessMsg>{successMsg}</SuccessMsg></div>}
+      <FloatingSuccessToast message={toastMessage} onClose={() => setToastMessage(null)} />
       {errorMsg   && <div className="mx-5 lg:mx-8 mt-3"><ErrorMsg>{errorMsg}</ErrorMsg></div>}
       {loading    && <div className="mx-5 lg:mx-8 mt-3"><LoadingMsg>Loading housekeeping tasks…</LoadingMsg></div>}
       {loadErr    && <div className="mx-5 lg:mx-8 mt-3"><ErrorMsg>{loadErr}</ErrorMsg></div>}

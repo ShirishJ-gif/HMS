@@ -41,6 +41,7 @@ type ReservationImportOutcome = {
   action: 'created' | 'updated' | 'cancelled' | 'skipped';
   reservationGroupId: string | null;
   reservationRoomIds: string[];
+  affectedInventoryWindows?: Array<{ from: string; to: string }>;
 };
 
 type ExistingReservationGroup = Prisma.ReservationGroupGetPayload<{
@@ -86,6 +87,7 @@ export class ZodomusReservationImportService {
       created_reservation_group_ids: [] as string[],
       updated_reservation_group_ids: [] as string[],
       cancelled_reservation_group_ids: [] as string[],
+      affected_inventory_windows: [] as Array<{ from: string; to: string }>,
       errors: [] as string[],
     };
 
@@ -136,6 +138,7 @@ export class ZodomusReservationImportService {
 
         summary.imported_room_count += outcome.reservationRoomIds.length;
         summary.imported_reservation_room_ids.push(...outcome.reservationRoomIds);
+        summary.affected_inventory_windows.push(...(outcome.affectedInventoryWindows ?? []));
       } catch (error) {
         await this.persistProviderGuestRecord(input.propertyId, reservation);
         summary.failed += 1;
@@ -298,6 +301,7 @@ export class ZodomusReservationImportService {
           action: 'skipped',
           reservationGroupId: null,
           reservationRoomIds: [],
+          affectedInventoryWindows: [],
         };
       }
 
@@ -315,6 +319,7 @@ export class ZodomusReservationImportService {
             action: 'skipped',
             reservationGroupId: null,
             reservationRoomIds: [],
+            affectedInventoryWindows: [],
           };
         }
       }
@@ -382,6 +387,7 @@ export class ZodomusReservationImportService {
 
       const importedRoomIds: string[] = [];
       const seenExternalRoomReservationIds = new Set<string>();
+      const affectedInventoryWindows: Array<{ from: string; to: string }> = [];
       let summedRoomTotalAmount = new Prisma.Decimal(0);
       let hasSummedRoomTotalAmount = false;
 
@@ -444,6 +450,7 @@ export class ZodomusReservationImportService {
           nextCheckOutDate: checkOutDate,
           nextStatus: roomStatus,
         });
+        affectedInventoryWindows.push(this.inventoryWindowForStay(checkInDate, checkOutDate));
 
         const reservationRoom = await tx.reservationRoom.upsert({
           where: {
@@ -514,6 +521,7 @@ export class ZodomusReservationImportService {
               checkOutDate: staleRoom.departureDate,
               roomCount: 1,
             });
+            affectedInventoryWindows.push(this.inventoryWindowForStay(staleRoom.arrivalDate, staleRoom.departureDate));
           }
         }
 
@@ -562,6 +570,7 @@ export class ZodomusReservationImportService {
               : ('created' as const),
         reservationGroupId: reservationGroup.id,
         reservationRoomIds: importedRoomIds,
+        affectedInventoryWindows: this.dedupeInventoryWindows(affectedInventoryWindows),
       };
     });
   }
@@ -595,6 +604,7 @@ export class ZodomusReservationImportService {
         action: 'skipped',
         reservationGroupId: null,
         reservationRoomIds: [],
+        affectedInventoryWindows: [],
       };
     }
 
@@ -673,6 +683,14 @@ export class ZodomusReservationImportService {
       action: input.reservationStatus === BookingStatus.CANCELLED ? 'cancelled' : 'updated',
       reservationGroupId: reservationGroup.id,
       reservationRoomIds: [],
+      affectedInventoryWindows:
+        input.reservationStatus === BookingStatus.CANCELLED
+          ? this.dedupeInventoryWindows(
+              input.existing.rooms
+                .filter((room) => this.isInventoryActiveStatus(room.status))
+                .map((room) => this.inventoryWindowForStay(room.arrivalDate, room.departureDate)),
+            )
+          : [],
     };
   }
 
@@ -744,6 +762,27 @@ export class ZodomusReservationImportService {
     const date = new Date(Date.UTC(year, month - 1, day));
     date.setUTCDate(date.getUTCDate() - days);
     return date.toISOString().slice(0, 10);
+  }
+
+  private inventoryWindowForStay(checkInDate: Date, checkOutDate: Date) {
+    const to = new Date(checkOutDate);
+    to.setUTCDate(to.getUTCDate() - 1);
+    return {
+      from: checkInDate.toISOString().slice(0, 10),
+      to: to.toISOString().slice(0, 10),
+    };
+  }
+
+  private dedupeInventoryWindows(windows: Array<{ from: string; to: string }>) {
+    const seen = new Set<string>();
+    return windows.filter((window) => {
+      const key = `${window.from}:${window.to}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
   }
 
   private async reconcileInventoryForRoom(

@@ -28,6 +28,8 @@ enum PaymentStatus {
 }
 
 enum UserRole {
+  PLATFORM_OWNER
+  ORG_OWNER
   SUPER_ADMIN
   ADMIN
   STAFF
@@ -162,15 +164,33 @@ model Guest {
   @@map("guests")
 }
 
+model Organization {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String     @db.VarChar(160)
+  status    String     @default("ACTIVE") @db.VarChar(40)
+  billingEmail String? @map("billing_email") @db.VarChar(160)
+  properties Property[]
+  users     User[]
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("organizations")
+}
+
 model Property {
   id             String         @id @default(uuid()) @db.Uuid
+  organizationId String?        @map("organization_id") @db.Uuid
   name           String         @db.VarChar(160)
   code           String         @unique @db.VarChar(40)
   phone          String?        @db.VarChar(30)
   email          String?        @db.VarChar(160)
   address        String         @db.Text
   timezone       String         @default("Asia/Kolkata") @db.VarChar(80)
+  defaultCheckInTime  String    @default("12:00") @map("default_check_in_time") @db.VarChar(5)
+  defaultCheckOutTime String    @default("11:00") @map("default_check_out_time") @db.VarChar(5)
   isActive       Boolean        @default(true) @map("is_active")
+  organization   Organization?  @relation(fields: [organizationId], references: [id], onDelete: SetNull)
   guests         Guest[]
   roomCategories RoomCategory[]
   ratePlans      RatePlan[]
@@ -191,18 +211,21 @@ model Property {
   createdAt      DateTime       @default(now()) @map("created_at")
   updatedAt      DateTime       @updatedAt @map("updated_at")
 
+  @@index([organizationId])
   @@index([isActive])
   @@map("properties")
 }
 
 model User {
   id           String    @id @default(uuid()) @db.Uuid
+  organizationId String? @map("organization_id") @db.Uuid
   propertyId   String?   @map("property_id") @db.Uuid
   name         String    @db.VarChar(120)
   email        String    @unique @db.VarChar(160)
   passwordHash String    @map("password_hash") @db.Text
   role         UserRole  @default(STAFF)
   isActive     Boolean   @default(true) @map("is_active")
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
   property     Property? @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   auditLogs    AuditLog[]
   refreshSessions RefreshSession[]
@@ -210,6 +233,7 @@ model User {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
+  @@index([organizationId])
   @@index([propertyId])
   @@index([role])
   @@map("users")
@@ -486,6 +510,8 @@ model ReservationRoom {
   guestName                 String?          @map("guest_name") @db.VarChar(160)
   adults                    Int?
   children                  Int?
+  checkedInAt               DateTime?        @map("checked_in_at")
+  checkedOutAt              DateTime?        @map("checked_out_at")
   rawPayload                Json?            @map("raw_payload")
   reservationGroup          ReservationGroup @relation(fields: [reservationGroupId], references: [id], onDelete: Cascade)
   property                  Property         @relation(fields: [propertyId], references: [id], onDelete: Restrict)

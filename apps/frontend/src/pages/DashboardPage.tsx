@@ -14,10 +14,19 @@ export function DashboardPage() {
     [reloadKey],
   );
   const { data: recentData } = useAsync(
-    async () => (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/feed', { params: { page: 1, limit: 5 } })).data,
+    async () => (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/feed', { params: { page: 1, limit: 25, status: 'BOOKED' } })).data,
     [reloadKey],
   );
-  const recentReservations = recentData?.data ?? [];
+  const recentReservations = (recentData?.data ?? [])
+    .filter((reservation) => reservation.reservation_status === 'BOOKED')
+    .map((reservation) => ({
+      reservation,
+      arrival: reservation.rooms[0]?.arrival_date ?? reservation.arrival_date ?? null,
+      departure: reservation.rooms[reservation.rooms.length - 1]?.departure_date ?? reservation.departure_date ?? null,
+    }))
+    .filter((entry) => !entry.arrival || entry.arrival >= getLocalDate())
+    .sort((left, right) => (left.arrival ?? '').localeCompare(right.arrival ?? ''))
+    .slice(0, 5);
 
   useEffect(() => { if (data) setLastUpdatedAt(new Date()); }, [data]);
 
@@ -101,7 +110,7 @@ export function DashboardPage() {
 
           {/* Recent reservations */}
           {recentReservations.length > 0 && (
-            <TableCard eyebrow="Latest activity" title="Recent reservations">
+            <TableCard eyebrow="Upcoming arrivals" title="Booked reservations">
               <table className="min-w-full text-[12.5px]">
                 <thead>
                   <tr>
@@ -116,9 +125,7 @@ export function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {recentReservations.map((r) => {
-                    const arrival = r.rooms[0]?.arrival_date ?? r.arrival_date ?? null;
-                    const departure = r.rooms[r.rooms.length - 1]?.departure_date ?? r.departure_date ?? null;
+                  {recentReservations.map(({ reservation: r, arrival, departure }) => {
                     return (
                       <tr key={r.id} className="hover:bg-slate-50/60 transition-colors">
                         <Td className="font-medium text-slate-800 max-w-[140px] truncate">
@@ -264,6 +271,11 @@ function WatchIcon({ name }: { name: string }) {
 
 function formatTime(d: Date) {
   return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(d);
+}
+
+function getLocalDate() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
 function fmtDate(s: string) {

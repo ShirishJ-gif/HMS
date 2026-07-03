@@ -19,6 +19,14 @@ function getStorage() {
   return window.localStorage;
 }
 
+function getTabStorage() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  return window.sessionStorage;
+}
+
 function emitSessionUpdated(user: AuthUser | null) {
   if (typeof window === 'undefined') {
     return;
@@ -40,11 +48,11 @@ export function getStoredRefreshToken() {
 }
 
 export function getStoredActivePage() {
-  return getStorage()?.getItem(activePageStorageKey) ?? null;
+  return getTabStorage()?.getItem(activePageStorageKey) ?? null;
 }
 
 export function setStoredActivePage(page: string) {
-  getStorage()?.setItem(activePageStorageKey, page);
+  getTabStorage()?.setItem(activePageStorageKey, page);
 }
 
 export function getStoredAuthUser() {
@@ -84,7 +92,7 @@ export function clearStoredSession(options?: { emit?: boolean; preserveActivePag
   storage.removeItem(userStorageKey);
 
   if (!options?.preserveActivePage) {
-    storage.removeItem(activePageStorageKey);
+    getTabStorage()?.removeItem(activePageStorageKey);
   }
 
   if (options?.emit !== false) {

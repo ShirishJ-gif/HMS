@@ -1,4 +1,5 @@
 import { BadGatewayException, BadRequestException } from '@nestjs/common';
+import { ApiCallTraceService } from '../../../common/api-call-trace/api-call-trace.service';
 import { ZodomusAppCredentials } from './zodomus.types';
 
 type HttpMethod = 'GET' | 'POST';
@@ -154,22 +155,44 @@ export class ZodomusClient {
   }
 
   private async request({ method = 'GET', path, body, password }: ZodomusRequestOptions) {
-    const response = await fetch(`${this.baseUrl()}${path}`, {
-      method,
-      headers: this.headers(body !== undefined, password),
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(15000),
-    });
+    const traceCallId = ApiCallTraceService.startZodomusRequest({ method, path });
+    let statusCode: number | null = null;
 
-    const payload = await this.readResponseBody(response);
+    try {
+      const response = await fetch(`${this.baseUrl()}${path}`, {
+        method,
+        headers: this.headers(body !== undefined, password),
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+      statusCode = response.status;
 
-    if (!response.ok) {
-      throw new BadRequestException(
-        `Zodomus ${method} ${path} failed with status ${response.status}.`,
-      );
+      const payload = await this.readResponseBody(response);
+
+      if (!response.ok) {
+        ApiCallTraceService.finishCall(traceCallId, {
+          status: 'FAILED',
+          statusCode,
+          errorMessage: `Zodomus ${method} ${path} failed with status ${response.status}.`,
+        });
+        throw new BadRequestException(
+          `Zodomus ${method} ${path} failed with status ${response.status}.`,
+        );
+      }
+
+      ApiCallTraceService.finishCall(traceCallId, {
+        status: 'SUCCEEDED',
+        statusCode,
+      });
+      return payload;
+    } catch (error) {
+      ApiCallTraceService.finishCall(traceCallId, {
+        status: 'FAILED',
+        statusCode,
+        errorMessage: error instanceof Error ? error.message : 'Zodomus request failed.',
+      });
+      throw error;
     }
-
-    return payload;
   }
 
   private headers(hasBody: boolean, password = this.credentials.api_password) {

@@ -265,6 +265,39 @@ describe('RoomService', () => {
     );
     expect(backgroundJobService.queueInventorySyncsForProperty).toHaveBeenCalledWith(property.id, {
       trigger: 'room_out_of_service_created',
+      from: '2026-06-10',
+      to: '2026-06-12',
+    });
+  });
+
+  it('deletes dated out-of-service periods and queues inventory syncs for the affected dates', async () => {
+    prisma.room.findUnique.mockResolvedValue(roomRecord());
+    prisma.roomOutOfServicePeriod.findUnique.mockResolvedValue({
+      id: 'period-1',
+      roomId: roomRecord().id,
+      propertyId: property.id,
+      fromDate: new Date('2026-06-10T00:00:00.000Z'),
+      toDate: new Date('2026-06-12T00:00:00.000Z'),
+      reason: 'Bathroom repair',
+      notes: 'Plumbing',
+      createdAt: new Date('2026-06-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-06-01T00:00:00.000Z'),
+    });
+
+    await expect(service.removeOutOfServicePeriod(roomRecord().id, 'period-1')).resolves.toEqual({
+      id: 'period-1',
+      deleted: true,
+    });
+
+    expect(inventoryService.acquireInventoryAllocationLock).toHaveBeenCalledWith(
+      prisma,
+      property.id,
+      roomCategory.id,
+    );
+    expect(backgroundJobService.queueInventorySyncsForProperty).toHaveBeenCalledWith(property.id, {
+      trigger: 'room_out_of_service_deleted',
+      from: '2026-06-10',
+      to: '2026-06-12',
     });
   });
 

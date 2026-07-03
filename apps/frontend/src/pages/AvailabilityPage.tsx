@@ -51,9 +51,7 @@ export function AvailabilityPage({ previewDataEnabled = false }: { previewDataEn
   );
   const [error, setError] = useState<string | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
-  const [lastLoadedQuery, setLastLoadedQuery] = useState<PersistedAvailabilityQuery | null>(
-    shouldRestorePersistedResults ? restoredQuery : null,
-  );
+  const [lastLoadedQuery, setLastLoadedQuery] = useState<PersistedAvailabilityQuery | null>(null);
   const [openDatePicker, setOpenDatePicker] = useState<'from' | 'to' | null>(null);
   const [rangePreset, setRangePreset] = useState<RangePreset>(
     shouldRestorePersistedResults && restoredQuery
@@ -871,7 +869,9 @@ function roomCategoryGridClass(count: number) {
 function availabilityCellTone(row: InventoryCalendarRow) {
   if (row.stop_sell || row.available_rooms <= 0) return 'closed';
   if (hasRestriction(row)) return 'restricted';
-  if (row.available_rooms <= 2 || row.blocked_rooms > 0) return 'limited';
+  if (row.total_rooms <= 1) return 'healthy';
+  const lowInventoryThreshold = Math.max(1, Math.floor(row.total_rooms * 0.25));
+  if (row.blocked_rooms > 0 || row.available_rooms <= lowInventoryThreshold) return 'limited';
   return 'healthy';
 }
 

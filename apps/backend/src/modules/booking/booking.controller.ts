@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, Query } from '@
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { CheckInReservationRoomDto } from './dto/check-in-reservation-room.dto';
 import { CreateDirectReservationDto } from './dto/create-direct-reservation.dto';
 import { FindReservationFeedQueryDto } from './dto/find-reservation-feed-query.dto';
 import { BookingService } from './booking.service';
@@ -26,8 +27,12 @@ export class BookingController {
   }
 
   @Put('bookings/groups/rooms/:id/checkin')
-  checkInReservationRoom(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
-    return this.bookingService.checkInReservationRoom(id, user);
+  checkInReservationRoom(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CheckInReservationRoomDto,
+  ) {
+    return this.bookingService.checkInReservationRoom(id, dto, user);
   }
 
   @Put('bookings/groups/rooms/:id/checkout')

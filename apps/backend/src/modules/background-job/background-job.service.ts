@@ -144,6 +144,8 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     options: {
       trigger: string;
       sourceConnectionId?: string;
+      from?: string;
+      to?: string;
     },
   ) {
     const connections = await this.prisma.channelConnection.findMany({
@@ -172,12 +174,26 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      if (connection.syncLogs.length > 0) {
+      const targetedWindow = Boolean(options.from && options.to);
+      if (!targetedWindow && connection.syncLogs.length > 0) {
+        continue;
+      }
+
+      if (
+        targetedWindow &&
+        connection.syncLogs.some((log) => {
+          const request = this.readObject(log.requestPayload);
+          return this.readString(request.from) === options.from && this.readString(request.to) === options.to;
+        })
+      ) {
         continue;
       }
 
       const syncWindowDays = this.readSyncWindowDays(connection.credentials);
-      const syncWindow = this.currentSyncWindow(syncWindowDays);
+      const syncWindow =
+        options.from && options.to
+          ? { from: options.from, to: options.to }
+          : this.currentSyncWindow(syncWindowDays);
       const inventory = await this.inventorySyncPayloadService.buildDailyInventoryRows(
         connection.propertyId,
         connection.roomMappings,
@@ -256,7 +272,7 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
 
     if (existing.propertyId) {
       assertCanAccessProperty(user, existing.propertyId);
-    } else if (user?.role !== UserRole.SUPER_ADMIN) {
+    } else if (user?.role !== UserRole.PLATFORM_OWNER && user?.role !== UserRole.SUPER_ADMIN) {
       throw new ForbiddenException('You do not have access to this background job');
     }
 
@@ -648,6 +664,10 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
 
     const connection = log.channelConnection;
     const requestPayload = this.readObject(log.requestPayload);
+    if (await this.skipCompletedTestReservationFallback(log.id, connection.id, requestPayload)) {
+      return;
+    }
+
     const responsePayload = await this.channelProviderService.push({
       provider: connection.provider,
       property_id: connection.propertyId,
@@ -718,6 +738,57 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.metricsService.recordChannelSyncCompleted(log.syncType, connection.provider, updated.status);
+  }
+
+  private async skipCompletedTestReservationFallback(
+    syncLogId: string,
+    channelConnectionId: string,
+    requestPayload: Record<string, Prisma.JsonValue>,
+  ) {
+    if (this.readString(requestPayload.trigger) !== 'test_reservation_webhook_fallback') {
+      return false;
+    }
+
+    const reservationImport = this.readNestedRecord(requestPayload.reservation_import);
+    const reservationId = this.readString(reservationImport.reservation_id);
+    if (!reservationId) {
+      return false;
+    }
+
+    const existingReservation = await this.prisma.reservationGroup.findFirst({
+      where: {
+        channelConnectionId,
+        externalReservationId: reservationId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!existingReservation) {
+      return false;
+    }
+
+    await this.prisma.channelSyncLog.update({
+      where: { id: syncLogId },
+      data: {
+        status: ChannelSyncStatus.SUCCEEDED,
+        responsePayload: {
+          reservation_import: {
+            mode: 'webhook_first_fallback_skipped',
+            reservation_id: reservationId,
+            existing_reservation_group_id: existingReservation.id,
+          },
+          import_summary: {
+            skipped: 1,
+            errors: [],
+          },
+        } satisfies Prisma.InputJsonObject,
+        errorMessage: null,
+      },
+    });
+
+    return true;
   }
 
   private async processNotificationJob(job: {
@@ -884,6 +955,19 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     importSummary: Prisma.InputJsonObject,
   ) {
     if (!this.didReservationImportChangeInventory(importSummary)) {
+      return;
+    }
+
+    const affectedWindows = this.readAffectedInventoryWindows(importSummary);
+    if (affectedWindows.length > 0) {
+      for (const window of affectedWindows) {
+        await this.queueInventorySyncsForProperty(propertyId, {
+          trigger: 'reservation_import_fanout',
+          sourceConnectionId,
+          from: window.from,
+          to: window.to,
+        });
+      }
       return;
     }
 
@@ -1183,6 +1267,28 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     const updated = this.readCount(importSummary.updated);
     const cancelled = this.readCount(importSummary.cancelled);
     return created > 0 || updated > 0 || cancelled > 0;
+  }
+
+  private readAffectedInventoryWindows(importSummary: Prisma.InputJsonObject) {
+    const windows = Array.isArray(importSummary.affected_inventory_windows)
+      ? importSummary.affected_inventory_windows
+      : [];
+    const seen = new Set<string>();
+
+    return windows.flatMap((value) => {
+      const record = this.readObject(value as Prisma.JsonValue);
+      const from = this.readString(record.from);
+      const to = this.readString(record.to);
+      if (!from || !to) {
+        return [];
+      }
+      const key = `${from}:${to}`;
+      if (seen.has(key)) {
+        return [];
+      }
+      seen.add(key);
+      return [{ from, to }];
+    });
   }
 
   private readCount(value: Prisma.JsonValue | Prisma.InputJsonValue | undefined | null) {

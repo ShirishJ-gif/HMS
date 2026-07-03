@@ -1,11 +1,13 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { Billing, PaymentProvider, PaymentTransaction, ReservationGroup, ReservationGroupFolio, ReservationGroupPaymentCollection } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
+import { useScrollLock } from '../hooks/useScrollLock';
 import { formatCurrency } from '../utils/format';
-import { ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
+import { ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
 import { createPreviewData, isPreviewId } from './previewData';
 
 // ── Providers ──────────────────────────────────────────────────────────────
@@ -28,12 +30,24 @@ const STATUS_CFG: Record<string, { badge: string; label: string }> = {
 
 const defaultPayForm = { amount: '', provider: 'CASH' as PaymentProvider, provider_reference: '' };
 const defaultGroupPayForm = { amount: '', provider: 'CASH' as PaymentProvider, provider_reference: '' };
+const FOLIOS_PER_PAGE = 8;
+
+function paymentReferenceLabel(payment: { provider: PaymentProvider; provider_reference: string | null }) {
+  return payment.provider === 'CASH' ? '—' : payment.provider_reference ?? '—';
+}
 
 function fmtDate(d: string) {
   return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 }
 function initials(name: string) {
-  return name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase();
+  return formatGuestName(name).split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase();
+}
+function formatGuestName(name: string) {
+  return name
+    .trim()
+    .split(/\s+/)
+    .map(part => part ? `${part[0].toUpperCase()}${part.slice(1).toLowerCase()}` : '')
+    .join(' ');
 }
 function nights(from: string, to: string) {
   return Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86400000);
@@ -54,7 +68,8 @@ function printInvoice(billing: Billing) {
     ...billing.extra_charges.map(ec => ({ desc: ec.description, amount: ec.amount })),
     { desc: 'Tax (12%)', amount: billing.tax },
   ];
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Invoice — ${r.guest.name}</title>
+  const guestName = formatGuestName(r.guest.name);
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Invoice — ${guestName}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family: -apple-system, 'Inter', sans-serif; color: #1e293b; padding: 48px; max-width: 680px; margin: 0 auto; }
@@ -77,7 +92,7 @@ function printInvoice(billing: Billing) {
 <h1>${r.property.name}</h1>
 <p class="sub">Tax Invoice · Generated ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
 <div class="grid2">
-  <div class="block"><p>Guest</p><strong>${r.guest.name}</strong>${r.guest.phone ? `<span>${r.guest.phone}</span>` : ''}${r.guest.email ? `<span>${r.guest.email}</span>` : ''}</div>
+  <div class="block"><p>Guest</p><strong>${guestName}</strong>${r.guest.phone ? `<span>${r.guest.phone}</span>` : ''}${r.guest.email ? `<span>${r.guest.email}</span>` : ''}</div>
   <div class="block"><p>Stay details</p><strong>Room ${r.room.room_number ?? 'TBD'} — ${r.room_category.name}</strong><span>${fmtDate(r.check_in_date)} → ${fmtDate(r.check_out_date)} · ${n} night${n !== 1 ? 's' : ''}</span><span>${r.rate_plan.name}</span></div>
   <div class="block"><p>Reservation</p><strong>${r.external_reservation_id}</strong><span>Room line: ${r.external_room_reservation_id}</span></div>
   <div class="block"><p>Invoice ID</p><strong>${billing.id.slice(0, 8).toUpperCase()}</strong></div>
@@ -94,7 +109,7 @@ function printInvoice(billing: Billing) {
 ${billing.payments.length > 0 ? `
 <table>
   <thead><tr><th>Payment history</th><th>Provider</th><th>Reference</th><th>Amount</th></tr></thead>
-  <tbody>${billing.payments.map(p => `<tr><td>${new Date(p.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td><td>${p.provider}</td><td>${p.provider_reference ?? '—'}</td><td>${formatCurrency(p.amount)}</td></tr>`).join('')}</tbody>
+  <tbody>${billing.payments.map(p => `<tr><td>${new Date(p.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td><td>${p.provider}</td><td>${paymentReferenceLabel(p)}</td><td>${formatCurrency(p.amount)}</td></tr>`).join('')}</tbody>
 </table>` : ''}
 <div class="footer">${r.property.name} · Thank you for your stay.</div>
 </body></html>`;
@@ -110,12 +125,13 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   const [showPayModal, setShowPayModal]       = useState(false);
   const [payForm, setPayForm]                 = useState(defaultPayForm);
   const [collecting, setCollecting]           = useState(false);
-  const [successMsg, setSuccessMsg]           = useState<string | null>(null);
+  const [toastMessage, setToastMessage]       = useState<string | null>(null);
   const [actionError, setActionError]         = useState<string | null>(null);
 
   // Folio (group) state
   const [selectedFolioGroupId, setSelectedFolioGroupId] = useState<string | null>(null);
   const [selectedFolio, setSelectedFolio]     = useState<ReservationGroupFolio | null>(null);
+  const [folioCache, setFolioCache]           = useState<Record<string, ReservationGroupFolio>>({});
   const [folioLoading, setFolioLoading]       = useState(false);
   const [folioError, setFolioError]           = useState<string | null>(null);
   const [groupPayForm, setGroupPayForm]       = useState(defaultGroupPayForm);
@@ -123,6 +139,8 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   const [lastGroupCollection, setLastGroupCollection] = useState<ReservationGroupPaymentCollection | null>(null);
   const [invoicingRoomId, setInvoicingRoomId] = useState<string | null>(null);
   const [generatingFolioId, setGeneratingFolioId] = useState<string | null>(null);
+  const [folioPage, setFolioPage] = useState(1);
+  const folioRequestIdRef = useRef(0);
 
   const billingsState = useAsync(async () => fetchAllPages<Billing>('/billings'), [reloadKey]);
   const reservationGroupsState = useAsync(async () => fetchAllPages<ReservationGroup>('/bookings/groups'), [reloadKey]);
@@ -163,13 +181,16 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
       balance_due: lineInvoices.reduce((s, b) => s + b.balance_due, 0),
     };
   }).filter(f => f.checked_out_count > 0 || f.invoiced_count > 0);
+  const folioTotalPages = Math.max(1, Math.ceil(folioRows.length / FOLIOS_PER_PAGE));
+  const clampedFolioPage = Math.min(folioPage, folioTotalPages);
+  const paginatedFolioRows = folioRows.slice((clampedFolioPage - 1) * FOLIOS_PER_PAGE, clampedFolioPage * FOLIOS_PER_PAGE);
 
   // Uninvoiced checked-out rooms
   const uninvoiced = reservationGroups
     .flatMap(g => g.rooms.map(r => ({ ...r, groupId: g.id, extResId: g.external_reservation_id, property: g.property, guestName: r.guest_name ?? g.primary_guest?.name ?? 'Imported guest' })))
     .filter(r => r.reservation_status === 'CHECKED_OUT' && !invoicedRoomIds.has(r.id));
 
-  function flash(msg: string) { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(null), 3000); }
+  function flash(msg: string) { setToastMessage(msg); setTimeout(() => setToastMessage(null), 3000); }
 
   // ── Collect against a billing invoice ─────────────────────────────────
   async function submitPayment(e: FormEvent) {
@@ -181,7 +202,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
         billing_id: selectedBillingId,
         amount: payForm.amount,
         provider: payForm.provider,
-        provider_reference: payForm.provider_reference || undefined,
+        provider_reference: payForm.provider === 'CASH' ? undefined : payForm.provider_reference || undefined,
       });
       setPayForm(defaultPayForm); setShowPayModal(false);
       setReloadKey(v => v + 1); flash('Payment recorded successfully.');
@@ -201,21 +222,50 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   }
 
   // ── Open a folio for a reservation group ─────────────────────────────
-  async function openFolio(groupId: string) {
-    setSelectedFolioGroupId(groupId); setFolioError(null); setFolioLoading(true); setSelectedFolio(null);
+  async function openFolio(groupId: string, forceRefresh = false) {
+    const cachedFolio = folioCache[groupId] ?? null;
+    const requestId = folioRequestIdRef.current + 1;
+    folioRequestIdRef.current = requestId;
+    setSelectedFolioGroupId(groupId);
+    setFolioError(null);
+    setFolioLoading(!cachedFolio || forceRefresh);
+    setSelectedFolio(cachedFolio);
+
+    if (cachedFolio && !forceRefresh) {
+      setGroupPayForm(form => ({ ...form, amount: cachedFolio.balance_due > 0 ? cachedFolio.balance_due.toFixed(2) : '' }));
+      setFolioLoading(false);
+      return;
+    }
+
     if (isPreviewId(groupId)) {
       const folio = createPreviewData().folios.get(groupId) ?? null;
+      if (folioRequestIdRef.current !== requestId) return;
       setSelectedFolio(folio);
+      if (folio) setFolioCache(cache => ({ ...cache, [groupId]: folio }));
       setGroupPayForm(form => ({ ...form, amount: folio && folio.balance_due > 0 ? folio.balance_due.toFixed(2) : '' }));
       setFolioLoading(false);
       return;
     }
     try {
       const res = await api.get<ReservationGroupFolio>(`/billings/reservation-groups/${groupId}/folio`);
+      if (folioRequestIdRef.current !== requestId) return;
       setSelectedFolio(res.data);
+      setFolioCache(cache => ({ ...cache, [groupId]: res.data }));
       setGroupPayForm(f => ({ ...f, amount: res.data.balance_due > 0 ? res.data.balance_due.toFixed(2) : '' }));
-    } catch (err) { setFolioError(getApiErrorMessage(err)); }
-    finally { setFolioLoading(false); }
+    } catch (err) {
+      if (folioRequestIdRef.current === requestId) setFolioError(getApiErrorMessage(err));
+    } finally {
+      if (folioRequestIdRef.current === requestId) setFolioLoading(false);
+    }
+  }
+
+  function closeFolio() {
+    folioRequestIdRef.current += 1;
+    setSelectedFolioGroupId(null);
+    setSelectedFolio(null);
+    setFolioLoading(false);
+    setFolioError(null);
+    setLastGroupCollection(null);
   }
 
   // ── Generate missing folio invoices ───────────────────────────────────
@@ -225,7 +275,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
     try {
       await api.post(`/billings/reservation-groups/${groupId}/generate-missing-invoices`);
       setReloadKey(v => v + 1); flash('Missing invoices generated.');
-      if (selectedFolioGroupId === groupId) await openFolio(groupId);
+      if (selectedFolioGroupId === groupId) await openFolio(groupId, true);
     } catch (err) { setActionError(getApiErrorMessage(err)); }
     finally { setGeneratingFolioId(null); }
   }
@@ -240,11 +290,11 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
         reservation_group_id: selectedFolioGroupId,
         amount: groupPayForm.amount,
         provider: groupPayForm.provider,
-        provider_reference: groupPayForm.provider_reference || undefined,
+        provider_reference: groupPayForm.provider === 'CASH' ? undefined : groupPayForm.provider_reference || undefined,
       });
       setLastGroupCollection(res.data);
       setGroupPayForm(defaultGroupPayForm);
-      await openFolio(selectedFolioGroupId);
+      await openFolio(selectedFolioGroupId, true);
       setReloadKey(v => v + 1); flash('Group payment recorded.');
     } catch (err) { setActionError(getApiErrorMessage(err)); }
     finally { setCollectingGroup(false); }
@@ -252,6 +302,10 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
 
   const loading = !previewData && (billingsState.loading || reservationGroupsState.loading || paymentsState.loading);
   const loadError = billingsState.error ?? reservationGroupsState.error ?? paymentsState.error;
+
+  useEffect(() => {
+    if (folioPage !== clampedFolioPage) setFolioPage(clampedFolioPage);
+  }, [clampedFolioPage, folioPage]);
 
   return (
     <div className="-mx-5 lg:-mx-8 -my-6 lg:-my-8 flex flex-col min-h-0">
@@ -266,7 +320,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
       </div>
 
       {/* Messages */}
-      {successMsg && <div className="mx-5 lg:mx-8 mb-3"><SuccessMsg>{successMsg}</SuccessMsg></div>}
+      <FloatingSuccessToast message={toastMessage} onClose={() => setToastMessage(null)} />
       {actionError && <div className="mx-5 lg:mx-8 mb-3"><ErrorMsg>{actionError}</ErrorMsg></div>}
 
       {/* Stats cards */}
@@ -306,13 +360,13 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
             <div className="flex gap-2.5 flex-wrap">
               {([['ALL','All'],['UNPAID','Unpaid'],['PARTIAL','Partial'],['PAID','Paid']] as const).map(([v,l]) => (
                 <button key={v} type="button" onClick={() => setStatusFilter(v)}
-                  className={`h-7 px-3 rounded-md text-[10.5px] font-bold transition-colors ${statusFilter === v ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                  className={`h-7 px-3 rounded-md text-[10.5px] font-bold border transition-colors ${statusFilter === v ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-100 text-slate-600 border-transparent hover:bg-slate-200'}`}>
                   {l}
                 </button>
               ))}
             </div>
           </div>
-          <div className="overflow-y-auto divide-y divide-slate-50 max-h-[520px]">
+          <div className="scrollbar-none max-h-[600px] divide-y divide-slate-50 overflow-y-auto">
             {filteredBillings.map(b => {
               const br = b.reservation_room;
               const bcfg = STATUS_CFG[b.payment_status] ?? STATUS_CFG['UNPAID'];
@@ -320,15 +374,15 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
               return (
                 <button key={b.id} type="button"
                   onClick={() => { setSelectedBillingId(isSel ? null : b.id); setSelectedFolioGroupId(null); setSelectedFolio(null); }}
-                  className={`w-full text-left px-4 py-3.5 transition-colors border-l-2
-                    ${isSel ? 'bg-slate-50 border-slate-900' : 'border-transparent hover:bg-slate-50/80'}`}>
+                  className={`w-full text-left px-4 py-3.5 transition-colors
+                    ${isSel ? 'bg-slate-50 ' : 'hover:bg-slate-50/80'}`}>
                   <div className="flex items-start justify-between gap-2 mb-1.5">
                     <div className="flex items-center gap-2 min-w-0">
                       <div className="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0">
                         {initials(br.guest.name)}
                       </div>
                       <div className="min-w-0">
-                        <p className="text-[12.5px] font-bold text-slate-900 truncate leading-tight">{br.guest.name}</p>
+                        <p className="text-[12.5px] font-bold text-slate-900 truncate leading-tight">{formatGuestName(br.guest.name)}</p>
                         <p className="text-[10.5px] text-slate-400">Room {br.room.room_number ?? '—'} · {br.room_category.name}</p>
                       </div>
                     </div>
@@ -369,7 +423,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                     </div>
                     <div>
                       <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                        <h2 className="text-[17px] font-bold text-slate-900">{r.guest.name}</h2>
+                      <h2 className="text-[17px] font-bold text-slate-900">{formatGuestName(r.guest.name)}</h2>
                         <span className={`text-[10.5px] font-bold px-2.5 py-0.5 rounded-full border ${cfg.badge}`}>{cfg.label}</span>
                       </div>
                       <p className="text-[12px] text-slate-400">
@@ -457,7 +511,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                             {selectedBilling.payments.map(p => (
                               <tr key={p.id} className="border-b border-slate-50 last:border-0">
                                 <td className="px-4 py-3 text-[12px] font-semibold text-slate-800">{p.provider}</td>
-                                <td className="px-4 py-3 text-[11px] font-mono text-slate-400">{p.provider_reference ?? '—'}</td>
+                                <td className="px-4 py-3 text-[11px] font-mono text-slate-400">{paymentReferenceLabel(p)}</td>
                                 <td className="px-4 py-3 text-[12.5px] font-bold text-slate-900">{formatCurrency(p.amount)}</td>
                                 <td className="px-4 py-3">
                                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.status === 'SUCCEEDED' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-50 text-rose-700 border-rose-200'}`}>
@@ -486,7 +540,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                       {selectedBilling.balance_due > 0 && (
                         <button type="button"
                           onClick={() => { setPayForm(f => ({ ...f, amount: selectedBilling.balance_due.toFixed(2) })); setShowPayModal(true); }}
-                          className="h-8 px-4 rounded-lg text-[11.5px] font-bold bg-slate-900 text-white hover:bg-slate-800 transition-colors">
+                          className="h-8 px-4 rounded-lg text-[11.5px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">
                           Collect payment →
                         </button>
                       )}
@@ -523,7 +577,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                   <tbody>
                     {uninvoiced.map(room => (
                       <tr key={room.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
-                        <td className="px-5 py-3 text-[12.5px] font-semibold text-slate-900">{room.guestName}</td>
+                        <td className="px-5 py-3 text-[12.5px] font-semibold text-slate-900">{formatGuestName(room.guestName)}</td>
                         <td className="px-5 py-3 text-[12px] text-slate-600">{room.property.name}</td>
                         <td className="px-5 py-3 text-[11px] font-mono text-slate-400">{room.extResId}</td>
                         <td className="px-5 py-3 text-[12px] text-slate-500">{room.arrival_date} → {room.departure_date}</td>
@@ -561,19 +615,19 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                     </tr>
                   </thead>
                   <tbody>
-                    {folioRows.map(f => (
+                    {paginatedFolioRows.map(f => (
                       <tr key={f.id} className={`border-b border-slate-50 last:border-0 hover:bg-slate-50/60 transition-colors ${selectedFolioGroupId === f.id ? 'bg-indigo-50/30' : ''}`}>
                         <td className="px-5 py-3 text-[11px] font-mono text-slate-500">{f.external_reservation_id}</td>
-                        <td className="px-5 py-3 text-[12.5px] font-semibold text-slate-900">{f.guest_name}</td>
+                        <td className="px-5 py-3 text-[12.5px] font-semibold text-slate-900">{formatGuestName(f.guest_name)}</td>
                         <td className="px-5 py-3 text-[12px] text-slate-600">{f.property_name}</td>
                         <td className="px-5 py-3 text-[12px] text-slate-600">{f.invoiced_count}/{f.checked_out_count} checked out</td>
                         <td className="px-5 py-3 text-[12.5px] font-bold text-slate-900">{formatCurrency(f.billed_total)}</td>
                         <td className={`px-5 py-3 text-[12.5px] font-bold ${f.balance_due > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{formatCurrency(f.balance_due)}</td>
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-2">
-                            <button type="button" onClick={() => void openFolio(f.id)}
+                            <button type="button" onClick={() => void openFolio(f.id, selectedFolioGroupId === f.id)}
                               className={`h-7 px-3 rounded-lg text-[11px] font-semibold border transition-colors ${selectedFolioGroupId === f.id ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'}`}>
-                              {selectedFolioGroupId === f.id ? 'Refresh' : 'Review folio'}
+                              {folioLoading && selectedFolioGroupId === f.id && !selectedFolio ? 'Loading...' : selectedFolioGroupId === f.id ? 'Refresh' : 'Review folio'}
                             </button>
                             <button type="button"
                               disabled={generatingFolioId === f.id}
@@ -588,6 +642,32 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                   </tbody>
                 </table>
               </div>
+              {folioTotalPages > 1 && (
+                <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/70 px-5 py-3">
+                  <p className="text-[11px] font-semibold text-slate-400">
+                    Showing {(clampedFolioPage - 1) * FOLIOS_PER_PAGE + 1}-{Math.min(clampedFolioPage * FOLIOS_PER_PAGE, folioRows.length)} of {folioRows.length}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={clampedFolioPage <= 1}
+                      onClick={() => setFolioPage((page) => Math.max(1, page - 1))}
+                      type="button"
+                    >
+                      Previous
+                    </button>
+                    <span className="text-[11px] font-bold text-slate-500">Page {clampedFolioPage} of {folioTotalPages}</span>
+                    <button
+                      className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={clampedFolioPage >= folioTotalPages}
+                      onClick={() => setFolioPage((page) => Math.min(folioTotalPages, page + 1))}
+                      type="button"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -599,12 +679,12 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                   <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500 mb-0.5">Folio detail</p>
                   <p className="text-[14px] font-bold text-slate-900">{selectedFolio?.external_reservation_id ?? 'Loading…'}</p>
                 </div>
-                <button type="button" onClick={() => { setSelectedFolioGroupId(null); setSelectedFolio(null); setFolioError(null); setLastGroupCollection(null); }}
+                <button type="button" onClick={closeFolio}
                   className="h-7 px-3 rounded-lg text-[11px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50">
                   Close folio
                 </button>
               </div>
-              {folioLoading && <div className="px-6 py-4"><LoadingMsg>Loading folio…</LoadingMsg></div>}
+              {folioLoading && <div className="px-6 py-4"><LoadingMsg>{selectedFolio ? 'Refreshing folio…' : 'Loading folio…'}</LoadingMsg></div>}
               {folioError  && <div className="px-6 py-4"><ErrorMsg>{folioError}</ErrorMsg></div>}
               {selectedFolio && (
                 <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-5 p-6">
@@ -612,7 +692,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                     {/* Summary cards */}
                     <div className="grid grid-cols-3 gap-3">
                       {[
-                        { label: 'Guest',        value: selectedFolio.guest?.name ?? 'Imported guest', sub: selectedFolio.property.name },
+                        { label: 'Guest',        value: formatGuestName(selectedFolio.guest?.name ?? 'Imported guest'), sub: selectedFolio.property.name },
                         { label: 'Rooms',        value: String(selectedFolio.room_count),              sub: `${selectedFolio.invoiced_room_count} invoiced` },
                         { label: 'Balance due',  value: formatCurrency(selectedFolio.balance_due),     sub: `${formatCurrency(selectedFolio.billed_total)} billed` },
                       ].map(card => (
@@ -657,7 +737,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                         <tbody>
                           {selectedFolio.invoices.map(inv => (
                             <tr key={inv.id} className="border-b border-slate-50 last:border-0">
-                              <td className="px-4 py-3 text-[12.5px] font-semibold text-slate-900">{inv.reservation_room.guest.name}</td>
+                              <td className="px-4 py-3 text-[12.5px] font-semibold text-slate-900">{formatGuestName(inv.reservation_room.guest.name)}</td>
                               <td className="px-4 py-3 text-[12.5px] font-bold text-slate-900">{formatCurrency(inv.total)}</td>
                               <td className="px-4 py-3 text-[12px] text-emerald-600 font-semibold">{formatCurrency(inv.paid_total - inv.refunded_total)}</td>
                               <td className={`px-4 py-3 text-[12.5px] font-bold ${inv.balance_due > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{formatCurrency(inv.balance_due)}</td>
@@ -687,16 +767,18 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Provider</label>
-                          <CustomSelect value={groupPayForm.provider} onChange={v => setGroupPayForm(f => ({ ...f, provider: v as PaymentProvider }))} options={PROVIDERS} />
+                          <CustomSelect value={groupPayForm.provider} onChange={v => setGroupPayForm(f => ({ ...f, provider: v as PaymentProvider, provider_reference: v === 'CASH' ? '' : f.provider_reference }))} options={PROVIDERS} />
                         </div>
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Reference</label>
-                          <input placeholder="folio-receipt-001"
-                            value={groupPayForm.provider_reference} onChange={e => setGroupPayForm(f => ({ ...f, provider_reference: e.target.value }))}
-                            className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[12.5px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/30" />
-                        </div>
+                        {groupPayForm.provider !== 'CASH' ? (
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Reference</label>
+                            <input placeholder="folio-receipt-001"
+                              value={groupPayForm.provider_reference} onChange={e => setGroupPayForm(f => ({ ...f, provider_reference: e.target.value }))}
+                              className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[12.5px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/30" />
+                          </div>
+                        ) : null}
                         <button type="submit" disabled={collectingGroup || selectedFolio.balance_due <= 0}
-                          className="w-full h-10 rounded-xl text-[12.5px] font-bold bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                          className="w-full h-10 rounded-xl text-[12.5px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
                           {collectingGroup ? 'Collecting…' : 'Collect group payment'}
                         </button>
                       </form>
@@ -730,51 +812,86 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
 
       {/* ── Collect payment modal ── */}
       {showPayModal && selectedBilling && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center" onClick={() => setShowPayModal(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-[420px] p-6" onClick={e => e.stopPropagation()}>
-            <div className="flex items-start justify-between mb-5">
-              <div>
-                <h3 className="text-[16px] font-bold text-slate-900">Collect payment</h3>
-                <p className="text-[12px] text-slate-400 mt-0.5">{selectedBilling.reservation_room.guest.name} · {selectedBilling.reservation_room.room_category.name}</p>
-              </div>
-              <button type="button" onClick={() => setShowPayModal(false)} className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
-            </div>
-            <div className="bg-rose-50 border border-rose-100 rounded-xl px-4 py-3 mb-5 flex items-center justify-between">
-              <span className="text-[12.5px] text-rose-600">Outstanding balance</span>
-              <span className="text-[22px] font-black text-rose-600">{formatCurrency(selectedBilling.balance_due)}</span>
-            </div>
-            <form onSubmit={submitPayment} className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400">Payment method</label>
-                <div className="grid grid-cols-3 gap-1.5">
-                  {PROVIDERS.filter(p => p.value !== 'MOCK').map(p => (
-                    <button key={p.value} type="button" onClick={() => setPayForm(f => ({ ...f, provider: p.value }))}
-                      className={`h-9 rounded-lg text-[11px] font-bold transition-colors border ${payForm.provider === p.value ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-600 hover:border-slate-400 hover:bg-slate-50'}`}>
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400">Amount</label>
-                <input type="number" min="0" step="0.01" required
-                  value={payForm.amount} onChange={e => setPayForm(f => ({ ...f, amount: e.target.value }))}
-                  className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[14px] text-slate-900 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-400/30" />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400">Reference (optional)</label>
-                <input placeholder="Card last 4, UPI ref, receipt no…"
-                  value={payForm.provider_reference} onChange={e => setPayForm(f => ({ ...f, provider_reference: e.target.value }))}
-                  className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[13px] text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-400/30" />
-              </div>
-              <button type="submit" disabled={collecting || !payForm.amount}
-                className="w-full h-11 rounded-xl text-[13px] font-bold bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-                {collecting ? 'Recording…' : 'Record payment & settle folio'}
-              </button>
-            </form>
-          </div>
-        </div>
+        <CollectPaymentModal
+          billing={selectedBilling}
+          collecting={collecting}
+          form={payForm}
+          onClose={() => setShowPayModal(false)}
+          onFormChange={setPayForm}
+          onSubmit={submitPayment}
+        />
       )}
     </div>
+  );
+}
+
+function CollectPaymentModal({
+  billing,
+  collecting,
+  form,
+  onClose,
+  onFormChange,
+  onSubmit,
+}: {
+  billing: Billing;
+  collecting: boolean;
+  form: typeof defaultPayForm;
+  onClose: () => void;
+  onFormChange: React.Dispatch<React.SetStateAction<typeof defaultPayForm>>;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  useScrollLock(true);
+
+  return createPortal(
+    <>
+      <button aria-label="Close collect payment" className="fixed inset-0 z-40 bg-slate-900/20" onClick={onClose} type="button" />
+      <section aria-label="Collect payment" className="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-3rem)] w-[calc(100vw_-_2rem)] max-w-[420px] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
+          <div>
+            <h3 className="text-[16px] font-bold text-slate-900">Collect payment</h3>
+            <p className="text-[12px] text-slate-400 mt-0.5">{formatGuestName(billing.reservation_room.guest.name)} · {billing.reservation_room.room_category.name}</p>
+          </div>
+          <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-xl leading-none text-slate-400 transition hover:bg-slate-100 hover:text-slate-700">×</button>
+        </div>
+        <div className="min-h-0 overflow-y-auto p-6">
+          <div className="bg-rose-50 border border-rose-100 rounded-xl px-4 py-3 mb-5 flex items-center justify-between">
+            <span className="text-[12.5px] text-rose-600">Outstanding balance</span>
+            <span className="text-[22px] font-black text-rose-600">{formatCurrency(billing.balance_due)}</span>
+          </div>
+          <form onSubmit={onSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400">Payment method</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {PROVIDERS.filter(p => p.value !== 'MOCK').map(p => (
+                  <button key={p.value} type="button" onClick={() => onFormChange(f => ({ ...f, provider: p.value, provider_reference: p.value === 'CASH' ? '' : f.provider_reference }))}
+                    className={`h-9 rounded-lg text-[11px] font-bold transition-colors border ${form.provider === p.value ? 'bg-emerald-50 text-emerald-700 border-emerald-300 shadow-sm' : 'border-slate-200 text-slate-600 hover:border-emerald-200 hover:bg-emerald-50/50'}`}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400">Amount</label>
+              <input type="number" min="0" step="0.01" required
+                value={form.amount} onChange={e => onFormChange(f => ({ ...f, amount: e.target.value }))}
+                className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[14px] text-slate-900 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-400/30" />
+            </div>
+            {form.provider !== 'CASH' ? (
+              <div className="space-y-1.5">
+                <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400">Reference (optional)</label>
+                <input placeholder="Card last 4, UPI ref, receipt no..."
+                  value={form.provider_reference} onChange={e => onFormChange(f => ({ ...f, provider_reference: e.target.value }))}
+                  className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[13px] text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-400/30" />
+              </div>
+            ) : null}
+            <button type="submit" disabled={collecting || !form.amount}
+              className="w-full h-11 rounded-xl text-[13px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              {collecting ? 'Recording...' : 'Record payment & settle folio'}
+            </button>
+          </form>
+        </div>
+      </section>
+    </>,
+    document.body,
   );
 }

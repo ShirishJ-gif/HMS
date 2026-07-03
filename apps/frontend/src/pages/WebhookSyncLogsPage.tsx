@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChannelSyncLog, ChannelSyncState, InventoryReconciliation } from '../api/types';
 import { formatConnectionLabel, SummaryTile, SyncStateCard, formatDateTime, formatInventorySnapshot, formatSignedNumber } from './channel/ChannelUi';
 import { ChannelWorkspace } from './channel/useChannelWorkspace';
-import { PageHeader, NoteStrip, secondaryBtn, Th, Td, ErrorMsg, LoadingMsg, SuccessMsg } from './ui';
+import { PageHeader, NoteStrip, secondaryBtn, Th, Td, ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
 
 export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace }) {
   const syncLogsPerPage = 8;
@@ -50,7 +50,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
 
       {workspace.loading && <LoadingMsg>Loading channel diagnostics...</LoadingMsg>}
       {workspace.error && <ErrorMsg>{workspace.error}</ErrorMsg>}
-      {workspace.status && <SuccessMsg>{workspace.status}</SuccessMsg>}
+      <FloatingSuccessToast message={workspace.status} onClose={workspace.clearStatus} />
 
       {selectedConnection ? (
         <>

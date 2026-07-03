@@ -1,6 +1,6 @@
 export type RoomStatus = 'AVAILABLE' | 'OCCUPIED' | 'MAINTENANCE';
 export type BookingStatus = 'BOOKED' | 'CHECKED_IN' | 'CHECKED_OUT' | 'CANCELLED';
-export type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'STAFF';
+export type UserRole = 'PLATFORM_OWNER' | 'ORG_OWNER' | 'SUPER_ADMIN' | 'ADMIN' | 'STAFF';
 export type HousekeepingStatus = 'DIRTY' | 'CLEANING' | 'CLEAN' | 'INSPECTED' | 'OUT_OF_SERVICE';
 export type HousekeepingPriority = 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT';
 export type PaymentStatus = 'PAID' | 'PARTIAL' | 'PENDING' | 'REFUNDED';
@@ -24,6 +24,7 @@ export type AuditAction =
 
 export type AuthUser = {
   id: string;
+  organization_id: string | null;
   property_id: string | null;
   name: string;
   email: string;
@@ -54,6 +55,8 @@ export type Property = {
   email: string | null;
   address: string;
   timezone: string;
+  default_check_in_time: string;
+  default_check_out_time: string;
   is_active: boolean;
   images: MediaImage[];
 };
@@ -243,6 +246,8 @@ export type ReservationGroup = {
     guest_name: string | null;
     adults: number | null;
     children: number | null;
+    checked_in_at: string | null;
+    checked_out_at: string | null;
     room_category: Pick<RoomCategory, 'id' | 'name' | 'code'>;
     rate_plan: Pick<RatePlan, 'id' | 'name' | 'code' | 'base_rate' | 'currency'>;
     room: {

@@ -49,6 +49,8 @@ const property: Property = {
   email: 'frontdesk@harbour-demo.local',
   address: 'Marine Drive, Mumbai',
   timezone: 'Asia/Kolkata',
+  default_check_in_time: '12:00',
+  default_check_out_time: '11:00',
   is_active: true,
   images: [],
 };
@@ -167,6 +169,8 @@ function makeGroup(input: StayInput): ReservationGroup {
       guest_name: input.guest,
       adults: 2,
       children: input.id === 'mehta' ? 1 : 0,
+      checked_in_at: ['CHECKED_IN', 'CHECKED_OUT'].includes(input.status) ? `${input.arrival}T07:00:00.000Z` : null,
+      checked_out_at: input.status === 'CHECKED_OUT' ? `${input.departure}T05:30:00.000Z` : null,
       room_category: { id: cat.id, name: cat.name, code: cat.code },
       rate_plan: {
         id: rateFor(cat).id,
@@ -400,4 +404,3 @@ export function createPreviewData() {
     folios,
   };
 }
-
