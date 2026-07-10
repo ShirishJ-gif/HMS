@@ -1,7 +1,7 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PrismaClient, UserRole } from '@prisma/client';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import * as request from 'supertest';
 import { AppModule } from '../app.module';
 import { BackgroundJobService } from '../modules/background-job/background-job.service';
@@ -2208,12 +2208,21 @@ describe('App integration', () => {
       .expect(201);
 
     expect(resetRequest.body.reset_requested).toBe(true);
-    expect(resetRequest.body.reset_token).toBeTruthy();
+    expect(resetRequest.body.reset_token).toBeUndefined();
+
+    const resetToken = `integration-reset-${randomUUID()}`;
+    await prisma.passwordResetToken.create({
+      data: {
+        userId: authUserId,
+        tokenHash: createHash('sha256').update(resetToken).digest('hex'),
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+      },
+    });
 
     await request(app.getHttpServer())
       .post('/auth/password-reset/confirm')
       .send({
-        token: resetRequest.body.reset_token,
+        token: resetToken,
         password: newPassword,
       })
       .expect(201);

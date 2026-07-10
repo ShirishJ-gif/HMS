@@ -7,7 +7,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { NextFunction, Response } from 'express';
 import { AppModule } from './app.module';
-import { ApiCallTraceService } from './common/api-call-trace/api-call-trace.service';
+import { ApiCallTraceService, redactSensitiveUrl } from './common/api-call-trace/api-call-trace.service';
 import { HttpExceptionFilter } from './common/http/http-exception.filter';
 import { createRateLimitMiddleware } from './common/http/rate-limit.middleware';
 import { requestIdHeader, RequestWithContext } from './common/http/request-context';
@@ -68,7 +68,7 @@ async function bootstrap() {
           JSON.stringify({
             request_id: requestId,
             method: request.method,
-            path: request.originalUrl,
+            path: redactSensitiveUrl(request.originalUrl),
             status_code: response.statusCode,
             duration_ms: durationMs,
             content_length: response.getHeader('content-length') ?? null,

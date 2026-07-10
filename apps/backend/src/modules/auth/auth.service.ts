@@ -222,19 +222,23 @@ export class AuthService {
     }
 
     const token = this.randomToken();
-    await this.prisma.passwordResetToken.create({
-      data: {
-        userId: user.id,
-        tokenHash: this.hashToken(token),
-        expiresAt: this.minutesFromNow(passwordResetMinutes),
-      },
-    });
+    await this.prisma.$transaction([
+      this.prisma.passwordResetToken.updateMany({
+        where: { userId: user.id, usedAt: null },
+        data: { usedAt: new Date() },
+      }),
+      this.prisma.passwordResetToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: this.hashToken(token),
+          expiresAt: this.minutesFromNow(passwordResetMinutes),
+        },
+      }),
+    ]);
 
-    return {
-      reset_requested: true,
-      reset_token: token,
-      expires_in_minutes: passwordResetMinutes,
-    };
+    // Token delivery must happen through a verified out-of-band provider.
+    // Never expose whether the account exists or return the token over HTTP.
+    return { reset_requested: true };
   }
 
   async confirmPasswordReset(dto: ConfirmPasswordResetDto) {

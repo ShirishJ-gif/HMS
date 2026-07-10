@@ -57,6 +57,7 @@ type ListTracesQuery = {
   traceId?: string;
   kind?: ApiCallTraceKind;
   limit?: number;
+  propertyIds?: string[] | null;
 };
 
 type AttachActorInput = {
@@ -84,7 +85,7 @@ export class ApiCallTraceService {
       target: 'HMS_API',
       screenName: input.screenName,
       method: input.method,
-      path: input.path,
+      path: redactSensitiveUrl(input.path),
     });
   }
 
@@ -118,6 +119,7 @@ export class ApiCallTraceService {
   list(query: ListTracesQuery = {}) {
     const limit = this.normalizeLimit(query.limit);
     const records = ApiCallTraceService.records
+      .filter((record) => this.recordIsInScope(record, query.propertyIds))
       .filter((record) => (query.traceId ? record.trace_id === query.traceId : true))
       .filter((record) => (query.kind ? record.kind === query.kind : true))
       .slice(-limit);
@@ -125,9 +127,22 @@ export class ApiCallTraceService {
     return query.traceId ? records : records.reverse();
   }
 
-  clear() {
-    ApiCallTraceService.records.length = 0;
-    ApiCallTraceService.sequence = 0;
+  clear(propertyIds: string[] | null = null) {
+    if (propertyIds === null) {
+      const clearedCount = ApiCallTraceService.records.length;
+      ApiCallTraceService.records.length = 0;
+      ApiCallTraceService.sequence = 0;
+      return clearedCount;
+    }
+
+    let clearedCount = 0;
+    for (let index = ApiCallTraceService.records.length - 1; index >= 0; index -= 1) {
+      if (!this.recordIsInScope(ApiCallTraceService.records[index], propertyIds)) continue;
+      ApiCallTraceService.records.splice(index, 1);
+      clearedCount += 1;
+    }
+
+    return clearedCount;
   }
 
   static startZodomusRequest(input: Pick<StartCallInput, 'method' | 'path'>) {
@@ -136,7 +151,7 @@ export class ApiCallTraceService {
       direction: 'OUTBOUND',
       target: 'ZODOMUS_API',
       method: input.method,
-      path: input.path,
+      path: redactSensitiveUrl(input.path),
     });
   }
 
@@ -153,7 +168,7 @@ export class ApiCallTraceService {
     const completedAt = Date.now();
     record.status = input.status;
     record.status_code = input.statusCode ?? null;
-    record.error_message = input.errorMessage ?? null;
+    record.error_message = input.errorMessage ? redactSensitiveText(input.errorMessage) : null;
     record.completed_at = new Date(completedAt).toISOString();
     record.duration_ms = Math.max(0, completedAt - Date.parse(record.started_at));
   }
@@ -217,4 +232,46 @@ export class ApiCallTraceService {
 
     return Math.min(Math.max(Math.floor(limit), 1), 500);
   }
+
+  private recordIsInScope(record: ApiCallTraceRecord, propertyIds: string[] | null | undefined) {
+    if (propertyIds === null || propertyIds === undefined) {
+      return true;
+    }
+
+    if (propertyIds.length === 0) {
+      return false;
+    }
+
+    return (
+      (record.property_id !== null && propertyIds.includes(record.property_id)) ||
+      record.property_ids.some((propertyId) => propertyIds.includes(propertyId))
+    );
+  }
+}
+
+const sensitiveQueryKey = /(token|secret|password|authorization|api[-_]?key|signature|credential|code)/i;
+const sensitiveQueryValue = /([?&][^?&#=\s]*(?:token|secret|password|authorization|api[-_]?key|signature|credential|code)[^?&#=\s]*=)[^&#\s]*/gi;
+
+export function redactSensitiveText(value: string) {
+  return value.replace(sensitiveQueryValue, '$1[REDACTED]');
+}
+
+export function redactSensitiveUrl(value: string) {
+  const fragmentIndex = value.indexOf('#');
+  const withoutFragment = fragmentIndex >= 0 ? value.slice(0, fragmentIndex) : value;
+  const queryIndex = withoutFragment.indexOf('?');
+  if (queryIndex < 0) {
+    return withoutFragment;
+  }
+
+  const path = withoutFragment.slice(0, queryIndex);
+  const params = new URLSearchParams(withoutFragment.slice(queryIndex + 1));
+  for (const key of Array.from(params.keys())) {
+    if (sensitiveQueryKey.test(key)) {
+      params.set(key, '[REDACTED]');
+    }
+  }
+
+  const query = params.toString();
+  return query ? `${path}?${query}` : path;
 }

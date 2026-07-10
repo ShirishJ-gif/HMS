@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { redactSensitiveText, redactSensitiveUrl } from '../api-call-trace/api-call-trace.service';
 import { RequestWithContext } from './request-context';
 
 @Catch()
@@ -20,13 +21,15 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const status =
       exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
     const exceptionResponse = exception instanceof HttpException ? exception.getResponse() : undefined;
-    const message = this.resolveMessage(exceptionResponse, exception);
+    const resolvedMessage = this.resolveMessage(exceptionResponse, exception);
+    const message = typeof resolvedMessage === 'string' ? redactSensitiveText(resolvedMessage) : resolvedMessage;
+    const path = redactSensitiveUrl(request.originalUrl);
 
     this.logger.error(
       JSON.stringify({
         request_id: request.requestId,
         method: request.method,
-        path: request.originalUrl,
+        path,
         status_code: status,
         message,
       }),
@@ -35,7 +38,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     response.status(status).json({
       statusCode: status,
       message,
-      path: request.originalUrl,
+      path,
       request_id: request.requestId,
       timestamp: new Date().toISOString(),
       ...this.resolveExtraFields(exceptionResponse),

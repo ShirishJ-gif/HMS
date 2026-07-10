@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
+import { createRoot } from 'react-dom/client';
 import { api, getApiErrorMessage } from '../api/client';
 import { Billing, PaymentProvider, ReservationGroup, ReservationGroupFolio, ReservationGroupPaymentCollection } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
@@ -80,8 +81,27 @@ function matchesPaymentStatus(paymentStatus: string, filter: string) {
   return paymentStatus === filter;
 }
 
-// ── Print invoice (browser-print, no backend needed) ──────────────────────
-function printInvoice(billing: Billing) {
+const invoicePrintStyles = `
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, 'Inter', sans-serif; color: #1e293b; padding: 48px; max-width: 680px; margin: 0 auto; }
+  h1 { font-size: 28px; font-weight: 900; margin-bottom: 4px; }
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 32px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 32px; }
+  .block p { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #94a3b8; margin-bottom: 4px; }
+  .block strong { font-size: 14px; font-weight: 700; color: #1e293b; display: block; }
+  .block span { font-size: 13px; color: #64748b; display: block; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  th { text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #94a3b8; padding: 8px 0; border-bottom: 2px solid #f1f5f9; }
+  td { padding: 10px 0; font-size: 13px; border-bottom: 1px solid #f8fafc; }
+  td:last-child, th:last-child { text-align: right; }
+  .total-row td { font-weight: 900; font-size: 15px; border-top: 2px solid #1e293b; border-bottom: none; padding-top: 14px; }
+  .paid-row td { font-size: 13px; color: #16a34a; font-weight: 700; border-bottom: none; }
+  .balance-row td { font-size: 15px; font-weight: 900; border-bottom: none; }
+  .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #94a3b8; }
+  @media print { body { padding: 24px; } }
+`;
+
+function PrintableInvoice({ billing }: { billing: Billing }) {
   const r = billing.reservation_room;
   const n = nights(r.check_in_date, r.check_out_date);
   const paid = billing.paid_total - billing.refunded_total;
@@ -91,52 +111,49 @@ function printInvoice(billing: Billing) {
     { desc: 'Tax (12%)', amount: billing.tax },
   ];
   const guestName = formatGuestName(r.guest.name);
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Invoice — ${guestName}</title>
-<style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family: -apple-system, 'Inter', sans-serif; color: #1e293b; padding: 48px; max-width: 680px; margin: 0 auto; }
-  h1 { font-size: 28px; font-weight: 900; margin-bottom: 4px; }
-  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 32px; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 32px; }
-  .block p { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #94a3b8; margin-bottom: 4px; }
-  .block strong { font-size: 14px; font-weight: 700; color: #1e293b; display: block; }
-  .block span { font-size: 13px; color: #64748b; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
-  th { text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #94a3b8; padding: 8px 0; border-bottom: 2px solid #f1f5f9; }
-  td { padding: 10px 0; font-size: 13px; border-bottom: 1px solid #f8fafc; }
-  td:last-child, th:last-child { text-align: right; }
-  .total-row td { font-weight: 900; font-size: 15px; border-top: 2px solid #1e293b; border-bottom: none; padding-top: 14px; }
-  .paid-row td { font-size: 13px; color: #16a34a; font-weight: 700; border-bottom: none; }
-  .balance-row td { font-size: 15px; font-weight: 900; color: ${billing.balance_due > 0 ? '#dc2626' : '#16a34a'}; border-bottom: none; }
-  .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #94a3b8; }
-  @media print { body { padding: 24px; } }
-</style></head><body>
-<h1>${r.property.name}</h1>
-<p class="sub">Tax Invoice · Generated ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
-<div class="grid2">
-  <div class="block"><p>Guest</p><strong>${guestName}</strong>${r.guest.phone ? `<span>${r.guest.phone}</span>` : ''}${r.guest.email ? `<span>${r.guest.email}</span>` : ''}</div>
-  <div class="block"><p>Stay details</p><strong>Room ${r.room.room_number ?? 'TBD'} — ${r.room_category.name}</strong><span>${fmtDate(r.check_in_date)} → ${fmtDate(r.check_out_date)} · ${n} night${n !== 1 ? 's' : ''}</span><span>${r.rate_plan.name}</span></div>
-  <div class="block"><p>Reservation</p><strong>${r.external_reservation_id}</strong><span>Room line: ${r.external_room_reservation_id}</span></div>
-  <div class="block"><p>Invoice ID</p><strong>${billing.id.slice(0, 8).toUpperCase()}</strong></div>
-</div>
-<table>
-  <thead><tr><th>Description</th><th>Amount</th></tr></thead>
-  <tbody>
-    ${lines.map(l => `<tr><td>${l.desc}</td><td>${formatCurrency(l.amount)}</td></tr>`).join('')}
-    <tr class="total-row"><td>Total</td><td>${formatCurrency(billing.total)}</td></tr>
-    <tr class="paid-row"><td>Paid</td><td>${formatCurrency(paid)}</td></tr>
-    <tr class="balance-row"><td>Balance due</td><td>${formatCurrency(billing.balance_due)}</td></tr>
-  </tbody>
-</table>
-${billing.payments.length > 0 ? `
-<table>
-  <thead><tr><th>Payment history</th><th>Provider</th><th>Reference</th><th>Amount</th></tr></thead>
-  <tbody>${billing.payments.map(p => `<tr><td>${new Date(p.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td><td>${p.provider}</td><td>${paymentReferenceLabel(p)}</td><td>${formatCurrency(p.amount)}</td></tr>`).join('')}</tbody>
-</table>` : ''}
-<div class="footer">${r.property.name} · Thank you for your stay.</div>
-</body></html>`;
+
+  return <>
+    <h1>{r.property.name}</h1>
+    <p className="sub">Tax Invoice · Generated {new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+    <div className="grid2">
+      <div className="block"><p>Guest</p><strong>{guestName}</strong>{r.guest.phone && <span>{r.guest.phone}</span>}{r.guest.email && <span>{r.guest.email}</span>}</div>
+      <div className="block"><p>Stay details</p><strong>Room {r.room.room_number ?? 'TBD'} — {r.room_category.name}</strong><span>{fmtDate(r.check_in_date)} → {fmtDate(r.check_out_date)} · {n} night{n !== 1 ? 's' : ''}</span><span>{r.rate_plan.name}</span></div>
+      <div className="block"><p>Reservation</p><strong>{r.external_reservation_id}</strong><span>Room line: {r.external_room_reservation_id}</span></div>
+      <div className="block"><p>Invoice ID</p><strong>{billing.id.slice(0, 8).toUpperCase()}</strong></div>
+    </div>
+    <table>
+      <thead><tr><th>Description</th><th>Amount</th></tr></thead>
+      <tbody>
+        {lines.map((line, index) => <tr key={`${line.desc}-${index}`}><td>{line.desc}</td><td>{formatCurrency(line.amount)}</td></tr>)}
+        <tr className="total-row"><td>Total</td><td>{formatCurrency(billing.total)}</td></tr>
+        <tr className="paid-row"><td>Paid</td><td>{formatCurrency(paid)}</td></tr>
+        <tr className="balance-row" style={{ color: billing.balance_due > 0 ? '#dc2626' : '#16a34a' }}><td>Balance due</td><td>{formatCurrency(billing.balance_due)}</td></tr>
+      </tbody>
+    </table>
+    {billing.payments.length > 0 && <table>
+      <thead><tr><th>Payment history</th><th>Provider</th><th>Reference</th><th>Amount</th></tr></thead>
+      <tbody>{billing.payments.map(payment => <tr key={payment.id}><td>{new Date(payment.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td><td>{payment.provider}</td><td>{paymentReferenceLabel(payment)}</td><td>{formatCurrency(payment.amount)}</td></tr>)}</tbody>
+    </table>}
+    <div className="footer">{r.property.name} · Thank you for your stay.</div>
+  </>;
+}
+
+// ── Print invoice (browser-print, no backend needed) ──────────────────────
+function printInvoice(billing: Billing) {
   const w = window.open('', '_blank');
-  if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
+  if (!w) return;
+
+  w.opener = null;
+  w.document.title = `Invoice - ${formatGuestName(billing.reservation_room.guest.name)}`;
+  const style = w.document.createElement('style');
+  style.textContent = invoicePrintStyles;
+  w.document.head.appendChild(style);
+
+  const root = createRoot(w.document.body);
+  flushSync(() => root.render(<PrintableInvoice billing={billing} />));
+  w.addEventListener('afterprint', () => root.unmount(), { once: true });
+  w.focus();
+  setTimeout(() => w.print(), 400);
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────

@@ -4,7 +4,11 @@ import {
   HttpException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { ApiCallTraceService } from '../../../common/api-call-trace/api-call-trace.service';
+import {
+  ApiCallTraceService,
+  redactSensitiveText,
+  redactSensitiveUrl,
+} from '../../../common/api-call-trace/api-call-trace.service';
 import { ZodomusAppCredentials } from './zodomus.types';
 
 type HttpMethod = 'GET' | 'POST';
@@ -375,7 +379,7 @@ export class ZodomusClient {
   }
 
   private providerErrorMessage(method: HttpMethod, path: string, statusCode: number) {
-    return `Zodomus ${method} ${path} failed with status ${statusCode}.`;
+    return `Zodomus ${method} ${redactSensitiveUrl(path)} failed with status ${statusCode}.`;
   }
 
   private createProviderStatusException(input: ZodomusErrorInput) {
@@ -429,10 +433,10 @@ export class ZodomusClient {
     return {
       message: publicMessage,
       provider: 'ZODOMUS',
-      endpoint: `${input.method} ${input.path}`,
+      endpoint: `${input.method} ${redactSensitiveUrl(input.path)}`,
       status_code: input.statusCode,
       trace_id: ApiCallTraceService.currentTraceId(),
-      provider_error: input.message,
+      provider_error: redactSensitiveText(input.message),
     };
   }
 

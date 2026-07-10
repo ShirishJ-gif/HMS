@@ -87,6 +87,7 @@ Imported reservation intake sends a guest confirmation and a hotel-owner notific
 
 ## Deployment Checklist
 
+- Rotate any provider credential that has ever been committed, then supply the replacement through deployment secret storage rather than tracked files.
 - Move image storage from local disk to S3/R2/Cloudinary-compatible object storage before multi-server production deployment.
 - Set strong `JWT_SECRET` and production `DATABASE_URL`.
 - Run `npm ci`, `npm run backend:prisma:generate`, `npm run backend:build`, and `npm run frontend:build` in CI.

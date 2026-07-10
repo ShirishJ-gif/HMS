@@ -8,6 +8,7 @@ import { ChannelService } from './channel.service';
 import { ActivateChannelPropertyDto } from './dto/activate-channel-property.dto';
 import { AirbnbHostCancellationDto } from './dto/airbnb-host-cancellation.dto';
 import { AirbnbOauthTestDto } from './dto/airbnb-oauth-test.dto';
+import { AirbnbTokenDto } from './dto/airbnb-token.dto';
 import { CancelChannelRoomsDto } from './dto/cancel-channel-rooms.dto';
 import { CreateTestReservationDto } from './dto/create-test-reservation.dto';
 import { CreateChannelConnectionDto } from './dto/create-channel-connection.dto';
@@ -134,14 +135,14 @@ export class ChannelController {
     return this.channelService.activateAirbnbOauthTest(id, dto, user);
   }
 
-  @Get(':id/airbnb-host-status')
+  @Post(':id/airbnb-host-status')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   getAirbnbHostStatus(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
-    @Query('token') token?: string,
+    @Body() dto: AirbnbTokenDto,
   ) {
-    return this.channelService.getAirbnbHostStatus(id, token, user);
+    return this.channelService.getAirbnbHostStatus(id, dto.token, user);
   }
 
   @Post(':id/airbnb-host-cancellation')
@@ -154,24 +155,24 @@ export class ChannelController {
     return this.channelService.cancelAirbnbHost(id, dto.token, user);
   }
 
-  @Get(':id/airbnb-host-info')
+  @Post(':id/airbnb-host-info')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   getAirbnbHostInfo(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
-    @Query('token') token?: string,
+    @Body() dto: AirbnbTokenDto,
   ) {
-    return this.channelService.getAirbnbHostInfo(id, token, user);
+    return this.channelService.getAirbnbHostInfo(id, dto.token, user);
   }
 
-  @Get(':id/airbnb-listings')
+  @Post(':id/airbnb-listings')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   getAirbnbListings(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
-    @Query('token') token?: string,
+    @Body() dto: AirbnbTokenDto,
   ) {
-    return this.channelService.getAirbnbListingsWithToken(id, token, user);
+    return this.channelService.getAirbnbListingsWithToken(id, dto.token, user);
   }
 
   @Get(':id/provider-availability')

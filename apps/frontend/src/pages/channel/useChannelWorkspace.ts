@@ -1475,9 +1475,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     }
 
     await runAction('airbnb-host-status', async () => {
-      const response = await api.get(`/channels/${selectedConnection.id}/airbnb-host-status`, {
-        params: { token },
-      });
+      const response = await api.post(`/channels/${selectedConnection.id}/airbnb-host-status`, { token });
       rememberCertificationResponse('Airbnb host status', response.data);
       markAirbnbActionDone('airbnb-host-status');
       setStatus('Airbnb host status fetched.');
@@ -1493,9 +1491,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     }
 
     await runAction('airbnb-host-info', async () => {
-      const response = await api.get(`/channels/${selectedConnection.id}/airbnb-host-info`, {
-        params: { token },
-      });
+      const response = await api.post(`/channels/${selectedConnection.id}/airbnb-host-info`, { token });
       rememberCertificationResponse('Airbnb host info', response.data);
       markAirbnbActionDone('airbnb-host-info');
       setStatus('Airbnb host info fetched.');
@@ -1526,9 +1522,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     }
 
     await runAction('airbnb-listings', async () => {
-      const response = await api.get(`/channels/${selectedConnection.id}/airbnb-listings`, {
-        params: { token },
-      });
+      const response = await api.post(`/channels/${selectedConnection.id}/airbnb-listings`, { token });
       rememberCertificationResponse('Airbnb listings', response.data);
       markAirbnbActionDone('airbnb-listings');
       setStatus('Airbnb listings fetched.');
