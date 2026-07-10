@@ -3,7 +3,8 @@ import { getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { AuditLog } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
-import { ErrorMsg, LoadingMsg } from './ui';
+import { DelayedSpinnerOverlay } from '../components/Spinner';
+import { ErrorMsg, SearchInput, StatCard } from './ui';
 
 type ActorFilter = 'ALL' | 'USER' | 'SYSTEM';
 
@@ -106,7 +107,8 @@ export function AuditLogsPage() {
   useEffect(() => { if (logsPage > totalLogPages) setLogsPage(totalLogPages); }, [logsPage, totalLogPages]);
 
   return (
-    <div className="space-y-4">
+    <div className="relative space-y-4">
+      <DelayedSpinnerOverlay loading={logsState.loading} />
 
       {/* ── Header ── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -122,17 +124,14 @@ export function AuditLogsPage() {
 
         {/* Search + filters */}
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="relative">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-              <path d="m21 21-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z"/>
-            </svg>
-            <input
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search summary, entity, actor…"
-              className="h-10 pl-9 pr-3 w-64 rounded-lg bg-white border border-black/[0.07] text-[12px] text-slate-800 placeholder-slate-400 outline-none"
-            />
-          </div>
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="Search summary, entity, actor…"
+            className="relative"
+            iconClassName="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none"
+            inputClassName="h-10 pl-9 pr-3 w-64 rounded-lg bg-white border border-black/[0.07] text-[12px] text-slate-800 placeholder-slate-400 outline-none"
+          />
           <div className="w-[220px]">
             <CustomSelect
               value={actorFilter}
@@ -178,14 +177,16 @@ export function AuditLogsPage() {
           { label: 'System actions', value: systemCount },
           { label: 'Top action',     value: topEntry ? topEntry[0].replace(/_/g, ' ') : 'None', small: true },
         ].map(k => (
-          <div key={k.label} className="bg-white rounded-xl border border-black/[0.06] px-4 py-5">
-            <p className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{k.label}</p>
-            <p className={`font-bold text-slate-900 tracking-tight leading-none ${'small' in k && k.small ? 'text-[1rem] mt-1' : 'text-[1.5rem]'}`}>{k.value}</p>
-          </div>
+          <StatCard
+            key={k.label}
+            label={k.label}
+            value={k.value}
+            className="py-5"
+            valueClassName={`text-slate-900 ${'small' in k && k.small ? 'text-[1rem] mt-1' : 'text-[1.5rem]'}`}
+          />
         ))}
       </div>
 
-      {logsState.loading && <LoadingMsg>Loading audit logs…</LoadingMsg>}
       {logsState.error && <ErrorMsg>{logsState.error}</ErrorMsg>}
 
       {/* <div className="-mt-2 flex justify-end">

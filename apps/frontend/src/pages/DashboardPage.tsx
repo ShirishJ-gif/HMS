@@ -5,17 +5,30 @@ import { PaginatedResponse } from '../api/pagination';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
 import { MetricCard, SignalCard, StatusBadge, Panel, PageHeader, SectionHeading, Divider, ErrorMsg, LoadingMsg, TableCard, Th, Td } from './ui';
+import { createPreviewData } from './previewData';
 
-export function DashboardPage() {
+export function DashboardPage({ previewDataEnabled = false }: { previewDataEnabled?: boolean }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const { data, error, loading } = useAsync(
-    async () => (await api.get<DashboardSummary>('/dashboard/summary')).data,
-    [reloadKey],
+    async () => {
+      if (previewDataEnabled) return createPreviewData().dashboard;
+      return (await api.get<DashboardSummary>('/dashboard/summary')).data;
+    },
+    [previewDataEnabled, reloadKey],
   );
   const { data: recentData } = useAsync(
-    async () => (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/feed', { params: { page: 1, limit: 25, status: 'BOOKED' } })).data,
-    [reloadKey],
+    async () => {
+      if (previewDataEnabled) {
+        const reservations = createPreviewData().reservationGroups;
+        return {
+          data: reservations,
+          meta: { page: 1, limit: reservations.length, total: reservations.length, total_pages: 1 },
+        } satisfies PaginatedResponse<ReservationGroup>;
+      }
+      return (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/feed', { params: { page: 1, limit: 25, status: 'BOOKED' } })).data;
+    },
+    [previewDataEnabled, reloadKey],
   );
   const recentReservations = (recentData?.data ?? [])
     .filter((reservation) => reservation.reservation_status === 'BOOKED')
@@ -202,7 +215,16 @@ export function DashboardPage() {
               </div>
             </Panel>
 
-            {/* Watch list */}
+            {/* OTA revenue pie */}
+            <Panel>
+              <SectionHeading eyebrow="Revenue" title="OTA by revenue" />
+              <div className="mt-2">
+                <OtaRevenuePie rows={data.revenue_by_ota} />
+              </div>
+            </Panel>
+
+            {/*
+            Watch list kept for rollback.
             <Panel>
               <SectionHeading eyebrow="Attention" title="What to watch" />
               <ul className="mt-1 divide-y divide-slate-50">
@@ -238,10 +260,136 @@ export function DashboardPage() {
                 ))}
               </ul>
             </Panel>
+            */}
           </div>
         </>
       )}
     </section>
+  );
+}
+
+const OTA_REVENUE_COLORS = ['#334155', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#f43f5e'];
+const OTA_REVENUE_COLOR_BY_LABEL: Record<string, string> = {
+  airbnb: '#fb7185',
+  expedia: '#f59e0b',
+  direct: '#10b981',
+  'walk in': '#10b981',
+};
+
+function OtaRevenuePie({ rows }: { rows: Array<{ label: string; amount: number }> }) {
+  const [selectedLabel, setSelectedLabel] = useState<string | null>(null);
+  const segments = rows.map((row, index) => ({
+    label: row.label,
+    value: row.amount,
+    color: OTA_REVENUE_COLOR_BY_LABEL[row.label.trim().toLowerCase()] ?? OTA_REVENUE_COLORS[index % OTA_REVENUE_COLORS.length],
+  }));
+  const total = segments.reduce((sum, segment) => sum + segment.value, 0);
+
+  return (
+    <div className="flex flex-col items-center gap-3">
+      {segments.length > 0 ? (
+        <PieChart
+          centerLabel="TOTAL"
+          centerValue="100%"
+          onSelect={setSelectedLabel}
+          selectedLabel={selectedLabel}
+          segments={segments}
+          total={total}
+        />
+      ) : (
+        <div className="flex h-[150px] w-[150px] items-center justify-center rounded-full border border-dashed border-slate-200 bg-slate-50 px-4 text-center text-[11px] font-semibold text-slate-400">
+          No OTA revenue
+        </div>
+      )}
+      <div className="w-full space-y-1.5">
+        {segments.map((segment) => {
+          const pct = total > 0 ? Math.round((segment.value / total) * 100) : 0;
+          return (
+            <button
+              key={segment.label}
+              className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
+                selectedLabel === segment.label ? 'bg-slate-100' : 'hover:bg-slate-50'
+              } focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300`}
+              onClick={() => setSelectedLabel((current) => current === segment.label ? null : segment.label)}
+              type="button"
+            >
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full" style={{ backgroundColor: segment.color }} />
+                <span className="truncate text-[12px] font-semibold text-slate-700">{segment.label}</span>
+              </div>
+              <div className="flex flex-shrink-0 items-center gap-1.5">
+                <span className="w-10 text-right text-[11.5px] font-bold text-slate-900">{pct}%</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PieChart({
+  centerLabel,
+  centerValue,
+  onSelect,
+  selectedLabel,
+  segments,
+  total,
+}: {
+  centerLabel: string;
+  centerValue: string;
+  onSelect: (label: string | null) => void;
+  selectedLabel: string | null;
+  segments: Array<{ label: string; value: number; color: string }>;
+  total: number;
+}) {
+  const cx = 90, cy = 90, rOuter = 68, rInner = 43, gap = 0.025;
+  let angle = -Math.PI / 2;
+  const slices = segments.map((segment) => {
+    const pct = total > 0 ? segment.value / total : 0;
+    const sweep = pct * Math.PI * 2 - gap;
+    const start = angle + gap / 2;
+    const end = start + sweep;
+    angle += pct * Math.PI * 2;
+    const x1 = cx + rOuter * Math.cos(start), y1 = cy + rOuter * Math.sin(start);
+    const x2 = cx + rOuter * Math.cos(end), y2 = cy + rOuter * Math.sin(end);
+    const xi1 = cx + rInner * Math.cos(start), yi1 = cy + rInner * Math.sin(start);
+    const xi2 = cx + rInner * Math.cos(end), yi2 = cy + rInner * Math.sin(end);
+    const large = sweep > Math.PI ? 1 : 0;
+    const path = `M${xi1},${yi1} L${x1},${y1} A${rOuter},${rOuter} 0 ${large} 1 ${x2},${y2} L${xi2},${yi2} A${rInner},${rInner} 0 ${large} 0 ${xi1},${yi1} Z`;
+    return { ...segment, path };
+  });
+  const selected = selectedLabel ? slices.find((slice) => slice.label === selectedLabel) ?? null : null;
+  const selectedPct = selected && total > 0 ? Math.round((selected.value / total) * 100) : null;
+
+  return (
+    <svg className="h-[180px] w-[180px]" viewBox="0 0 180 180" aria-label="OTA revenue pie chart">
+      {slices.map((slice) => (
+        <path
+          key={slice.label}
+          aria-label={`${slice.label} ${total > 0 ? Math.round((slice.value / total) * 100) : 0}%`}
+          className="cursor-pointer transition-opacity focus:outline-none"
+          d={slice.path}
+          fill={slice.color}
+          opacity={selectedLabel && selectedLabel !== slice.label ? 0.35 : 1}
+          onClick={() => onSelect(selectedLabel === slice.label ? null : slice.label)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onSelect(selectedLabel === slice.label ? null : slice.label);
+            }
+          }}
+        />
+      ))}
+      <text x={cx} y={cy - 6} textAnchor="middle" className="pointer-events-none fill-slate-900 text-[18px] font-extrabold">
+        {selectedPct == null ? centerValue : `${selectedPct}%`}
+      </text>
+      <text x={cx} y={cy + 13} textAnchor="middle" className="pointer-events-none fill-slate-400 text-[9px] font-bold tracking-[0.12em]">
+        {selected ? selected.label.toUpperCase().slice(0, 14) : centerLabel}
+      </text>
+    </svg>
   );
 }
 

@@ -2,6 +2,7 @@ import { Activity, AlertTriangle, CheckCircle2, Clock3, ShieldCheck } from 'luci
 import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { CustomSelect } from '../../components/CustomSelect';
+import { SearchInput } from '../ui';
 import { formatDate, formatLabel, propertyLabel } from './shared';
 import type { PlatformLogs, PlatformProperty } from './types';
 
@@ -126,15 +127,14 @@ export function SystemLogs({ logs, properties }: { logs: PlatformLogs | null; pr
             </label>
             <label className="block">
               <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Search logs</span>
-              <div className="mt-1 flex min-h-[2.6rem] items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
-                <Activity className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" aria-hidden="true" />
-                <input
-                  value={logSearch}
-                  onChange={(event) => setLogSearch(event.target.value)}
-                  placeholder="Search status, provider, error..."
-                  className="min-w-0 flex-1 bg-transparent text-sm font-medium text-slate-700 outline-none placeholder:text-slate-400"
-                />
-              </div>
+              <SearchInput
+                value={logSearch}
+                onChange={setLogSearch}
+                placeholder="Search status, provider, error..."
+                className="mt-1 flex min-h-[2.6rem] items-center gap-2 rounded-lg border border-slate-200 bg-white px-3"
+                icon={<Activity className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" aria-hidden="true" />}
+                inputClassName="min-w-0 flex-1 bg-transparent text-sm font-medium text-slate-700 outline-none placeholder:text-slate-400"
+              />
             </label>
           </div>
         </div>
@@ -328,4 +328,3 @@ function systemStatusTone(status: string, kind?: 'job' | 'webhook' | 'audit') {
   }
   return { badge: 'bg-rose-50 text-rose-700', icon: 'bg-rose-50 text-rose-700', severity: 'bad' as const };
 }
-

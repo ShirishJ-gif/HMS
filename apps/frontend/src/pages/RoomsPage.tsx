@@ -1,11 +1,10 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
-import { fetchAllPages } from '../api/pagination';
-import { Property, ReservationGroup, Room, RoomCategory, RoomOutOfServicePeriod, RoomStatus } from '../api/types';
+import { Property, Room, RoomCategory, RoomOutOfServicePeriod, RoomStatus } from '../api/types';
 import { InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
-import { inputCls, ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
+import { inputCls, ErrorMsg, FloatingSuccessToast, LoadingMsg, StatCard } from './ui';
 
 // ─── Status config ────────────────────────────────────────────────────────────
 const STATUS_CFG: Record<RoomStatus, { label: string; dot: string; cardBg: string; cardBorder: string; cardText: string; badge: string }> = {
@@ -43,6 +42,19 @@ type OccupancyDetail = {
   departureDate: string;
   externalReservationId: string;
   guestName: string;
+};
+
+type RoomWorkspace = {
+  categories: RoomCategory[];
+  occupancy: Array<{
+    arrival_date: string;
+    departure_date: string;
+    external_reservation_id: string;
+    guest_name: string;
+    room_id: string;
+  }>;
+  properties: Property[];
+  rooms: Room[];
 };
 
 type PendingStatusChange = {
@@ -104,18 +116,15 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
     }));
   }, [propertyId]);
 
-  const roomsState      = useAsync(async () => fetchAllPages<Room>('/rooms'), [reloadKey]);
-  const reservationsState = useAsync(async () => fetchAllPages<ReservationGroup>('/bookings/feed'), [reloadKey]);
-  const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), []);
-  const categoriesState = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), []);
+  const workspaceState = useAsync(async () => (await api.get<RoomWorkspace>('/rooms/workspace')).data, [reloadKey]);
   const outOfServiceState = useAsync(async () => {
     if (!selectedRoomId) return [];
     return (await api.get<RoomOutOfServicePeriod[]>(`/rooms/${selectedRoomId}/out-of-service-periods`)).data;
   }, [selectedRoomId, periodReloadKey]);
 
-  const properties = propertiesState.data ?? [];
-  const categories = categoriesState.data ?? [];
-  const allRooms   = (roomsState.data ?? []).map(room => {
+  const properties = workspaceState.data?.properties ?? [];
+  const categories = workspaceState.data?.categories ?? [];
+  const allRooms   = (workspaceState.data?.rooms ?? []).map(room => {
     const status = roomStatusOverrides[room.id];
     return status ? { ...room, status } : room;
   });
@@ -126,16 +135,13 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
   const selectedRoom     = allRooms.find(r => r.id === selectedRoomId) ?? null;
   const selectedProperty = propertyId ? properties.find(p => p.id === propertyId) ?? null : null;
   const occupancyByRoomId = new Map<string, OccupancyDetail>();
-  for (const group of reservationsState.data ?? []) {
-    for (const stay of group.rooms) {
-      if (!stay.room.id || stay.reservation_status !== 'CHECKED_IN') continue;
-      occupancyByRoomId.set(stay.room.id, {
-        arrivalDate: stay.arrival_date,
-        departureDate: stay.departure_date,
-        externalReservationId: group.external_reservation_id,
-        guestName: stay.guest_name ?? group.primary_guest?.name ?? 'Imported guest',
-      });
-    }
+  for (const stay of workspaceState.data?.occupancy ?? []) {
+    occupancyByRoomId.set(stay.room_id, {
+      arrivalDate: stay.arrival_date,
+      departureDate: stay.departure_date,
+      externalReservationId: stay.external_reservation_id,
+      guestName: stay.guest_name,
+    });
   }
   const selectedOccupancy = selectedRoom ? occupancyByRoomId.get(selectedRoom.id) ?? null : null;
   const pendingStatusRoom = pendingStatusChange ? allRooms.find(r => r.id === pendingStatusChange.roomId) ?? null : null;
@@ -147,8 +153,8 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
   const maintenanceCount = scoped.filter(r => r.status === 'MAINTENANCE').length;
   const typeCount        = new Set(scoped.map(r => r.room_category_id)).size;
   const blockCount       = (outOfServiceState.data ?? []).length;
-  const pageLoading      = roomsState.loading || reservationsState.loading || propertiesState.loading || categoriesState.loading;
-  const pageError        = roomsState.error ?? reservationsState.error ?? propertiesState.error ?? categoriesState.error;
+  const pageLoading      = workspaceState.loading;
+  const pageError        = workspaceState.error;
 
   function flash(msg: string) {
     if (successTimeoutRef.current) {
@@ -373,11 +379,14 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
           { label: 'Maintenance',    value: maintenanceCount,   sub: 'Out of rotation', color: 'text-rose-600'    },
           { label: 'Room types',     value: typeCount,          sub: uncoveredTypes > 0 ? `${uncoveredTypes} without rooms` : 'Coverage complete', color: 'text-sky-700'  },
         ].map((s) => (
-          <div key={s.label} className="bg-white rounded-xl border border-black/[0.06] px-4 py-3 hover:shadow-sm transition-shadow">
-            <p className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{s.label}</p>
-            <p className={`text-[1.5rem] font-bold tracking-tight leading-none tabular-nums ${s.color}`}>{s.value}</p>
-            <p className="text-[11px] text-slate-400 mt-1.5 leading-tight">{s.sub}</p>
-          </div>
+          <StatCard
+            key={s.label}
+            label={s.label}
+            value={s.value}
+            sub={s.sub}
+            className="hover:shadow-sm transition-shadow"
+            valueClassName={`text-[1.5rem] tabular-nums ${s.color}`}
+          />
         ))}
       </div>
 
@@ -429,7 +438,7 @@ export function RoomsPage({ embedded = false, propertyId }: { embedded?: boolean
               );
             })}
           </div>
-          {rooms.length === 0 && !roomsState.loading && (
+          {rooms.length === 0 && !workspaceState.loading && (
             <div className="flex min-h-[16rem] flex-col items-center justify-center rounded-2xl border border-dashed border-emerald-200 bg-emerald-50/40 px-6 py-12 text-center">
               <p className="text-[14px] font-bold text-slate-900">No physical rooms yet</p>
               <p className="mt-1 max-w-sm text-[12.5px] leading-relaxed text-slate-500">Add room numbers for the selected property so OTA mapping can use real inventory.</p>

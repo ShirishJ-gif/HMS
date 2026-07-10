@@ -52,6 +52,72 @@ export function SignalCard({ label, value, detail }: { label: string; value: str
   );
 }
 
+// ── Compact statistic card ───────────────────────────────────────────
+export function StatCard({
+  label,
+  value,
+  sub,
+  className = '',
+  labelClassName = '',
+  valueClassName = '',
+  subClassName = '',
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  sub?: ReactNode;
+  className?: string;
+  labelClassName?: string;
+  valueClassName?: string;
+  subClassName?: string;
+}) {
+  const resolvedValueClassName = valueClassName
+    ? `font-bold tracking-tight leading-none ${valueClassName}`
+    : 'text-[24px] font-bold text-slate-900 tracking-tight leading-none';
+
+  return (
+    <div className={`bg-white rounded-xl border border-black/[0.06] px-4 py-3 ${className}`}>
+      <p className={`text-[9.5px] font-semibold uppercase tracking-wide text-slate-400 mb-1 ${labelClassName}`}>{label}</p>
+      <p className={resolvedValueClassName}>{value}</p>
+      {sub != null && <p className={`text-[11px] text-slate-400 mt-1.5 leading-tight ${subClassName}`}>{sub}</p>}
+    </div>
+  );
+}
+
+// ── Search input ──────────────────────────────────────────────────────
+export function SearchInput({
+  value,
+  onChange,
+  placeholder,
+  className = '',
+  inputClassName = '',
+  icon,
+  iconClassName = '',
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  className?: string;
+  inputClassName: string;
+  icon?: ReactNode | false;
+  iconClassName?: string;
+}) {
+  return (
+    <div className={className}>
+      {icon === false ? null : icon ?? (
+        <svg className={iconClassName} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+          <path d="m21 21-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z"/>
+        </svg>
+      )}
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className={inputClassName}
+      />
+    </div>
+  );
+}
+
 // ── Status badge ──────────────────────────────────────────────────────
 const statusDot: Record<string, string> = {
   available: 'bg-emerald-500', active: 'bg-emerald-500', succeeded: 'bg-emerald-500',

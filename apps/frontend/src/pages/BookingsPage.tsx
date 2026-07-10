@@ -6,6 +6,8 @@ import { fetchAllPages, PaginatedResponse } from '../api/pagination';
 import { AvailabilitySummary, BookingStatus, PaymentProvider, Property, RatePlan, ReservationGroup, Room, RoomCategory } from '../api/types';
 import { CalendarDatePickerField, InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { CustomSelect } from '../components/CustomSelect';
+import { Spinner } from '../components/Spinner';
+import { TimePolicyPicker } from '../components/TimePolicyPicker';
 import { useAsync } from '../hooks/useAsync';
 import { capitalizeFirstLetter, formatCurrency } from '../utils/format';
 import {
@@ -13,6 +15,7 @@ import {
   FloatingSuccessToast,
   LoadingMsg,
   StatusBadge,
+  StatCard,
   TableCard,
   Th,
   Td,
@@ -23,7 +26,6 @@ import {
   secondaryBtn,
 } from './ui';
 import { createPreviewData, isPreviewId } from './previewData';
-import { TimePolicyPicker } from './PropertySetupPage';
 
 /* ─── Local types ─────────────────────────────────────── */
 type DisplayGroup = ReservationGroup & { duplicate_reservation_ids?: string[]; duplicate_count?: number };
@@ -56,15 +58,15 @@ function getTodayDate() {
   const now = new Date();
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
-function createDirectReservationForm(today = getTodayDate()): DirectReservationFormState {
+function createDirectReservationForm(today = getTodayDate(), property?: Pick<Property, 'id' | 'default_check_in_time' | 'default_check_out_time'> | null): DirectReservationFormState {
   return {
-    property_id: '',
+    property_id: property?.id ?? '',
     room_category_id: '',
     rate_plan_id: '',
     check_in_date: today,
     check_out_date: addDays(today, 1),
-    check_in_time: '12:00',
-    check_out_time: '11:00',
+    check_in_time: property?.default_check_in_time ?? '12:00',
+    check_out_time: property?.default_check_out_time ?? '11:00',
     room_count: '1',
     adults: '1',
     children: '0',
@@ -155,7 +157,6 @@ const advancePaymentProviderOptions: Array<{ label: string; value: PaymentProvid
   { label: 'Cash', value: 'CASH' },
   { label: 'Card', value: 'CARD' },
   { label: 'UPI', value: 'UPI' },
-  { label: 'Mock', value: 'MOCK' },
 ];
 function firstDirectReservationError(errors: DirectReservationFieldErrors) {
   return Object.values(errors).find(Boolean) ?? 'Fix the highlighted fields and try again.';
@@ -176,6 +177,28 @@ function getGroupStayWindow(group: ReservationGroup) {
     arrival: group.arrival_date ?? arrivals[0] ?? null,
     departure: group.departure_date ?? departures[departures.length - 1] ?? null,
   };
+}
+
+function datePart(value: string | null | undefined) {
+  return value ? value.slice(0, 10) : null;
+}
+
+function getTimelineStayWindow(room: ReservationGroup['rooms'][number]) {
+  const checkedInDate = datePart(room.checked_in_at);
+  const checkedOutDate = datePart(room.checked_out_at);
+  const shouldUseActualCheckIn =
+    Boolean(checkedInDate) &&
+    ['CHECKED_IN', 'CHECKED_OUT'].includes(room.reservation_status) &&
+    checkedInDate! > room.arrival_date;
+  const start = shouldUseActualCheckIn ? checkedInDate! : room.arrival_date;
+  const endCandidates = [
+    room.departure_date,
+    checkedOutDate ? addDays(checkedOutDate, 1) : null,
+    addDays(start, 1),
+  ].filter((value): value is string => Boolean(value));
+  const sortedEndCandidates = endCandidates.sort();
+  const end = sortedEndCandidates[sortedEndCandidates.length - 1] ?? addDays(start, 1);
+  return { start, end };
 }
 
 /* ─── Status colours ─────────────────────────────────── */
@@ -203,6 +226,7 @@ const COL_W = 80;
 const ROW_H = 64;
 const SIDEBAR_W = 240;
 const WINDOW_DAYS = 30;
+const TIMELINE_LOADER_DELAY_MS = 350;
 
 /* ─── Calendar rows from physical rooms ── */
 type PhysRoomRow = {
@@ -259,7 +283,8 @@ function buildUnassignedTimelineRows(groups: ReservationGroup[], propertyId: str
     for (const room of group.rooms) {
       if (room.room.room_number) continue;
       if (room.reservation_status === 'CANCELLED' || room.reservation_status === 'CHECKED_OUT') continue;
-      if (room.departure_date <= windowStart || room.arrival_date >= windowEnd) continue;
+      const stayWindow = getTimelineStayWindow(room);
+      if (stayWindow.end <= windowStart || stayWindow.start >= windowEnd) continue;
 
       const key = `${group.property.id}::${room.room_category.name}`;
       const stay = { group, room, status: room.reservation_status as BookingStatus };
@@ -275,7 +300,7 @@ function buildUnassignedTimelineRows(groups: ReservationGroup[], propertyId: str
       const [propertyIdForGroup, category] = key.split('::');
       const propertyName = stays[0]?.group.property.name ?? '';
       const sortedStays = stays.sort((left, right) => {
-        const byArrival = left.room.arrival_date.localeCompare(right.room.arrival_date);
+        const byArrival = getTimelineStayWindow(left.room).start.localeCompare(getTimelineStayWindow(right.room).start);
         if (byArrival !== 0) return byArrival;
         return (left.room.guest_name ?? left.group.primary_guest?.name ?? '').localeCompare(
           right.room.guest_name ?? right.group.primary_guest?.name ?? '',
@@ -286,7 +311,7 @@ function buildUnassignedTimelineRows(groups: ReservationGroup[], propertyId: str
       for (const stay of sortedStays) {
         const laneIndex = lanes.findIndex((lane) => {
           const lastStay = lane[lane.length - 1];
-          return !lastStay || stay.room.arrival_date >= lastStay.room.departure_date;
+          return !lastStay || getTimelineStayWindow(stay.room).start >= getTimelineStayWindow(lastStay.room).end;
         });
 
         if (laneIndex === -1) {
@@ -322,14 +347,18 @@ function getAssignedRoomBar(
       if (!r.room.room_number) continue;
       const roomKey = `${g.property.id}::${r.room.room_number}::${r.room_category.name}`;
       if (roomKey !== row.roomKey) continue;
-      if (r.arrival_date <= day && r.departure_date > day) return { group: g, room: r, status: r.reservation_status as BookingStatus };
+      const stayWindow = getTimelineStayWindow(r);
+      if (stayWindow.start <= day && stayWindow.end > day) return { group: g, room: r, status: r.reservation_status as BookingStatus };
     }
   }
   return undefined;
 }
 
 function getUnassignedBar(row: UnassignedTimelineRow, day: string) {
-  return row.stays.find((stay) => stay.room.arrival_date <= day && stay.room.departure_date > day);
+  return row.stays.find((stay) => {
+    const stayWindow = getTimelineStayWindow(stay.room);
+    return stayWindow.start <= day && stayWindow.end > day;
+  });
 }
 
 function renderTimelineCells({
@@ -362,16 +391,17 @@ function renderTimelineCells({
       );
     }
 
-    const visibleStart = bar.room.arrival_date > days[0] ? bar.room.arrival_date : days[0];
-    const visibleEnd = bar.room.departure_date < addDays(days[days.length - 1], 1)
-      ? bar.room.departure_date
+    const stayWindow = getTimelineStayWindow(bar.room);
+    const visibleStart = stayWindow.start > days[0] ? stayWindow.start : days[0];
+    const visibleEnd = stayWindow.end < addDays(days[days.length - 1], 1)
+      ? stayWindow.end
       : addDays(days[days.length - 1], 1);
     const isVisibleStart = day === visibleStart;
     const visibleSpanDays = Math.max(1, diffDays(visibleStart, visibleEnd));
     const barCls = STATUS_BAR[bar.status] ?? 'bg-slate-400 text-white';
     const guestName = capitalizeFirstLetter((bar.room.guest_name ?? bar.group.primary_guest?.name ?? '').split(' ')[0]);
-    const isActualStart = bar.room.arrival_date >= days[0];
-    const isActualEnd = bar.room.departure_date <= addDays(days[days.length - 1], 1);
+    const isActualStart = stayWindow.start >= days[0];
+    const isActualEnd = stayWindow.end <= addDays(days[days.length - 1], 1);
     const barShape = isActualStart && isActualEnd
       ? 'polygon(14px 0, 100% 0, calc(100% - 14px) 100%, 0 100%)'
       : isActualStart
@@ -406,6 +436,7 @@ function renderTimelineCells({
 
 /* ─── Cache ────────────────────────────────────────────── */
 let _allGroupsCache: ReservationGroup[] | null = null;
+let _allGroupsCacheKey = '';
 let _allGroupsCacheAt = 0;
 const CACHE_TTL = 60_000;
 
@@ -426,6 +457,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
   const [reloadKey, setReloadKey] = useState(0);
   const [allGroups, setAllGroups] = useState<ReservationGroup[]>(_allGroupsCache ?? []);
   const [allLoading, setAllLoading] = useState(!_allGroupsCache);
+  const [showTimelineLoader, setShowTimelineLoader] = useState(false);
   const [allError, setAllError] = useState<string | null>(null);
 
   /* ── Room inventory (full list, shows all rooms even with no bookings) ── */
@@ -475,17 +507,40 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
     [reloadKey, feedPage]
   );
   const selectedGroup = selectedGroupId ? (displayedGroups.find(g => g.id === selectedGroupId) ?? feedState.data?.data.find(g => g.id === selectedGroupId) ?? null) : null;
+  const timelineDateTo = addDays(windowStart, WINDOW_DAYS - 1);
+  const timelineGroupsParams = {
+    date_from: windowStart,
+    date_to: timelineDateTo,
+    property_id: propertyFilter !== 'ALL' ? propertyFilter : undefined,
+    status: statusFilter !== 'ALL' ? statusFilter : undefined,
+  };
+  const timelineGroupsCacheKey = JSON.stringify(timelineGroupsParams);
 
   useEffect(() => {
     let active = true;
-    const fresh = _allGroupsCache && reloadKey === 0 && Date.now() - _allGroupsCacheAt < CACHE_TTL;
-    if (fresh) { setAllGroups(_allGroupsCache!); setAllLoading(false); return; }
-    setAllLoading(!_allGroupsCache);
-    fetchAllPages<ReservationGroup>('/bookings/groups')
-      .then(data => { if (!active) return; _allGroupsCache = data; _allGroupsCacheAt = Date.now(); setAllGroups(data); setAllLoading(false); })
-      .catch((e: unknown) => { if (!active) return; setAllError(getApiErrorMessage(e)); setAllLoading(false); });
-    return () => { active = false; };
-  }, [reloadKey]);
+    let loaderTimer: number | undefined;
+    const controller = new AbortController();
+    const fresh = _allGroupsCache && _allGroupsCacheKey === timelineGroupsCacheKey && reloadKey === 0 && Date.now() - _allGroupsCacheAt < CACHE_TTL;
+    if (fresh) { setAllGroups(_allGroupsCache!); setAllLoading(false); setShowTimelineLoader(false); return; }
+    setAllLoading(true);
+    setShowTimelineLoader(false);
+    loaderTimer = window.setTimeout(() => {
+      if (active) setShowTimelineLoader(true);
+    }, TIMELINE_LOADER_DELAY_MS);
+    setAllError(null);
+    const finishLoading = () => {
+      setAllLoading(false);
+      setShowTimelineLoader(false);
+    };
+    fetchAllPages<ReservationGroup>('/bookings/groups', { params: timelineGroupsParams, signal: controller.signal })
+      .then(data => { if (!active) return; _allGroupsCache = data; _allGroupsCacheKey = timelineGroupsCacheKey; _allGroupsCacheAt = Date.now(); setAllGroups(data); finishLoading(); })
+      .catch((e: unknown) => { if (!active || controller.signal.aborted) return; setAllError(getApiErrorMessage(e)); finishLoading(); });
+    return () => {
+      active = false;
+      controller.abort();
+      if (loaderTimer) window.clearTimeout(loaderTimer);
+    };
+  }, [reloadKey, timelineGroupsCacheKey]);
 
   useEffect(() => {
     if (!actionStatus) return;
@@ -498,6 +553,8 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
     setDirectReservationForm((current) => ({
       ...current,
       property_id: reservationProperties[0].id,
+      check_in_time: reservationProperties[0].default_check_in_time,
+      check_out_time: reservationProperties[0].default_check_out_time,
     }));
   }, [directReservationForm.property_id, reservationProperties]);
 
@@ -699,7 +756,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
       setReloadKey((value) => value + 1);
       setShowDirectReservationModal(false);
       setOpenDirectReservationDatePicker(null);
-      setDirectReservationForm(createDirectReservationForm(today));
+      setDirectReservationForm(createDirectReservationForm(today, reservationProperties.length === 1 ? reservationProperties[0] : null));
       setActionStatus('Walk-in reservation created. Inventory sync has been queued for active OTA connections.');
     } catch (e) {
       setDirectReservationError(getApiErrorMessage(e));
@@ -770,7 +827,10 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
   const occByDay: Record<string, number> = {};
   for (const day of days) {
     const occ = displayedGroups.filter(g =>
-      g.rooms.some(r => r.arrival_date <= day && r.departure_date > day && r.reservation_status !== 'CHECKED_OUT' && r.reservation_status !== 'CANCELLED')
+      g.rooms.some((r) => {
+        const stayWindow = getTimelineStayWindow(r);
+        return stayWindow.start <= day && stayWindow.end > day && r.reservation_status !== 'CHECKED_OUT' && r.reservation_status !== 'CANCELLED';
+      })
     ).length;
     occByDay[day] = roomRows.length > 0 ? Math.round((occ / Math.max(roomRows.length, 1)) * 100) : 0;
   }
@@ -808,7 +868,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
             onClick={() => {
               setDirectReservationError(null);
               setDirectReservationFieldErrors({});
-              setDirectReservationForm(createDirectReservationForm(today));
+              setDirectReservationForm(createDirectReservationForm(today, reservationProperties.length === 1 ? reservationProperties[0] : null));
               setShowDirectReservationModal(true);
             }}
             className={`${primaryBtn} !h-9 !px-3.5 !py-0 text-[11.5px]`}
@@ -843,7 +903,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
               open={openTimelineDatePicker}
               setOpen={setOpenTimelineDatePicker}
               closeOnSelect={false}
-              buttonClassName="px-3.5 py-2 flex items-center gap-2 hover:bg-slate-50 transition-colors group border-r border-slate-100"
+              buttonClassName="w-[172px] px-3.5 py-2 flex items-center justify-center gap-2 hover:bg-slate-50 transition-colors group border-r border-slate-100"
               headerClassName="px-4 pt-3 pb-1.5"
               calendarClassName="pricing-calendar--timeline"
               renderTrigger={() => (
@@ -893,10 +953,13 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
           { label: 'In house',          value: inHouse.toString() },
           { label: 'Not checked in groups', value: notCheckedInGroups.toString() },
         ].map(k => (
-          <div key={k.label} className="bg-white rounded-xl border border-black/[0.06] px-3.5 py-2.5">
-            <p className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{k.label}</p>
-            <p className="text-[1.35rem] font-bold text-slate-900 tracking-tight leading-none">{k.value}</p>
-          </div>
+          <StatCard
+            key={k.label}
+            label={k.label}
+            value={k.value}
+            className="px-3.5 py-2.5"
+            valueClassName="text-[1.35rem] text-slate-900"
+          />
         ))}
       </div>
 
@@ -918,15 +981,17 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
               </button>
             ))}
             <span className="ml-auto text-[11px] text-slate-400">
-              {roomRows.length} rooms · {filteredGroups.reduce((s, g) => s + g.rooms.length, 0)} stays{unassignedRows.length > 0 ? ` · ${unassignedRows.length} TBD lane${unassignedRows.length === 1 ? '' : 's'}` : ''}
+              {roomRows.length} rooms · {filteredGroups.reduce((s, g) => s + g.rooms.length, 0)} stays
             </span>
           </div>
 
           {/* ── Tape chart ── */}
-          {allLoading && !previewData ? (
-            <LoadingMsg>Loading reservation timeline…</LoadingMsg>
-          ) : (
-            <div className="bg-white rounded-xl border border-black/[0.06] flex flex-col overflow-hidden" style={{ maxHeight: 'calc(100vh - 240px)', minHeight: 720 }}>
+          <div className="relative bg-white rounded-xl border border-black/[0.06] flex flex-col overflow-hidden" style={{ maxHeight: 'calc(100vh - 240px)', minHeight: 720 }}>
+            {showTimelineLoader && allLoading && !previewData && (
+              <div className="absolute inset-0 z-30 flex items-center justify-center bg-white/65 backdrop-blur-[1px]">
+                <Spinner size="lg" />
+              </div>
+            )}
 
               <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none">
                 {roomRows.length === 0 && unassignedRows.length === 0 ? (
@@ -943,7 +1008,6 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
                         <>
                           <div className="bg-sky-50/80 border-b border-sky-100 flex items-center px-4" style={{ height: 28 }}>
                             <span className="text-[9.5px] font-bold uppercase tracking-wider text-sky-700">Unassigned / TBD</span>
-                            <span className="ml-1.5 text-[9px] font-semibold text-sky-500">· {unassignedRows.length} lane{unassignedRows.length === 1 ? '' : 's'}</span>
                           </div>
                           {unassignedRows.map((row) => (
                             <div key={row.rowKey} className="border-b border-sky-100 flex items-center gap-2.5 px-4 bg-sky-50/30" style={{ height: ROW_H }}>
@@ -952,7 +1016,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
                               </span>
                               <div className="min-w-0">
                                 <p className="text-[11.5px] font-bold text-slate-800 leading-tight">
-                                  {row.category} · Lane {row.laneIndex + 1}
+                                  {row.category}
                                 </p>
                                 <p className="text-[9.5px] text-slate-400 truncate">
                                   {properties.length > 1 ? `${row.propertyName} · ` : ''}Awaiting front-desk room assignment
@@ -1078,10 +1142,9 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
                 <span className="flex items-center gap-1.5 text-[10.5px] font-medium text-slate-400 ml-2">
                   <span className="w-4 h-2.5 rounded-sm bg-indigo-100 flex-shrink-0" />Today
                 </span>
-                <span className="ml-auto text-[10.5px] text-slate-400">Click a bar to view reservation details</span>
-              </div>
-            </div>
-          )}
+                  <span className="ml-auto text-[10.5px] text-slate-400">Click a bar to view reservation details</span>
+                </div>
+          </div>
         </>
       )}
 
@@ -1112,13 +1175,24 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
                 <tr className="bg-slate-50 border-b border-slate-100">
                   <Th>Source / reservation</Th><Th>Property</Th><Th>Dates</Th>
                   <Th>Primary guest</Th><Th>Rooms</Th><Th>Total</Th>
-                  <Th>Status</Th><Th>Actions</Th>
+                  <Th>Status</Th>
                 </tr>
               </thead>
               <tbody>
                 {feedGroups.map(group => (
                   <Fragment key={group.id}>
-                    <tr className="hover:bg-slate-50/60 border-b border-slate-50 last:border-0">
+                    <tr
+                      className={`cursor-pointer border-b border-slate-50 last:border-0 transition-colors ${selectedGroupId === group.id ? 'bg-slate-50/80' : 'hover:bg-slate-50/60'}`}
+                      onClick={() => setSelectedGroupId(id => id === group.id ? null : group.id)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        setSelectedGroupId(id => id === group.id ? null : group.id);
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={selectedGroupId === group.id}
+                    >
                       <Td>
                         <span className="font-bold text-slate-900 block">{group.source ?? 'ZODOMUS'}</span>
                         <span className="text-xs text-slate-400 font-mono">{group.external_reservation_id}</span>
@@ -1139,23 +1213,15 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
                       </Td>
                       <Td>{group.total_amount == null ? '—' : formatCurrency(group.total_amount)}</Td>
                       <Td><StatusBadge label={group.import_blocked ? 'IMPORT_BLOCKED' : group.reservation_status} tone={group.import_blocked ? 'rose' : undefined} /></Td>
-                      <Td>
-                        <button
-                          className={`${secondaryBtn} !text-xs !px-2.5 !py-1.5 ${selectedGroupId === group.id ? '!bg-slate-50 !text-slate-700 !border-slate-300' : ''}`}
-                          onClick={() => setSelectedGroupId(id => id === group.id ? null : group.id)}
-                          type="button"
-                        >
-                          {selectedGroupId === group.id ? 'Collapse' : 'Details'}
-                        </button>
-                      </Td>
                     </tr>
                     {selectedGroupId === group.id && (
                       <tr>
-                        <td colSpan={8} className="bg-slate-50/80 border-b border-slate-100 px-5 py-5">
+                        <td colSpan={7} className="bg-slate-50/80 border-b border-slate-100 px-5 py-5">
                           <ReservationFeedDetails
                             group={group}
                             pendingId={pendingId}
                             reminderPendingId={reminderPendingId}
+                            onClose={() => setSelectedGroupId(null)}
                             onCheckOut={checkOut}
                             onSendReminder={sendReminder}
                           />
@@ -1340,7 +1406,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
           setDirectReservationError(null);
           setDirectReservationFieldErrors({});
           setOpenDirectReservationDatePicker(null);
-          setDirectReservationForm(createDirectReservationForm(today));
+          setDirectReservationForm(createDirectReservationForm(today, reservationProperties.length === 1 ? reservationProperties[0] : null));
         }}
         onSubmit={createDirectReservation}
         onChange={(value) => {
@@ -1417,8 +1483,10 @@ function DirectReservationModal({
           : maxAvailableRooms == null
             ? 'Select dates to check availability.'
             : `Max available: ${maxAvailableRooms} room${maxAvailableRooms === 1 ? '' : 's'}.`;
-  const inputClass = (field: keyof DirectReservationFormState, extra = '') =>
-    `${inputCls} ${fieldErrors[field] ? '!border-rose-400 ring-2 ring-rose-500/15 focus:!border-rose-500 focus:ring-rose-500/20' : ''} ${extra}`.trim();
+  const inputClass = (field: keyof DirectReservationFormState, extra = '') => {
+    const fixedHeight = field === 'guest_address' ? '' : 'h-11';
+    return `${inputCls} ${fixedHeight} hover:border-slate-300 focus:!border-emerald-400 focus:!ring-emerald-500/15 ${fieldErrors[field] ? '!border-rose-400 ring-2 ring-rose-500/15 focus:!border-rose-500 focus:!ring-rose-500/20' : ''} ${extra}`.trim();
+  };
   const fieldError = (field: keyof DirectReservationFormState) =>
     fieldErrors[field] ? <span className="text-[11px] font-medium text-rose-500">{fieldErrors[field]}</span> : null;
 
@@ -1546,7 +1614,7 @@ function DirectReservationModal({
                   inputMode="numeric"
                   max={20}
                   min={1}
-                  type="number"
+                  type="text"
                   value={form.adults}
                   onChange={(event) => onChange((current) => ({ ...current, adults: event.target.value }))}
                 />
@@ -1560,7 +1628,7 @@ function DirectReservationModal({
                   inputMode="numeric"
                   max={20}
                   min={0}
-                  type="number"
+                  type="text"
                   value={form.children}
                   onChange={(event) => onChange((current) => ({ ...current, children: event.target.value }))}
                 />
@@ -1579,15 +1647,18 @@ function DirectReservationModal({
                 {fieldError('check_in_date')}
               </div>
 
-              <label className={labelCls}>
+              <div className={labelCls}>
                 <span>Check-in time</span>
                 <TimePolicyPicker
+                  editable
                   invalid={Boolean(fieldErrors.check_in_time)}
+                  minuteStep={5}
+                  showClockIcon
                   value={form.check_in_time || selectedProperty?.default_check_in_time || '12:00'}
                   onChange={(value) => onChange((current) => ({ ...current, check_in_time: value }))}
                 />
                 {fieldError('check_in_time')}
-              </label>
+              </div>
 
               <div className="flex flex-col gap-1.5">
                 <CalendarDatePickerField
@@ -1605,7 +1676,10 @@ function DirectReservationModal({
               <label className={labelCls}>
                 <span>Check-out time</span>
                 <TimePolicyPicker
+                  editable
                   invalid={Boolean(fieldErrors.check_out_time)}
+                  minuteStep={5}
+                  showClockIcon
                   value={form.check_out_time || selectedProperty?.default_check_out_time || '11:00'}
                   onChange={(value) => onChange((current) => ({ ...current, check_out_time: value }))}
                 />
@@ -1708,7 +1782,7 @@ function DirectReservationModal({
                 <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
                   Advance payment <span className="text-[9px] lowercase tracking-normal">*optional</span>
                 </p>
-                <h3 className="mt-1 text-sm font-bold text-slate-900">Record a partial folio payment</h3>
+                <h3 className="mt-1 text-sm font-bold text-slate-900">Record a partial payment</h3>
               </div>
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -1720,7 +1794,7 @@ function DirectReservationModal({
                     min="0"
                     placeholder="0.00"
                     step="0.01"
-                    type="number"
+                    type="text"
                     value={form.advance_amount}
                     onChange={(event) => onChange((current) => ({ ...current, advance_amount: event.target.value }))}
                   />
@@ -1793,10 +1867,11 @@ function DirectReservationModal({
 /* ══════════════════════════════════════════════════════════
    ReservationFeedDetails (ledger expand row)
 ══════════════════════════════════════════════════════════ */
-function ReservationFeedDetails({ group, pendingId, reminderPendingId, onCheckOut, onSendReminder }: {
+function ReservationFeedDetails({ group, pendingId, reminderPendingId, onClose, onCheckOut, onSendReminder }: {
   group: DisplayGroup;
   pendingId: string | null;
   reminderPendingId: string | null;
+  onClose: () => void;
   onCheckOut: (id: string) => Promise<void>;
   onSendReminder: (id: string) => Promise<void>;
 }) {
@@ -1805,7 +1880,6 @@ function ReservationFeedDetails({ group, pendingId, reminderPendingId, onCheckOu
   const checkedOutRooms = group.rooms.filter(r => r.reservation_status === 'CHECKED_OUT').length;
   const totalNights = group.rooms.reduce((s, r) => s + calculateNights(r.arrival_date, r.departure_date), 0);
   const groupNights = group.arrival_date && group.departure_date ? calculateNights(group.arrival_date, group.departure_date) : 0;
-
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
@@ -1815,8 +1889,16 @@ function ReservationFeedDetails({ group, pendingId, reminderPendingId, onCheckOu
           <p className="text-sm text-slate-500">{group.property.name} · {group.external_reservation_id}{group.arrival_date && group.departure_date ? ` · ${group.arrival_date} to ${group.departure_date}` : ''}</p>
         </div>
         <div className="flex items-center gap-2">
-          <StatusBadge label={group.import_blocked ? 'IMPORT_BLOCKED' : group.reservation_status} tone={group.import_blocked ? 'rose' : undefined} />
-          <StatusBadge label={formatProviderStatus(group.external_status)} />
+          <button
+            aria-label="Close reservation details"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:text-slate-700"
+            onClick={onClose}
+            type="button"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
         </div>
       </div>
 

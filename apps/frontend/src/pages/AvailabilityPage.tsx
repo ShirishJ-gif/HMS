@@ -1,12 +1,8 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { DayPicker } from '@daypicker/react';
-import '@daypicker/react/style.css';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
-import { fetchAllPages } from '../api/pagination';
-import { AvailabilitySummary, InventoryCalendarSummary, Property, RoomCategory } from '../api/types';
+import { AvailabilitySummary, InventoryCalendarSummary, Property } from '../api/types';
+import { InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { CustomSelect } from '../components/CustomSelect';
-import { useAsync } from '../hooks/useAsync';
-import { usePersistedPropertyId } from '../hooks/usePersistedPropertyId';
 import { formatCurrency } from '../utils/format';
 import { createPreviewData } from './previewData';
 
@@ -30,19 +26,35 @@ type PersistedAvailabilityState = {
   inventoryCalendar: InventoryCalendarSummary;
 };
 
-export function AvailabilityPage({ previewDataEnabled = false }: { previewDataEnabled?: boolean }) {
+export function AvailabilityPage({
+  activePropertyId = '',
+  onPropertyChange,
+  previewDataEnabled = false,
+  properties: appProperties = [],
+  propertiesLoaded = false,
+}: {
+  activePropertyId?: string;
+  onPropertyChange?: (propertyId: string) => void;
+  previewDataEnabled?: boolean;
+  properties?: Property[];
+  propertiesLoaded?: boolean;
+}) {
   const today = dateToInputValue(new Date());
-  const defaultTo = addDays(today, INVENTORY_CALENDAR_DAYS - 1);
-  const [propertyId, setPropertyId] = usePersistedPropertyId();
+  const defaultRange = getPresetRange('next_30', today);
+  const [propertyId, setPropertyIdState] = useState(activePropertyId);
   const persistedAvailabilityState = useMemo(() => readPersistedAvailabilityState(), []);
   const restoredQuery = persistedAvailabilityState?.lastLoadedQuery ?? null;
+  const restoredQueryMatchesDefaultRange =
+    restoredQuery?.from === defaultRange.from &&
+    restoredQuery.to === defaultRange.to;
   const shouldRestorePersistedResults =
     restoredQuery != null &&
+    restoredQueryMatchesDefaultRange &&
     (!propertyId || restoredQuery.propertyId === propertyId) &&
     persistedAvailabilityState?.inventoryCalendar.from === restoredQuery.from &&
     persistedAvailabilityState?.inventoryCalendar.to === restoredQuery.to;
-  const [from, setFrom] = useState(shouldRestorePersistedResults ? restoredQuery.from : today);
-  const [to, setTo] = useState(shouldRestorePersistedResults ? restoredQuery.to : defaultTo);
+  const [from, setFrom] = useState(shouldRestorePersistedResults ? restoredQuery.from : defaultRange.from);
+  const [to, setTo] = useState(shouldRestorePersistedResults ? restoredQuery.to : defaultRange.to);
   const [availability, setAvailability] = useState<AvailabilitySummary | null>(
     shouldRestorePersistedResults ? persistedAvailabilityState?.availability ?? null : null,
   );
@@ -51,7 +63,9 @@ export function AvailabilityPage({ previewDataEnabled = false }: { previewDataEn
   );
   const [error, setError] = useState<string | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
-  const [lastLoadedQuery, setLastLoadedQuery] = useState<PersistedAvailabilityQuery | null>(null);
+  const [lastLoadedQuery, setLastLoadedQuery] = useState<PersistedAvailabilityQuery | null>(
+    shouldRestorePersistedResults ? restoredQuery : null,
+  );
   const [openDatePicker, setOpenDatePicker] = useState<'from' | 'to' | null>(null);
   const [rangePreset, setRangePreset] = useState<RangePreset>(
     shouldRestorePersistedResults && restoredQuery
@@ -60,20 +74,31 @@ export function AvailabilityPage({ previewDataEnabled = false }: { previewDataEn
   );
   const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
   const [selectedCatId, setSelectedCatId] = useState<string | null>(null);
+  const availabilityRequestIdRef = useRef(0);
+  const autoLoadedQueryRef = useRef<string | null>(shouldRestorePersistedResults && restoredQuery ? queryKey(restoredQuery) : null);
 
-  const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), []);
-  const categoriesState = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), []);
   const previewData = previewDataEnabled ? createPreviewData() : null;
-  const properties = previewData?.properties ?? propertiesState.data ?? [];
-  const hasLoadedProperties = previewDataEnabled || propertiesState.data != null;
+  const properties = previewData?.properties ?? appProperties;
+  const hasLoadedProperties = previewDataEnabled || propertiesLoaded;
   const selectedPropertyExists = Boolean(propertyId && properties.some((p) => p.id === propertyId));
+
+  function setPropertyId(nextPropertyId: string) {
+    setPropertyIdState(nextPropertyId);
+    onPropertyChange?.(nextPropertyId);
+  }
+
+  useEffect(() => {
+    if (activePropertyId && activePropertyId !== propertyId) {
+      setPropertyIdState(activePropertyId);
+    }
+  }, [activePropertyId, propertyId]);
 
   useEffect(() => {
     if (!propertyId && restoredQuery?.propertyId) setPropertyId(restoredQuery.propertyId);
   }, [propertyId, restoredQuery, setPropertyId]);
 
   useEffect(() => {
-    if (!propertiesState.data) return;
+    if (!hasLoadedProperties) return;
     if (properties.length === 0) {
       if (propertyId) setPropertyId('');
       setAvailability(null); setInventoryCalendar(null); setLastLoadedQuery(null);
@@ -84,13 +109,15 @@ export function AvailabilityPage({ previewDataEnabled = false }: { previewDataEn
       setAvailability(null); setInventoryCalendar(null); setLastLoadedQuery(null);
       clearPersistedAvailabilityState();
     }
-  }, [properties, propertyId, setPropertyId]);
+  }, [hasLoadedProperties, properties, propertyId, setPropertyId]);
 
-  useEffect(() => {
-    if (!hasLoadedProperties || !selectedPropertyExists || lastLoadedQuery?.propertyId === propertyId) return;
-    void fetchAvailability({ propertyId, from, to });
-  }, [from, hasLoadedProperties, lastLoadedQuery?.propertyId, propertyId, selectedPropertyExists, to]);
+  const currentQuery = useMemo(() => ({ propertyId, from, to }), [from, propertyId, to]);
 
+  const currentQueryHasLoaded =
+    lastLoadedQuery?.propertyId === propertyId &&
+    lastLoadedQuery.from === from &&
+    lastLoadedQuery.to === to;
+  const currentQueryIsDefaultRange = from === defaultRange.from && to === defaultRange.to;
   const displayedAvailability = previewData?.availability ?? (
     hasLoadedProperties && selectedPropertyExists && lastLoadedQuery?.propertyId === propertyId
       ? availability
@@ -176,11 +203,14 @@ export function AvailabilityPage({ previewDataEnabled = false }: { previewDataEn
   const inventoryDateGridTemplate = `repeat(${Math.max(inventoryCalendarDates.length, 1)}, minmax(4.5rem, 4.5rem))`;
 
   async function fetchAvailability(query: PersistedAvailabilityQuery) {
+    const requestId = availabilityRequestIdRef.current + 1;
+    availabilityRequestIdRef.current = requestId;
     setError(null); setAvailabilityLoading(true);
     try {
       if (!query.propertyId) { setError('Select a property first.'); return; }
       if (previewDataEnabled) {
         const next = createPreviewData();
+        if (availabilityRequestIdRef.current !== requestId) return;
         setAvailability(next.availability); setInventoryCalendar(next.inventoryCalendar); setLastLoadedQuery(query);
         return;
       }
@@ -190,17 +220,40 @@ export function AvailabilityPage({ previewDataEnabled = false }: { previewDataEn
       ]);
       const avail = { ...availabilityResponse.data, categories: availabilityResponse.data.categories ?? [] };
       const inv = { ...inventoryResponse.data, categories: inventoryResponse.data.categories ?? [] };
+      if (availabilityRequestIdRef.current !== requestId) return;
       setAvailability(avail); setInventoryCalendar(inv); setLastLoadedQuery(query);
       writePersistedAvailabilityState({ lastLoadedQuery: query, availability: avail, inventoryCalendar: inv });
     } catch (loadError) {
+      if (availabilityRequestIdRef.current !== requestId) return;
       setError(loadError instanceof Error ? loadError.message : 'Failed to load availability');
-    } finally { setAvailabilityLoading(false); }
+    } finally {
+      if (availabilityRequestIdRef.current === requestId) setAvailabilityLoading(false);
+    }
   }
 
   function loadAvailability(event: FormEvent) {
     event.preventDefault();
-    void fetchAvailability({ propertyId, from, to });
+    void fetchAvailability(currentQuery);
   }
+
+  useEffect(() => {
+    if (!hasLoadedProperties || !selectedPropertyExists || !propertyId || availabilityLoading) return;
+    if (currentQueryHasLoaded || !currentQueryIsDefaultRange || shouldRestorePersistedResults) return;
+
+    const key = queryKey(currentQuery);
+    if (autoLoadedQueryRef.current === key) return;
+    autoLoadedQueryRef.current = key;
+    void fetchAvailability(currentQuery);
+  }, [
+    availabilityLoading,
+    currentQuery,
+    currentQueryHasLoaded,
+    currentQueryIsDefaultRange,
+    hasLoadedProperties,
+    propertyId,
+    selectedPropertyExists,
+    shouldRestorePersistedResults,
+  ]);
 
   function applyRangePreset(preset: RangePreset) {
     setRangePreset(preset);
@@ -212,12 +265,17 @@ export function AvailabilityPage({ previewDataEnabled = false }: { previewDataEn
   function updateFromDate(value: string) { setFrom(value); setRangePreset('custom'); }
   function updateToDate(value: string) { setTo(value); setRangePreset('custom'); }
 
-  const isLoading = propertiesState.loading || categoriesState.loading || availabilityLoading;
-  const selectedProperty = properties.find((p) => p.id === propertyId);
+  const waitingForDefaultProperty = hasLoadedProperties && properties.length > 0 && !selectedPropertyExists;
+  const waitingForDefaultAvailability =
+    hasLoadedProperties &&
+    selectedPropertyExists &&
+    currentQueryIsDefaultRange &&
+    !currentQueryHasLoaded &&
+    !error;
+  const isLoading = !hasLoadedProperties || availabilityLoading || waitingForDefaultProperty || waitingForDefaultAvailability;
 
   return (
     <div className="min-h-screen -mx-5 lg:-mx-8 -my-6 lg:-my-8 bg-[#f5f5f3] flex flex-col">
-
       {/* ── Sticky header with inline filter bar ── */}
       <form
         onSubmit={loadAvailability}
@@ -333,12 +391,12 @@ export function AvailabilityPage({ previewDataEnabled = false }: { previewDataEn
       <div className="px-6 py-5 flex flex-col gap-5">
 
         {/* ── Error ── */}
-        {(propertiesState.error || categoriesState.error || error) && (
+        {error && (
           <div className="bg-rose-50 border border-rose-200 rounded-xl px-5 py-4 flex items-start gap-3">
             <svg className="w-4 h-4 text-rose-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <circle cx="12" cy="12" r="10" /><path d="m15 9-6 6M9 9l6 6" strokeLinecap="round" />
             </svg>
-            <p className="text-sm text-rose-700 font-medium">{propertiesState.error ?? categoriesState.error ?? error}</p>
+            <p className="text-sm text-rose-700 font-medium">{error}</p>
           </div>
         )}
 
@@ -349,7 +407,9 @@ export function AvailabilityPage({ previewDataEnabled = false }: { previewDataEn
               <CalendarIcon className="w-6 h-6 text-slate-400" />
             </div>
             <p className="text-[13px] font-semibold text-slate-500">
-              Select a property and date range, then click Check
+              {properties.length === 0
+                ? 'Add a property before checking availability'
+                : 'Filter changed. Click Check to load availability for this range'}
             </p>
           </div>
         )}
@@ -829,32 +889,23 @@ function CompactDateField({
   open: boolean;
   setOpen: (open: boolean) => void;
 }) {
-  const selectedDate = value ? new Date(`${value}T00:00:00.000Z`) : undefined;
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700 hover:text-slate-900 transition-colors"
-      >
-        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{label}</span>
-        <span>{value ? formatDatePickerLabel(value) : 'Pick'}</span>
-      </button>
-      {open && (
-        <div className={`absolute top-[2.5rem] z-50 rounded-2xl border border-black/[0.08] bg-white p-3 shadow-2xl ${align === 'right' ? 'right-0' : 'left-0'}`}>
-          <DayPicker
-            animate
-            className="hms-day-picker"
-            defaultMonth={selectedDate ?? new Date()}
-            fixedWeeks
-            mode="single"
-            onSelect={(date) => { if (!date) return; onChange(dateToInputValue(date)); setOpen(false); }}
-            selected={selectedDate}
-            showOutsideDays
-            weekStartsOn={1}
-          />
-        </div>
-      )}
+    <div className="w-[6.25rem]">
+      <InlineCalendarDatePicker
+        align={align}
+        buttonClassName="flex h-8 w-full min-w-0 items-center rounded-md border border-transparent bg-white px-2.5 text-left text-[11.5px] font-semibold text-slate-700 focus:outline-none"
+        label={label}
+        onChange={onChange}
+        open={open}
+        renderTrigger={(pickerLabel) => (
+          <span className="min-w-0">
+            <span className="block text-[8.5px] font-bold uppercase tracking-wider text-slate-400">{label}</span>
+            <span className="block truncate">{pickerLabel}</span>
+          </span>
+        )}
+        setOpen={setOpen}
+        value={value}
+      />
     </div>
   );
 }
@@ -951,4 +1002,7 @@ function writePersistedAvailabilityState(state: PersistedAvailabilityState) {
 }
 function clearPersistedAvailabilityState() {
   localStorage.removeItem(AVAILABILITY_STORAGE_KEY);
+}
+function queryKey(query: PersistedAvailabilityQuery) {
+  return `${query.propertyId}:${query.from}:${query.to}`;
 }

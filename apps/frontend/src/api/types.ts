@@ -116,6 +116,7 @@ export type DashboardSummary = {
   active_reservation_groups: number;
   open_housekeeping_tasks: number;
   pending_balance_total: number;
+  revenue_by_ota: Array<{ label: string; amount: number }>;
 };
 
 export type NotificationFeedItem = {

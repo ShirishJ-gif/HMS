@@ -1,4 +1,9 @@
-import { BadGatewayException, BadRequestException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  GatewayTimeoutException,
+  HttpException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ApiCallTraceService } from '../../../common/api-call-trace/api-call-trace.service';
 import { ZodomusAppCredentials } from './zodomus.types';
 
@@ -11,7 +16,21 @@ type ZodomusRequestOptions = {
   password?: string;
 };
 
+type ZodomusRequestAttemptResult = {
+  response: Response;
+  payload: unknown;
+};
+
+type ZodomusErrorInput = {
+  method: HttpMethod;
+  path: string;
+  message: string;
+  statusCode: number | null;
+};
+
 export class ZodomusClient {
+  private static readonly retryableStatusCodes = new Set([408, 429, 500, 502, 503, 504]);
+
   constructor(private readonly credentials: ZodomusAppCredentials) {}
 
   async getAccount() {
@@ -155,44 +174,84 @@ export class ZodomusClient {
   }
 
   private async request({ method = 'GET', path, body, password }: ZodomusRequestOptions) {
-    const traceCallId = ApiCallTraceService.startZodomusRequest({ method, path });
-    let statusCode: number | null = null;
+    let lastError: unknown = null;
+    const maxAttempts = this.readMaxAttempts();
 
-    try {
-      const response = await fetch(`${this.baseUrl()}${path}`, {
-        method,
-        headers: this.headers(body !== undefined, password),
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(15000),
-      });
-      statusCode = response.status;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const traceCallId = ApiCallTraceService.startZodomusRequest({ method, path });
+      let statusCode: number | null = null;
 
-      const payload = await this.readResponseBody(response);
+      try {
+        const { response, payload } = await this.sendRequest({ method, path, body, password });
+        statusCode = response.status;
 
-      if (!response.ok) {
+        if (!response.ok) {
+          const errorMessage = this.providerErrorMessage(method, path, response.status);
+          ApiCallTraceService.finishCall(traceCallId, {
+            status: 'FAILED',
+            statusCode,
+            errorMessage,
+          });
+
+          if (this.shouldRetryStatus(response.status, attempt, maxAttempts)) {
+            await this.waitBeforeRetry(attempt, response);
+            continue;
+          }
+
+          throw this.createProviderStatusException({
+            method,
+            path,
+            statusCode: response.status,
+            message: errorMessage,
+          });
+        }
+
+        ApiCallTraceService.finishCall(traceCallId, {
+          status: 'SUCCEEDED',
+          statusCode,
+        });
+        return payload;
+      } catch (error) {
+        lastError = error;
         ApiCallTraceService.finishCall(traceCallId, {
           status: 'FAILED',
           statusCode,
-          errorMessage: `Zodomus ${method} ${path} failed with status ${response.status}.`,
+          errorMessage: error instanceof Error ? error.message : 'Zodomus request failed.',
         });
-        throw new BadRequestException(
-          `Zodomus ${method} ${path} failed with status ${response.status}.`,
-        );
-      }
 
-      ApiCallTraceService.finishCall(traceCallId, {
-        status: 'SUCCEEDED',
-        statusCode,
-      });
-      return payload;
-    } catch (error) {
-      ApiCallTraceService.finishCall(traceCallId, {
-        status: 'FAILED',
-        statusCode,
-        errorMessage: error instanceof Error ? error.message : 'Zodomus request failed.',
-      });
-      throw error;
+        if (!this.shouldRetryError(error, attempt, maxAttempts)) {
+          throw this.normalizeTransportException(error, { method, path, statusCode });
+        }
+
+        await this.waitBeforeRetry(attempt);
+      }
     }
+
+    throw this.normalizeTransportException(lastError, {
+      method,
+      path,
+      statusCode: null,
+    });
+  }
+
+  private async sendRequest({
+    method,
+    path,
+    body,
+    password,
+  }: Required<Pick<ZodomusRequestOptions, 'method' | 'path'>> &
+    Pick<ZodomusRequestOptions, 'body' | 'password'>): Promise<ZodomusRequestAttemptResult> {
+    const response = await fetch(`${this.baseUrl()}${path}`, {
+      method,
+      headers: this.headers(body !== undefined, password),
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(this.readTimeoutMs()),
+    });
+
+    return {
+      response,
+      payload: await this.readResponseBody(response),
+    };
   }
 
   private headers(hasBody: boolean, password = this.credentials.api_password) {
@@ -226,9 +285,161 @@ export class ZodomusClient {
 
       return await response.text();
     } catch (error) {
-      throw new BadGatewayException(
-        error instanceof Error ? error.message : 'Failed to parse Zodomus response.',
+      throw this.createBadGatewayException({
+        method: 'GET',
+        path: response.url ? new URL(response.url).pathname : 'unknown',
+        statusCode: response.status,
+        message: error instanceof Error ? error.message : 'Failed to parse Zodomus response.',
+      });
+    }
+  }
+
+  private shouldRetryStatus(statusCode: number, attempt: number, maxAttempts: number) {
+    return attempt < maxAttempts && ZodomusClient.retryableStatusCodes.has(statusCode);
+  }
+
+  private shouldRetryError(error: unknown, attempt: number, maxAttempts: number) {
+    if (attempt >= maxAttempts) {
+      return false;
+    }
+
+    if (error instanceof HttpException) {
+      return false;
+    }
+
+    if (!(error instanceof Error)) {
+      return true;
+    }
+
+    return (
+      error.name === 'AbortError' ||
+      error.name === 'TimeoutError' ||
+      error.name === 'TypeError' ||
+      error.message.toLowerCase().includes('network')
+    );
+  }
+
+  private async waitBeforeRetry(attempt: number, response?: Response) {
+    const retryAfterMs = response ? this.readRetryAfterMs(response) : null;
+    const delayMs = retryAfterMs ?? this.retryDelayMs(attempt);
+    if (delayMs <= 0) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  private retryDelayMs(attempt: number) {
+    const baseDelayMs = this.readPositiveInteger(process.env.ZODOMUS_RETRY_BASE_DELAY_MS, 250);
+    const maxDelayMs = this.readPositiveInteger(process.env.ZODOMUS_RETRY_MAX_DELAY_MS, 2000);
+    return Math.min(baseDelayMs * 2 ** Math.max(0, attempt - 1), maxDelayMs);
+  }
+
+  private readRetryAfterMs(response: Response) {
+    const retryAfter = response.headers.get('retry-after')?.trim();
+    if (!retryAfter) {
+      return null;
+    }
+
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(seconds * 1000, this.readPositiveInteger(process.env.ZODOMUS_RETRY_MAX_DELAY_MS, 2000));
+    }
+
+    const retryAt = Date.parse(retryAfter);
+    if (!Number.isFinite(retryAt)) {
+      return null;
+    }
+
+    return Math.min(
+      Math.max(0, retryAt - Date.now()),
+      this.readPositiveInteger(process.env.ZODOMUS_RETRY_MAX_DELAY_MS, 2000),
+    );
+  }
+
+  private readTimeoutMs() {
+    return this.readPositiveInteger(process.env.ZODOMUS_REQUEST_TIMEOUT_MS, 15000);
+  }
+
+  private readMaxAttempts() {
+    return Math.min(this.readPositiveInteger(process.env.ZODOMUS_RETRY_MAX_ATTEMPTS, 3), 5);
+  }
+
+  private readPositiveInteger(value: string | undefined, fallback: number) {
+    const parsed = Number.parseInt(value ?? '', 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return fallback;
+    }
+
+    return Math.floor(parsed);
+  }
+
+  private providerErrorMessage(method: HttpMethod, path: string, statusCode: number) {
+    return `Zodomus ${method} ${path} failed with status ${statusCode}.`;
+  }
+
+  private createProviderStatusException(input: ZodomusErrorInput) {
+    if (input.statusCode === 408) {
+      return new GatewayTimeoutException(
+        this.zodomusErrorResponse(input, 'Zodomus request timed out.'),
       );
     }
+
+    if (input.statusCode === 429) {
+      return new ServiceUnavailableException(
+        this.zodomusErrorResponse(input, 'Zodomus rate limit reached. Try again shortly.'),
+      );
+    }
+
+    return this.createBadGatewayException(input);
+  }
+
+  private normalizeTransportException(
+    error: unknown,
+    input: Pick<ZodomusErrorInput, 'method' | 'path' | 'statusCode'>,
+  ) {
+    if (error instanceof HttpException) {
+      return error;
+    }
+
+    const message = error instanceof Error ? error.message : 'Zodomus request failed.';
+    if (this.isTimeoutError(error)) {
+      return new GatewayTimeoutException(
+        this.zodomusErrorResponse(
+          {
+            ...input,
+            message: 'Zodomus request timed out.',
+          },
+          'Zodomus request timed out.',
+        ),
+      );
+    }
+
+    return this.createBadGatewayException({
+      ...input,
+      message,
+    });
+  }
+
+  private createBadGatewayException(input: ZodomusErrorInput) {
+    return new BadGatewayException(this.zodomusErrorResponse(input));
+  }
+
+  private zodomusErrorResponse(input: ZodomusErrorInput, publicMessage = 'Zodomus provider request failed.') {
+    return {
+      message: publicMessage,
+      provider: 'ZODOMUS',
+      endpoint: `${input.method} ${input.path}`,
+      status_code: input.statusCode,
+      trace_id: ApiCallTraceService.currentTraceId(),
+      provider_error: input.message,
+    };
+  }
+
+  private isTimeoutError(error: unknown) {
+    return (
+      error instanceof Error &&
+      (error.name === 'AbortError' || error.name === 'TimeoutError')
+    );
   }
 }

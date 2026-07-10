@@ -1213,6 +1213,15 @@ function InlinePanel({
   const [tab, setTab] = useState<PanelTab>('mappings');
 
   const conn = workspace.zodomusConnections.find(c => c.id === connectionId);
+  const isSelected = workspace.selectedConnection?.id === connectionId;
+
+  useEffect(() => {
+    if (!conn || tab !== 'logs') return;
+
+    if (!isSelected) workspace.selectConnection(connectionId);
+    void workspace.loadSyncLogs(connectionId);
+  }, [conn, connectionId, isSelected, tab]);
+
   if (!conn) return null;
 
   const otaName = conn.provider_config_summary?.ota_name ?? conn.provider;
@@ -1220,12 +1229,11 @@ function InlinePanel({
   const ready = Boolean(conn.provider_config_summary?.setup_status?.ready);
   const autoSaved = Boolean(conn.provider_config_summary?.automation?.enabled);
   const canSync = Boolean(ready && autoSaved);
-  const isSelected = workspace.selectedConnection?.id === connectionId;
 
   const ensureSelected = () => { if (!isSelected) workspace.selectConnection(connectionId); };
   const syncInventory = () => { ensureSelected(); void workspace.runInventorySync(otaMappingOuterManualSyncDays); };
   const syncRates = () => { ensureSelected(); void workspace.runRatesSync(otaMappingOuterManualSyncDays); };
-  const refreshLogs = () => { ensureSelected(); void workspace.loadSyncLogs(connectionId); };
+  const refreshLogs = () => { ensureSelected(); void workspace.loadSyncLogs(connectionId, { force: true }); };
 
   return (
     <div className="bg-white border border-black/[0.08] rounded-2xl overflow-hidden shadow-md">
@@ -1523,6 +1531,13 @@ export function OtaMappingPage({
     setExpandedId(workspace.selectedConnection.id);
   }, [setupOtaKey, workspace.selectedConnection]);
 
+  useEffect(() => {
+    if (!expandedId || !workspace.zodomusConnections.some(connection => connection.id === expandedId)) return;
+    if (workspace.selectedConnection?.id === expandedId) return;
+
+    workspace.selectConnection(expandedId);
+  }, [expandedId, workspace.selectedConnection?.id, workspace.zodomusConnections.length]);
+
   const openConnectionSetup = (otaKey: ChannelWorkspace['zodomusOtaKey']) => {
     workspace.setZodomusOtaKey(otaKey);
     workspace.selectConnection('');
@@ -1559,7 +1574,6 @@ export function OtaMappingPage({
     const connection = workspace.zodomusConnections.find(c => c.id === connectionId);
     workspace.setZodomusOtaKey(getConnectionOtaKey(connection));
     workspace.selectConnection(connectionId);
-    void workspace.loadSyncLogs(connectionId);
     setExpandedId(connectionId);
     persistExpandedOtaCardId(connectionId);
   };

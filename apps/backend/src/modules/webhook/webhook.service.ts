@@ -15,6 +15,7 @@ import { AuthenticatedUser } from '../auth/auth.guard';
 import { propertyIdFilter } from '../auth/property-scope';
 import { BackgroundJobService } from '../background-job/background-job.service';
 import { MetricsService } from '../metrics/metrics.service';
+import { sanitizeProviderPayload } from '../../common/privacy/sanitize-provider-payload';
 
 @Injectable()
 export class WebhookService {
@@ -66,6 +67,7 @@ export class WebhookService {
       ? `${domain}:${provider}:${externalEventId}`
       : `${domain}:${provider}:payload:${this.hash(rawPayload)}`;
     const requestHash = this.hash(JSON.stringify({ rawPayload, signature, eventType }));
+    const sanitizedPayload = sanitizeProviderPayload(payload ?? {});
 
     const stored = await this.prisma.$transaction(async (tx) => {
       await this.acquireLock(tx, dedupeKey);
@@ -92,7 +94,7 @@ export class WebhookService {
           eventType,
           signature,
           headers: this.serializeHeaders(headers),
-          payload: (payload ?? {}) as Prisma.InputJsonValue,
+          payload: sanitizedPayload,
           requestHash,
           status: WebhookEventStatus.RECEIVED,
         },

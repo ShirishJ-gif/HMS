@@ -140,6 +140,10 @@ export class ApiCallTraceService {
     });
   }
 
+  static currentTraceId() {
+    return ApiCallTraceService.storage.getStore()?.requestId ?? null;
+  }
+
   static finishCall(id: string, input: FinishCallInput) {
     const record = ApiCallTraceService.records.find((item) => item.id === id);
     if (!record || record.status !== 'PENDING') {

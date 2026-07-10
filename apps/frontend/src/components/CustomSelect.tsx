@@ -15,6 +15,7 @@ type CustomSelectProps = {
   onChange: (value: string) => void;
   options: CustomSelectOption[];
   placeholder?: string;
+  tone?: 'default' | 'neutral';
   value: string;
 };
 
@@ -25,6 +26,7 @@ export function CustomSelect({
   onChange,
   options,
   placeholder = 'Select option',
+  tone = 'default',
   value,
 }: CustomSelectProps) {
   const [open, setOpen] = useState(false);
@@ -34,6 +36,7 @@ export function CustomSelect({
   const buttonId = useId();
   const selectedOption = options.find((option) => option.value === value) ?? null;
   const shouldLockToSingleOption = lockWhenSingleOption && options.length === 1;
+  const neutralTone = tone === 'neutral';
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -85,7 +88,7 @@ export function CustomSelect({
     return (
       <div ref={rootRef} className="relative">
         <div className={[
-          'flex items-center w-full min-h-[2.6rem] border rounded-lg px-3 py-2 bg-slate-50 text-slate-600 text-sm font-medium cursor-default',
+          'flex h-11 w-full items-center rounded-lg border bg-slate-50 px-3 text-sm font-medium text-slate-600 cursor-default',
           invalid ? 'border-rose-300 ring-2 ring-rose-500/10' : 'border-slate-200',
         ].join(' ')}>
           <span>{selectedOption?.label ?? options[0]?.label ?? placeholder}</span>
@@ -106,10 +109,16 @@ export function CustomSelect({
         onClick={() => setOpen((c) => !c)}
         onKeyDown={handleButtonKeyDown}
         className={[
-          'flex items-center justify-between w-full min-h-[2.6rem] border rounded-lg px-3 py-2 text-sm text-left transition-all duration-150',
+          'flex h-11 w-full items-center justify-between rounded-lg border px-3 text-left text-sm transition-colors',
           'bg-white font-medium cursor-pointer',
           disabled ? 'opacity-50 cursor-not-allowed bg-slate-50 text-slate-400 border-slate-200' : 'text-slate-700 hover:border-slate-300',
-          invalid ? 'border-rose-300 ring-2 ring-rose-500/10' : open ? 'border-indigo-400 ring-2 ring-indigo-500/15' : 'border-slate-200',
+          invalid
+            ? 'border-rose-300 ring-2 ring-rose-500/10'
+            : open
+              ? neutralTone
+                ? 'border-slate-300 ring-2 ring-slate-200/70'
+                : 'border-emerald-400 ring-2 ring-emerald-500/15'
+              : 'border-slate-200',
         ].join(' ')}
       >
         <span className="min-w-0">
@@ -152,7 +161,7 @@ export function CustomSelect({
                 className={[
                   'flex items-center justify-between w-full px-3 py-2.5 text-sm text-left rounded-lg mx-1 transition-colors',
                   'w-[calc(100%-8px)]',
-                  selected ? 'bg-emerald-50 text-emerald-700 font-semibold' : 'text-slate-700',
+                  selected ? (neutralTone ? 'bg-slate-100 text-slate-800 font-semibold' : 'bg-emerald-50 text-emerald-700 font-semibold') : 'text-slate-700',
                   highlighted && !selected ? 'bg-slate-50' : '',
                   'hover:bg-slate-50',
                 ].join(' ')}
@@ -167,14 +176,14 @@ export function CustomSelect({
                     )}
                     <span className="block truncate">{option.label}</span>
                     {option.description && (
-                      <span className={`mt-0.5 block truncate text-[11px] font-medium ${selected ? 'text-emerald-600/75' : 'text-slate-400'}`}>
+                      <span className={`mt-0.5 block truncate text-[11px] font-medium ${selected && !neutralTone ? 'text-emerald-600/75' : 'text-slate-400'}`}>
                         {option.description}
                       </span>
                     )}
                   </span>
                 </span>
                 {selected && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0" aria-hidden="true" />
+                  <span className={`w-1.5 h-1.5 rounded-full ${neutralTone ? 'bg-slate-500' : 'bg-emerald-500'} flex-shrink-0`} aria-hidden="true" />
                 )}
               </button>
             );

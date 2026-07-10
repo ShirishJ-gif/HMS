@@ -5,6 +5,7 @@ import { MetricsService } from '../metrics/metrics.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { sanitizeProviderPayload } from '../../common/privacy/sanitize-provider-payload';
 
 type NormalizedReservationRoom = {
   external_room_reservation_id: string;
@@ -33,6 +34,7 @@ type NormalizedReservationGroup = {
   guest_name: string;
   guest_phone?: string | null;
   guest_email?: string | null;
+  guest_id_proof?: string | null;
   raw_payload: Prisma.InputJsonValue;
   rooms: NormalizedReservationRoom[];
 };
@@ -329,6 +331,7 @@ export class ZodomusReservationImportService {
         name: input.reservation.guest_name,
         phone: input.reservation.guest_phone,
         email: input.reservation.guest_email,
+        idProof: input.reservation.guest_id_proof,
       });
 
       const reservationStatus = this.mapExternalStatus(input.reservation.external_status);
@@ -1151,10 +1154,12 @@ export class ZodomusReservationImportService {
       name: string;
       phone?: string | null;
       email?: string | null;
+      idProof?: string | null;
     },
   ) {
     const phone = this.normalizeOptional(input.phone);
     const email = this.normalizeOptional(input.email);
+    const idProof = this.maskIdentityProof(input.idProof);
     const name = input.name.trim() || 'Channel Guest';
 
     const existing =
@@ -1190,7 +1195,7 @@ export class ZodomusReservationImportService {
           name,
           phone: phone ?? existing.phone,
           email: email ?? existing.email,
-          idProof: existing.idProof,
+          idProof: idProof ?? existing.idProof,
           address: existing.address,
         },
       });
@@ -1202,7 +1207,7 @@ export class ZodomusReservationImportService {
         name,
         phone: phone ?? `unknown-${Date.now()}`,
         email,
-        idProof: 'CHANNEL_IMPORT',
+        idProof: idProof ?? 'CHANNEL_IMPORT',
         address: 'Imported from Zodomus',
       },
     });
@@ -1354,7 +1359,11 @@ export class ZodomusReservationImportService {
         this.firstString(customerRecord, 'email', 'mail') ??
         this.firstString(record, 'guest_email', 'email') ??
         null,
-      raw_payload: JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue,
+      guest_id_proof:
+        this.firstIdentityProofString(customerRecord) ??
+        this.firstIdentityProofString(record) ??
+        null,
+      raw_payload: sanitizeProviderPayload(value),
       rooms: normalizedRooms,
     };
   }
@@ -1402,7 +1411,7 @@ export class ZodomusReservationImportService {
       children:
         this.sumGuestCount(record, false) ??
         this.firstNumber(record, 'numberOfChildren', 'numberOChildren', 'children'),
-      raw_payload: JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue,
+      raw_payload: sanitizeProviderPayload(value),
     };
   }
 
@@ -1471,6 +1480,102 @@ export class ZodomusReservationImportService {
     }
 
     return null;
+  }
+
+  private firstIdentityProofString(record: Record<string, Prisma.JsonValue>) {
+    const directValue = this.firstString(
+      record,
+      'id_proof',
+      'idProof',
+      'proof_id',
+      'proofId',
+      'identity_number',
+      'identityNumber',
+      'identity_document',
+      'identityDocument',
+      'document_number',
+      'documentNumber',
+      'document_no',
+      'documentNo',
+      'passport',
+      'passport_number',
+      'passportNumber',
+      'aadhaar',
+      'aadhar',
+      'aadhaar_number',
+      'aadhar_number',
+      'pan',
+      'pan_card',
+      'national_id',
+      'nationalId',
+      'government_id',
+      'governmentId',
+      'driver_license',
+      'driverLicense',
+      'driving_license',
+      'drivingLicense',
+    );
+    if (directValue) {
+      return directValue;
+    }
+
+    for (const [key, value] of Object.entries(record)) {
+      if (!this.isIdentityProofKey(key)) {
+        continue;
+      }
+
+      const scalarValue = this.coerceString(value);
+      if (scalarValue) {
+        return scalarValue;
+      }
+
+      const nestedRecord = this.readObject(value);
+      const nestedValue = this.firstString(
+        nestedRecord,
+        'number',
+        'no',
+        'id',
+        'value',
+        'document_number',
+        'documentNumber',
+      );
+      if (nestedValue) {
+        return nestedValue;
+      }
+    }
+
+    return null;
+  }
+
+  private maskIdentityProof(value?: string | null) {
+    const normalized = value?.replace(/[^a-zA-Z0-9]/g, '').trim();
+    if (!normalized) {
+      return null;
+    }
+
+    return `****${normalized.slice(-3)}`;
+  }
+
+  private isIdentityProofKey(key: string) {
+    const normalized = key.replace(/[_-]+/g, ' ');
+    return [
+      /aadhaar/i,
+      /aadhar/i,
+      /passport/i,
+      /driver.*licen[cs]e/i,
+      /driving.*licen[cs]e/i,
+      /national.*id/i,
+      /government.*id/i,
+      /identity.*document/i,
+      /id.*proof/i,
+      /proof.*id/i,
+      /document.*number/i,
+      /document.*no/i,
+      /identity.*number/i,
+      /license.*number/i,
+      /licence.*number/i,
+      /pan.*card/i,
+    ].some((pattern) => pattern.test(normalized));
   }
 
   private coerceString(value: Prisma.JsonValue | undefined) {

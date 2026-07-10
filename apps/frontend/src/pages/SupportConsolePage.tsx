@@ -3,7 +3,7 @@ import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { BackgroundJob, ChannelConnection, MetricsSummary } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
-import { ErrorMsg, LoadingMsg, StatusBadge, Th, Td } from './ui';
+import { ErrorMsg, LoadingMsg, StatCard, StatusBadge, Th, Td } from './ui';
 
 type SupportConsoleData = {
   channels: ChannelConnection[];
@@ -141,10 +141,12 @@ export function SupportConsolePage() {
           { label: 'Total tracked jobs',value: jobs.length,       warn: false },
           { label: 'Runtime uptime',    value: supportState.data ? `${Math.round(supportState.data.metrics.uptime_seconds / 60)}m` : '—', warn: false },
         ].map(k => (
-          <div key={k.label} className="bg-white rounded-xl border border-black/[0.06] px-4 py-3">
-            <p className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{k.label}</p>
-            <p className={`text-[1.5rem] font-bold tracking-tight leading-none ${k.warn ? 'text-rose-600' : 'text-slate-900'}`}>{k.value}</p>
-          </div>
+          <StatCard
+            key={k.label}
+            label={k.label}
+            value={k.value}
+            valueClassName={`text-[1.5rem] ${k.warn ? 'text-rose-600' : 'text-slate-900'}`}
+          />
         ))}
       </div>
 

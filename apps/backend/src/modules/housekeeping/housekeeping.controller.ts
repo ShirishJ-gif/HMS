@@ -17,6 +17,11 @@ export class HousekeepingController {
     return this.housekeepingService.findAll(query, user);
   }
 
+  @Get('board')
+  getBoard(@CurrentUser() user: AuthenticatedUser) {
+    return this.housekeepingService.getBoard(user);
+  }
+
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.STAFF)
   @Post()
   create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateHousekeepingTaskDto) {

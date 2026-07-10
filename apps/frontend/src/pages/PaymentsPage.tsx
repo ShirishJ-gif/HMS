@@ -1,13 +1,12 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api, getApiErrorMessage } from '../api/client';
-import { fetchAllPages } from '../api/pagination';
-import { Billing, PaymentProvider, PaymentTransaction, ReservationGroup, ReservationGroupFolio, ReservationGroupPaymentCollection } from '../api/types';
+import { Billing, PaymentProvider, ReservationGroup, ReservationGroupFolio, ReservationGroupPaymentCollection } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
-import { useAsync } from '../hooks/useAsync';
+import { DelayedSpinnerOverlay } from '../components/Spinner';
 import { useScrollLock } from '../hooks/useScrollLock';
 import { formatCurrency } from '../utils/format';
-import { ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
+import { ErrorMsg, FloatingSuccessToast, StatCard } from './ui';
 import { createPreviewData, isPreviewId } from './previewData';
 
 // ── Providers ──────────────────────────────────────────────────────────────
@@ -31,6 +30,29 @@ const STATUS_CFG: Record<string, { badge: string; label: string }> = {
 const defaultPayForm = { amount: '', provider: 'CASH' as PaymentProvider, provider_reference: '' };
 const defaultGroupPayForm = { amount: '', provider: 'CASH' as PaymentProvider, provider_reference: '' };
 const FOLIOS_PER_PAGE = 8;
+
+type FinanceOverview = {
+  summary: {
+    total_billed: number;
+    total_collected: number;
+    total_balance: number;
+    open_invoice_count: number;
+    invoice_count: number;
+    transaction_count: number;
+  };
+  billings: Billing[];
+  reservation_groups: ReservationGroup[];
+};
+
+type FinanceState = {
+  data: FinanceOverview | null;
+  error: string | null;
+  loading: boolean;
+};
+
+let financeOverviewCache: FinanceOverview | null = null;
+let financeOverviewCacheAt = 0;
+const financeOverviewCacheTtlMs = 60_000;
 
 function paymentReferenceLabel(payment: { provider: PaymentProvider; provider_reference: string | null }) {
   return payment.provider === 'CASH' ? '—' : payment.provider_reference ?? '—';
@@ -133,6 +155,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   const [selectedFolio, setSelectedFolio]     = useState<ReservationGroupFolio | null>(null);
   const [folioCache, setFolioCache]           = useState<Record<string, ReservationGroupFolio>>({});
   const [folioLoading, setFolioLoading]       = useState(false);
+  const [folioLoadingGroupId, setFolioLoadingGroupId] = useState<string | null>(null);
   const [folioError, setFolioError]           = useState<string | null>(null);
   const [groupPayForm, setGroupPayForm]       = useState(defaultGroupPayForm);
   const [collectingGroup, setCollectingGroup] = useState(false);
@@ -142,14 +165,43 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   const [folioPage, setFolioPage] = useState(1);
   const folioRequestIdRef = useRef(0);
 
-  const billingsState = useAsync(async () => fetchAllPages<Billing>('/billings'), [reloadKey]);
-  const reservationGroupsState = useAsync(async () => fetchAllPages<ReservationGroup>('/bookings/groups'), [reloadKey]);
-  const paymentsState = useAsync(async () => fetchAllPages<PaymentTransaction>('/payments'), [reloadKey]);
+  const [financeState, setFinanceState] = useState<FinanceState>(() => {
+    const hasFreshCache = financeOverviewCache && Date.now() - financeOverviewCacheAt < financeOverviewCacheTtlMs;
+    return {
+      data: hasFreshCache ? financeOverviewCache : null,
+      error: null,
+      loading: !hasFreshCache,
+    };
+  });
+
+  useEffect(() => {
+    let active = true;
+    const hasFreshCache = financeOverviewCache && reloadKey === 0 && Date.now() - financeOverviewCacheAt < financeOverviewCacheTtlMs;
+    if (hasFreshCache) {
+      setFinanceState({ data: financeOverviewCache, error: null, loading: false });
+      return () => { active = false; };
+    }
+
+    setFinanceState((current) => ({ ...current, error: null, loading: !current.data || reloadKey > 0 }));
+    api.get<FinanceOverview>('/finance/overview')
+      .then((response) => {
+        if (!active) return;
+        financeOverviewCache = response.data;
+        financeOverviewCacheAt = Date.now();
+        setFinanceState({ data: response.data, error: null, loading: false });
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        setFinanceState((current) => ({ data: current.data, error: getApiErrorMessage(err), loading: false }));
+      });
+
+    return () => { active = false; };
+  }, [reloadKey]);
 
   const previewData       = previewDataEnabled ? createPreviewData() : null;
-  const billings          = previewData?.billings ?? billingsState.data ?? [];
-  const reservationGroups = previewData?.reservationGroups ?? reservationGroupsState.data ?? [];
-  const allPayments       = previewData?.payments ?? paymentsState.data ?? [];
+  const billings          = previewData?.billings ?? financeState.data?.billings ?? [];
+  const reservationGroups = previewData?.reservationGroups ?? financeState.data?.reservation_groups ?? [];
+  const transactionCount  = previewData?.payments.length ?? financeState.data?.summary.transaction_count ?? 0;
 
   // Invoice list — filtered
   const filteredBillings = billings.filter(b =>
@@ -159,10 +211,10 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   const selectedBilling = billings.find(b => b.id === selectedBillingId) ?? null;
 
   // Stats
-  const totalBilled    = billings.reduce((s, b) => s + b.total, 0);
-  const totalCollected = billings.reduce((s, b) => s + (b.paid_total - b.refunded_total), 0);
-  const totalBalance   = billings.reduce((s, b) => s + b.balance_due, 0);
-  const openCount      = billings.filter(b => b.balance_due > 0).length;
+  const totalBilled    = previewData ? billings.reduce((s, b) => s + b.total, 0) : financeState.data?.summary.total_billed ?? 0;
+  const totalCollected = previewData ? billings.reduce((s, b) => s + (b.paid_total - b.refunded_total), 0) : financeState.data?.summary.total_collected ?? 0;
+  const totalBalance   = previewData ? billings.reduce((s, b) => s + b.balance_due, 0) : financeState.data?.summary.total_balance ?? 0;
+  const openCount      = previewData ? billings.filter(b => b.balance_due > 0).length : financeState.data?.summary.open_invoice_count ?? 0;
 
   // Folio rows (reservation groups that have billing activity)
   const invoicedRoomIds = new Set(billings.map(b => b.reservation_room_id));
@@ -223,39 +275,64 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
 
   // ── Open a folio for a reservation group ─────────────────────────────
   async function openFolio(groupId: string, forceRefresh = false) {
+    if (selectedFolioGroupId === groupId && !forceRefresh) {
+      closeFolio();
+      return;
+    }
+
     const cachedFolio = folioCache[groupId] ?? null;
     const requestId = folioRequestIdRef.current + 1;
     folioRequestIdRef.current = requestId;
-    setSelectedFolioGroupId(groupId);
     setFolioError(null);
     setFolioLoading(!cachedFolio || forceRefresh);
-    setSelectedFolio(cachedFolio);
+    setFolioLoadingGroupId(!cachedFolio || forceRefresh ? groupId : null);
+
+    if (cachedFolio) {
+      setSelectedFolioGroupId(groupId);
+      setSelectedFolio(cachedFolio);
+    } else if (forceRefresh) {
+      setSelectedFolioGroupId(groupId);
+      setSelectedFolio(folioCache[groupId] ?? (selectedFolioGroupId === groupId ? selectedFolio : null));
+    } else {
+      setFolioError(null);
+    }
 
     if (cachedFolio && !forceRefresh) {
       setGroupPayForm(form => ({ ...form, amount: cachedFolio.balance_due > 0 ? cachedFolio.balance_due.toFixed(2) : '' }));
       setFolioLoading(false);
+      setFolioLoadingGroupId(null);
       return;
     }
 
     if (isPreviewId(groupId)) {
       const folio = createPreviewData().folios.get(groupId) ?? null;
       if (folioRequestIdRef.current !== requestId) return;
+      setSelectedFolioGroupId(groupId);
       setSelectedFolio(folio);
       if (folio) setFolioCache(cache => ({ ...cache, [groupId]: folio }));
       setGroupPayForm(form => ({ ...form, amount: folio && folio.balance_due > 0 ? folio.balance_due.toFixed(2) : '' }));
       setFolioLoading(false);
+      setFolioLoadingGroupId(null);
       return;
     }
     try {
       const res = await api.get<ReservationGroupFolio>(`/billings/reservation-groups/${groupId}/folio`);
       if (folioRequestIdRef.current !== requestId) return;
+      setSelectedFolioGroupId(groupId);
       setSelectedFolio(res.data);
       setFolioCache(cache => ({ ...cache, [groupId]: res.data }));
       setGroupPayForm(f => ({ ...f, amount: res.data.balance_due > 0 ? res.data.balance_due.toFixed(2) : '' }));
     } catch (err) {
-      if (folioRequestIdRef.current === requestId) setFolioError(getApiErrorMessage(err));
+      if (folioRequestIdRef.current === requestId) {
+        setSelectedFolioGroupId(groupId);
+        setSelectedFolio(null);
+        setFolioError(getApiErrorMessage(err));
+      }
     } finally {
-      if (folioRequestIdRef.current === requestId) setFolioLoading(false);
+      if (folioRequestIdRef.current === requestId) {
+        setFolioLoading(false);
+        setFolioLoadingGroupId(null);
+      }
     }
   }
 
@@ -264,6 +341,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
     setSelectedFolioGroupId(null);
     setSelectedFolio(null);
     setFolioLoading(false);
+    setFolioLoadingGroupId(null);
     setFolioError(null);
     setLastGroupCollection(null);
   }
@@ -300,15 +378,16 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
     finally { setCollectingGroup(false); }
   }
 
-  const loading = !previewData && (billingsState.loading || reservationGroupsState.loading || paymentsState.loading);
-  const loadError = billingsState.error ?? reservationGroupsState.error ?? paymentsState.error;
+  const loading = !previewData && financeState.loading;
+  const loadError = financeState.error;
 
   useEffect(() => {
     if (folioPage !== clampedFolioPage) setFolioPage(clampedFolioPage);
   }, [clampedFolioPage, folioPage]);
 
   return (
-    <div className="-mx-5 lg:-mx-8 -my-6 lg:-my-8 flex flex-col min-h-0">
+    <div className="relative -mx-5 lg:-mx-8 -my-6 lg:-my-8 flex flex-col min-h-0">
+      <DelayedSpinnerOverlay loading={loading} />
 
       {/* Page header */}
       <div className="px-5 lg:px-8 pt-6 lg:pt-8 pb-4 flex items-center justify-between gap-4 flex-wrap">
@@ -330,13 +409,16 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
           { label: 'Collected',     value: formatCurrency(totalCollected),  sub: 'Net of refunds', color: 'text-emerald-600' },
           { label: 'Balance due',   value: formatCurrency(totalBalance),    sub: totalBalance > 0 ? 'Outstanding' : 'Clear', color: totalBalance > 0 ? 'text-rose-600' : 'text-slate-500' },
           { label: 'Open invoices', value: String(openCount),               sub: openCount > 0 ? 'Needs follow-up' : 'All settled', color: openCount > 0 ? 'text-amber-600' : 'text-slate-500' },
-          { label: 'Transactions',  value: String(allPayments.length),      sub: 'Payment records', color: 'text-sky-700' },
+          { label: 'Transactions',  value: String(transactionCount),         sub: 'Payment records', color: 'text-sky-700' },
         ].map((s) => (
-          <div key={s.label} className="bg-white rounded-xl border border-black/[0.06] px-4 py-3 hover:shadow-sm transition-shadow">
-            <p className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{s.label}</p>
-            <p className={`text-[1.5rem] font-bold tracking-tight leading-none tabular-nums ${s.color}`}>{s.value}</p>
-            <p className="text-[11px] text-slate-400 mt-1.5 leading-tight">{s.sub}</p>
-          </div>
+          <StatCard
+            key={s.label}
+            label={s.label}
+            value={s.value}
+            sub={s.sub}
+            className="hover:shadow-sm transition-shadow"
+            valueClassName={`text-[1.5rem] tabular-nums ${s.color}`}
+          />
         ))}
       </div>
       {uninvoiced.length > 0 && (
@@ -347,7 +429,6 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
         </div>
       )}
 
-      {loading && <div className="px-5 lg:px-8 pt-4"><LoadingMsg>Loading payment data…</LoadingMsg></div>}
       {loadError && <div className="px-5 lg:px-8 pt-4"><ErrorMsg>{loadError}</ErrorMsg></div>}
 
       {/* ── Two-col: invoice list + detail ── */}
@@ -478,7 +559,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2">
                                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-500">Tax</span>
-                                <span className="text-[12.5px] text-slate-500">Tax</span>
+                                <span className="text-[12.5px] text-slate-500">Hotel tax</span>
                               </div>
                             </td>
                             <td className="px-4 py-3 text-right text-[12.5px] text-slate-600">{formatCurrency(selectedBilling.tax)}</td>
@@ -616,7 +697,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                   </thead>
                   <tbody>
                     {paginatedFolioRows.map(f => (
-                      <tr key={f.id} className={`border-b border-slate-50 last:border-0 hover:bg-slate-50/60 transition-colors ${selectedFolioGroupId === f.id ? 'bg-indigo-50/30' : ''}`}>
+                      <tr key={f.id} className={`border-b last:border-0 transition-colors ${selectedFolioGroupId === f.id ? 'border-emerald-100 bg-emerald-50/40' : 'border-slate-50 hover:bg-slate-50/60'}`}>
                         <td className="px-5 py-3 text-[11px] font-mono text-slate-500">{f.external_reservation_id}</td>
                         <td className="px-5 py-3 text-[12.5px] font-semibold text-slate-900">{formatGuestName(f.guest_name)}</td>
                         <td className="px-5 py-3 text-[12px] text-slate-600">{f.property_name}</td>
@@ -625,9 +706,9 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                         <td className={`px-5 py-3 text-[12.5px] font-bold ${f.balance_due > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{formatCurrency(f.balance_due)}</td>
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-2">
-                            <button type="button" onClick={() => void openFolio(f.id, selectedFolioGroupId === f.id)}
-                              className={`h-7 px-3 rounded-lg text-[11px] font-semibold border transition-colors ${selectedFolioGroupId === f.id ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'}`}>
-                              {folioLoading && selectedFolioGroupId === f.id && !selectedFolio ? 'Loading...' : selectedFolioGroupId === f.id ? 'Refresh' : 'Review folio'}
+                            <button type="button" onClick={() => void openFolio(f.id)}
+                              className={`h-7 px-3 rounded-lg text-[11px] font-semibold border transition-colors ${selectedFolioGroupId === f.id ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50'}`}>
+                              {folioLoadingGroupId === f.id ? 'Loading...' : 'Review folio'}
                             </button>
                             <button type="button"
                               disabled={generatingFolioId === f.id}
@@ -673,10 +754,11 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
 
           {/* ── Expanded folio detail ── */}
           {selectedFolioGroupId && (
-            <div className="bg-white border-2 border-indigo-100 rounded-2xl overflow-hidden">
+            <div className="relative bg-white border border-black/[0.06] rounded-2xl overflow-hidden">
+              <DelayedSpinnerOverlay loading={folioLoading && folioLoadingGroupId === selectedFolioGroupId} />
               <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500 mb-0.5">Folio detail</p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Folio detail</p>
                   <p className="text-[14px] font-bold text-slate-900">{selectedFolio?.external_reservation_id ?? 'Loading…'}</p>
                 </div>
                 <button type="button" onClick={closeFolio}
@@ -684,7 +766,6 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                   Close folio
                 </button>
               </div>
-              {folioLoading && <div className="px-6 py-4"><LoadingMsg>{selectedFolio ? 'Refreshing folio…' : 'Loading folio…'}</LoadingMsg></div>}
               {folioError  && <div className="px-6 py-4"><ErrorMsg>{folioError}</ErrorMsg></div>}
               {selectedFolio && (
                 <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-5 p-6">

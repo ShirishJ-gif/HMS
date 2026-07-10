@@ -9,16 +9,19 @@ import { BackgroundJobModule } from './modules/background-job/background-job.mod
 import { BookingModule } from './modules/booking/booking.module';
 import { ChannelModule } from './modules/channel/channel.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { FinanceModule } from './modules/finance/finance.module';
 import { GuestModule } from './modules/guest/guest.module';
 import { HealthModule } from './modules/health/health.module';
 import { HousekeepingModule } from './modules/housekeeping/housekeeping.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { NotificationModule } from './modules/notification/notification.module';
+import { OperationsBoardModule } from './modules/operations-board/operations-board.module';
 import { PaymentModule } from './modules/payment/payment.module';
 import { PlatformAdminModule } from './modules/platform-admin/platform-admin.module';
 import { PricingModule } from './modules/pricing/pricing.module';
 import { PropertyModule } from './modules/property/property.module';
+import { ReportsModule } from './modules/reports/reports.module';
 import { RoomModule } from './modules/room/room.module';
 import { WebhookModule } from './modules/webhook/webhook.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -36,6 +39,7 @@ import { PrismaModule } from './prisma/prisma.module';
     ChannelModule,
     BillingModule,
     DashboardModule,
+    FinanceModule,
     InventoryModule,
     PropertyModule,
     AuthModule,
@@ -43,9 +47,11 @@ import { PrismaModule } from './prisma/prisma.module';
     AvailabilityModule,
     HousekeepingModule,
     MetricsModule,
+    OperationsBoardModule,
     PaymentModule,
     PlatformAdminModule,
     PricingModule,
+    ReportsModule,
     WebhookModule,
   ],
   providers: [IdempotencyService],

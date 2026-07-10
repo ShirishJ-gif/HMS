@@ -1,10 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
-import { fetchAllPages } from '../api/pagination';
 import { HousekeepingPriority, HousekeepingStatus, HousekeepingTask, Property, Room, RoomCategory } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
+import { DelayedSpinnerOverlay } from '../components/Spinner';
 import { useAsync } from '../hooks/useAsync';
-import { ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
+import { ErrorMsg, FloatingSuccessToast, SearchInput, StatCard } from './ui';
 import { createPreviewData, isPreviewId } from './previewData';
 
 // ── Real statuses / priorities ─────────────────────────────────────────────
@@ -76,13 +76,19 @@ const defaultForm = {
   notes:       '',
 };
 
+type HousekeepingBoard = {
+  categories: RoomCategory[];
+  properties: Property[];
+  rooms: Room[];
+  tasks: HousekeepingTask[];
+};
+
 function getLocalDate() {
   const now = new Date();
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
 export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEnabled?: boolean }) {
-  const [reloadKey,    setReloadKey]    = useState(0);
   const [showModal,    setShowModal]    = useState(false);
   const [form,         setForm]         = useState(defaultForm);
   const [submitting,   setSubmitting]   = useState(false);
@@ -95,21 +101,23 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
   const [categoryFilter, setCategoryFilter] = useState('All categories');
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('All priority');
   const [dueTodayOnly, setDueTodayOnly] = useState(false);
+  const [createdTasks, setCreatedTasks] = useState<HousekeepingTask[]>([]);
 
-  const tasksState      = useAsync(async () => fetchAllPages<HousekeepingTask>('/housekeeping'), [reloadKey]);
-  const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), []);
-  const roomsState      = useAsync(async () => fetchAllPages<Room>('/rooms'), []);
-  const categoriesState = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), []);
+  const boardState = useAsync(async () => (await api.get<HousekeepingBoard>('/housekeeping/board')).data, []);
 
   useEffect(() => {
     setTaskOverrides({});
-  }, [tasksState.data]);
+    setCreatedTasks([]);
+  }, [boardState.data]);
 
   const previewData = previewDataEnabled ? createPreviewData() : null;
-  const tasks      = (previewData?.housekeeping ?? tasksState.data ?? []).map(task => ({ ...task, ...taskOverrides[task.id] }));
-  const properties = previewData?.properties ?? propertiesState.data ?? [];
-  const rooms      = previewData?.rooms ?? roomsState.data ?? [];
-  const categories = previewData?.categories ?? categoriesState.data ?? [];
+  const boardData = previewData
+    ? { tasks: previewData.housekeeping, properties: previewData.properties, rooms: previewData.rooms, categories: previewData.categories }
+    : boardState.data;
+  const tasks      = ([...(boardData?.tasks ?? []), ...createdTasks]).map(task => ({ ...task, ...taskOverrides[task.id] }));
+  const properties = boardData?.properties ?? [];
+  const rooms      = boardData?.rooms ?? [];
+  const categories = boardData?.categories ?? [];
 
   const today        = getLocalDate();
   const categoryOptions = useMemo(() => {
@@ -162,7 +170,7 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
     if (!form.property_id || !form.room_id) return;
     setErrorMsg(null); setSubmitting(true);
     try {
-      await api.post('/housekeeping', {
+      const response = await api.post<HousekeepingTask>('/housekeeping', {
         property_id: form.property_id,
         room_id:     form.room_id,
         status:      form.status,
@@ -172,7 +180,7 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
       });
       setForm(defaultForm);
       setShowModal(false);
-      setReloadKey(v => v + 1);
+      setCreatedTasks(current => [response.data, ...current.filter(task => task.id !== response.data.id)]);
       flash('Task created and added to the board.');
     } catch (err) { setErrorMsg(getApiErrorMessage(err)); }
     finally { setSubmitting(false); }
@@ -193,8 +201,11 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
       },
     }));
     try {
-      await api.put(`/housekeeping/${id}`, { status });
-      setReloadKey(v => v + 1);
+      const response = await api.put<HousekeepingTask>(`/housekeeping/${id}`, { status });
+      setTaskOverrides(current => ({
+        ...current,
+        [id]: response.data,
+      }));
     } catch (err) {
       setTaskOverrides(current => {
         const next = { ...current };
@@ -207,16 +218,14 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
   }
 
   const loading  =
-    (!previewData && tasksState.loading && !tasksState.data) ||
-    (propertiesState.loading && !propertiesState.data) ||
-    (roomsState.loading && !roomsState.data) ||
-    (categoriesState.loading && !categoriesState.data);
-  const loadErr  = tasksState.error ?? propertiesState.error ?? roomsState.error ?? categoriesState.error;
+    !previewData && boardState.loading && !boardState.data;
+  const loadErr  = boardState.error;
 
   const filteredRooms = rooms.filter(r => !form.property_id || r.property_id === form.property_id);
 
   return (
-    <div className="-mx-5 lg:-mx-8 -my-6 lg:-my-8 flex flex-col min-h-0">
+    <div className="relative -mx-5 lg:-mx-8 -my-6 lg:-my-8 flex flex-col min-h-0">
+      <DelayedSpinnerOverlay loading={loading} />
 
       {/* ── Page header ── */}
       <div className="px-5 lg:px-8 pt-6 lg:pt-8 pb-4 flex items-center justify-between gap-4 flex-wrap">
@@ -234,11 +243,13 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
       {/* ── Filters ── */}
       <div className="px-5 lg:px-8 pb-4">
         <div className="flex w-full flex-wrap items-center gap-2">
-          <input
-            className="h-10 w-full max-w-[320px] rounded-lg border border-slate-200 bg-white px-3 text-[13px] text-slate-800 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-400/20"
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search room, category, reservation, note"
+          <SearchInput
             value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Search room, category, reservation, note"
+            className="relative w-full max-w-[380px]"
+            iconClassName="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none"
+            inputClassName="h-10 w-full rounded-lg bg-white border border-black/[0.07] pl-9 pr-3 text-[12px] text-slate-800 placeholder-slate-400 outline-none"
           />
           <div className="w-[190px] max-w-full">
             <CustomSelect
@@ -259,12 +270,9 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
           >
             Due today
           </button>
-          <span className="ml-auto text-[11px] font-semibold text-slate-400">
-            Showing {filteredTasks.length}/{tasks.length}
-          </span>
           {(searchQuery || categoryFilter !== 'All categories' || priorityFilter !== 'All priority' || dueTodayOnly) && (
             <button
-              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-bold text-slate-500 transition hover:bg-slate-50"
+              className="ml-auto h-10 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-bold text-slate-500 transition hover:bg-slate-50"
               onClick={() => { setSearchQuery(''); setCategoryFilter('All categories'); setPriorityFilter('All priority'); setDueTodayOnly(false); }}
               type="button"
             >
@@ -283,11 +291,14 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
           { label: 'Overdue',        value: String(overdueCount),  sub: overdueCount > 0 ? 'Past due date' : 'On schedule', color: overdueCount > 0 ? 'text-rose-600' : 'text-slate-500' },
           { label: 'Out of service', value: String(oosTasks.length), sub: 'Unavailable rooms', color: oosTasks.length > 0 ? 'text-slate-700' : 'text-slate-400' },
         ].map((s) => (
-          <div key={s.label} className="bg-white rounded-xl border border-black/[0.06] px-4 py-3 hover:shadow-sm transition-shadow">
-            <p className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{s.label}</p>
-            <p className={`text-[1.5rem] font-bold tracking-tight leading-none tabular-nums ${s.color}`}>{s.value}</p>
-            <p className="text-[11px] text-slate-400 mt-1.5 leading-tight">{s.sub}</p>
-          </div>
+          <StatCard
+            key={s.label}
+            label={s.label}
+            value={s.value}
+            sub={s.sub}
+            className="hover:shadow-sm transition-shadow"
+            valueClassName={`text-[1.5rem] tabular-nums ${s.color}`}
+          />
         ))}
       </div>
 
@@ -305,12 +316,11 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
       {/* Messages */}
       <FloatingSuccessToast message={toastMessage} onClose={() => setToastMessage(null)} />
       {errorMsg   && <div className="mx-5 lg:mx-8 mt-3"><ErrorMsg>{errorMsg}</ErrorMsg></div>}
-      {loading    && <div className="mx-5 lg:mx-8 mt-3"><LoadingMsg>Loading housekeeping tasks…</LoadingMsg></div>}
       {loadErr    && <div className="mx-5 lg:mx-8 mt-3"><ErrorMsg>{loadErr}</ErrorMsg></div>}
 
       {/* ── Kanban board ── */}
       <div className="flex-1 min-h-0 px-5 lg:px-8 py-5 overflow-hidden">
-        <div className="flex gap-3 h-full overflow-x-auto pb-2" style={{ minHeight: '520px' }}>
+        <div className="grid grid-cols-1 gap-3 h-full pb-2 sm:grid-cols-2 xl:grid-cols-5" style={{ minHeight: '520px' }}>
 
           {/* Pipeline columns */}
           {COLS.map(col => {
@@ -319,7 +329,7 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
               : activeTasks.filter(t => t.status === col.status);
             const scrollColumn = colTasks.length > 6;
             return (
-              <div key={col.status} className="flex flex-col flex-1 min-w-[220px] max-w-[300px]">
+              <div key={col.status} className="flex min-w-0 flex-col">
                 {/* Column header */}
                 <div className={`${col.headerBg} rounded-t-2xl px-4 py-3 flex items-center justify-between flex-shrink-0`}>
                   <p className="text-[12px] font-bold text-white leading-tight">{col.label}</p>
@@ -341,7 +351,7 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
           })}
 
           {/* Out-of-service collapsed column */}
-          <div className="flex flex-col flex-1 min-w-[220px] max-w-[300px]">
+          <div className="flex min-w-0 flex-col">
             <button type="button" onClick={() => setShowOos(v => !v)}
               className="bg-slate-500 rounded-t-2xl px-4 py-3 flex items-center justify-between hover:bg-slate-600 transition-colors flex-shrink-0">
               <p className="text-[12px] font-bold text-white">Out of Service</p>
@@ -405,7 +415,7 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
                         {p.name}
                       </button>
                     ))}
-                    {properties.length === 0 && propertiesState.loading && (
+                    {properties.length === 0 && boardState.loading && (
                       <p className="text-[11px] text-slate-400">Loading properties…</p>
                     )}
                   </div>

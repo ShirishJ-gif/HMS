@@ -24,6 +24,11 @@ export class RoomController {
     return this.roomService.findAll(query, user);
   }
 
+  @Get('workspace')
+  getWorkspace(@CurrentUser() user: AuthenticatedUser) {
+    return this.roomService.getWorkspace(user);
+  }
+
   @Put(':id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   update(

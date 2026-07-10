@@ -1,5 +1,6 @@
 import { ArrowLeft } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { SearchInput } from '../ui';
 import { DeleteButton, IntegrationStatusValue, Metric, Row, StatusDonutChart, StatusPill, formatDate, formatLabel, formatLatency, propertyLabel, scrollPlatformContentToTop } from './shared';
 import type { PlatformProperty, PlatformPropertyDetail, PlatformUser } from './types';
 
@@ -134,11 +135,12 @@ export function Properties({
             <h3 className="text-[14px] font-bold text-slate-900">All properties</h3>
             <p className="mt-1 text-[12px] text-slate-500">Select a property to open its users, channels, reservations, and API activity.</p>
           </div>
-          <input
+          <SearchInput
             value={propertySearch}
-            onChange={(event) => setPropertySearch(event.target.value)}
+            onChange={setPropertySearch}
             placeholder="Search name or code"
-            className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-slate-400 lg:w-64"
+            icon={false}
+            inputClassName="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-slate-400 lg:w-64"
           />
         </div>
         <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">

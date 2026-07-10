@@ -20,6 +20,7 @@ describe('DashboardService', () => {
     },
     billing: {
       aggregate: jest.fn(),
+      findMany: jest.fn(),
     },
   };
 
@@ -60,6 +61,30 @@ describe('DashboardService', () => {
         total: new Prisma.Decimal('4500.00'),
       },
     });
+    prisma.billing.findMany.mockResolvedValueOnce([
+      {
+        total: new Prisma.Decimal('10000.00'),
+        reservationRoom: {
+          reservationGroup: {
+            source: 'OTA',
+            channelConnection: {
+              provider: 'ZODOMUS',
+              name: 'Booking.com OTA',
+              credentials: { ota_name: 'Booking.com' },
+            },
+          },
+        },
+      },
+      {
+        total: new Prisma.Decimal('2500.00'),
+        reservationRoom: {
+          reservationGroup: {
+            source: 'DIRECT',
+            channelConnection: null,
+          },
+        },
+      },
+    ]);
 
     await expect(service.getSummary(new Date('2026-04-28T08:00:00.000Z'))).resolves.toEqual({
       date: '2026-04-28',
@@ -73,10 +98,15 @@ describe('DashboardService', () => {
       active_reservation_groups: 4,
       open_housekeeping_tasks: 6,
       pending_balance_total: 4500,
+      revenue_by_ota: [
+        { label: 'Booking', amount: 10000 },
+        { label: 'Direct', amount: 2500 },
+      ],
     });
 
     expect(prisma.room.count).toHaveBeenNthCalledWith(1, {
       where: {
+        propertyId: undefined,
         status: RoomStatus.OCCUPIED,
         reservationRooms: {
           some: {
@@ -84,7 +114,7 @@ describe('DashboardService', () => {
             reservationGroup: {
               OR: [
                 { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
-                { channelConnectionId: null, source: 'DIRECT' },
+                { channelConnectionId: null, source: { in: ['DIRECT', 'WALK_IN'] } },
               ],
             },
           },
@@ -107,6 +137,7 @@ describe('DashboardService', () => {
         total: null,
       },
     });
+    prisma.billing.findMany.mockResolvedValueOnce([]);
 
     await expect(service.getSummary(new Date('2026-04-28T08:00:00.000Z'))).resolves.toMatchObject({
       reservation_groups_today: 0,
@@ -115,6 +146,7 @@ describe('DashboardService', () => {
       total_rooms: 0,
       revenue_today: 0,
       open_housekeeping_tasks: 0,
+      revenue_by_ota: [],
     });
   });
 });

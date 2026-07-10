@@ -25,6 +25,7 @@ export class DashboardService {
       activeReservationGroups,
       openHousekeepingTasks,
       pendingBalance,
+      revenueByOtaBillings,
     ] = await Promise.all([
       this.prisma.reservationGroup.count({
         where: {
@@ -105,6 +106,32 @@ export class DashboardService {
           },
         },
       }),
+      this.prisma.billing.findMany({
+        where: {
+          reservationRoom: {
+            ...reservationRoomVisibilityWhere,
+            ...(scopedPropertyId ? { propertyId: scopedPropertyId } : {}),
+          },
+        },
+        include: {
+          reservationRoom: {
+            select: {
+              reservationGroup: {
+                select: {
+                  source: true,
+                  channelConnection: {
+                    select: {
+                      provider: true,
+                      name: true,
+                      credentials: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
     ]);
 
     const occupancyRate = totalRooms === 0 ? 0 : (occupiedRooms / totalRooms) * 100;
@@ -121,7 +148,59 @@ export class DashboardService {
       active_reservation_groups: activeReservationGroups,
       open_housekeeping_tasks: openHousekeepingTasks,
       pending_balance_total: pendingBalance._sum.total?.toNumber() ?? 0,
+      revenue_by_ota: this.revenueByOta(revenueByOtaBillings),
     };
+  }
+
+  private revenueByOta(
+    billings: Array<{
+      total: Prisma.Decimal;
+      reservationRoom: {
+        reservationGroup: {
+          source: string | null;
+          channelConnection: { provider: string; name: string; credentials: Prisma.JsonValue | null } | null;
+        };
+      } | null;
+    }>,
+  ) {
+    const rows = new Map<string, number>();
+    for (const billing of billings) {
+      const label = this.otaRevenueLabel(billing.reservationRoom?.reservationGroup);
+      rows.set(label, (rows.get(label) ?? 0) + billing.total.toNumber());
+    }
+
+    return Array.from(rows.entries())
+      .map(([label, amount]) => ({ label, amount }))
+      .sort((a, b) => b.amount - a.amount);
+  }
+
+  private otaRevenueLabel(group?: {
+    source: string | null;
+    channelConnection: { provider: string; name: string; credentials: Prisma.JsonValue | null } | null;
+  } | null) {
+    const connection = group?.channelConnection;
+    if (!connection) return this.formatSourceLabel(group?.source ?? 'Direct');
+    const credentials = this.asRecord(connection.credentials);
+    const otaName = typeof credentials.ota_name === 'string' && credentials.ota_name.trim().length > 0
+      ? credentials.ota_name.trim()
+      : null;
+    return this.displayOtaLabel(otaName ?? connection.name ?? this.formatSourceLabel(connection.provider));
+  }
+
+  private displayOtaLabel(value: string) {
+    return value.trim().toLowerCase() === 'booking.com' ? 'Booking' : value;
+  }
+
+  private formatSourceLabel(value: string) {
+    return value
+      .split(/[_\s-]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(' ') || 'Direct';
+  }
+
+  private asRecord(value: Prisma.JsonValue | null | undefined): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   }
 
   private getAsiaKolkataDayWindow(referenceDate: Date) {

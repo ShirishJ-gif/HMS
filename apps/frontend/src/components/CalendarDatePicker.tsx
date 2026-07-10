@@ -101,7 +101,7 @@ function CalendarDatePicker({
       <button
         className={buttonClassName ?? (compact
           ? 'flex h-9 w-full min-w-0 items-center justify-between gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-left text-[11.5px] font-semibold text-slate-800 transition hover:border-slate-300 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/15'
-          : 'flex min-h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-left text-sm font-semibold text-slate-800 transition hover:border-emerald-300 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/15')}
+          : 'flex h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-left text-sm font-semibold text-slate-800 transition-colors hover:border-slate-300 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/15')}
         onClick={() => setOpen(!open)}
         type="button"
       >

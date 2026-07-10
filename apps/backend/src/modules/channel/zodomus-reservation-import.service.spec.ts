@@ -86,6 +86,44 @@ describe('ZodomusReservationImportService helpers', () => {
     expect(room.children).toBe(2);
   });
 
+  it('extracts and masks guest ID proof without storing full provider identity data', () => {
+    const service = new ZodomusReservationImportService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const reservation = (service as any).normalizeReservationGroup({
+      reservations: {
+        reservation: {
+          reservation_id: 'res-1',
+          status: 'booked',
+          currencyCode: 'INR',
+        },
+        customer: {
+          name: 'Priya Shah',
+          phone: '+919876543210',
+          passport: {
+            number: 'P123456785',
+          },
+        },
+        rooms: [
+          {
+            id: 'room-1',
+            roomReservationId: 'room-res-1',
+            arrivalDate: '2026-07-12',
+            departureDate: '2026-07-13',
+          },
+        ],
+      },
+    });
+
+    expect((service as any).maskIdentityProof(reservation.guest_id_proof)).toBe('****785');
+    expect(JSON.stringify(reservation.raw_payload)).not.toContain('P123456785');
+  });
+
   it('rejects provider cancellation for checked-in imported stays', () => {
     const service = new ZodomusReservationImportService(
       {} as never,

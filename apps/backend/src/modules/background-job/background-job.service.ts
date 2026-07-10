@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -646,6 +647,12 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     payload: Prisma.JsonValue;
   }) {
     const payload = this.readObject(job.payload);
+    const channelAction = this.readString(payload.channel_action);
+    if (channelAction) {
+      await this.processQueuedChannelAction(job.id, payload, channelAction);
+      return;
+    }
+
     const syncLogId = this.readString(payload.channel_sync_log_id);
     if (!syncLogId) {
       throw new Error('Channel sync job is missing channel_sync_log_id');
@@ -738,6 +745,134 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.metricsService.recordChannelSyncCompleted(log.syncType, connection.provider, updated.status);
+  }
+
+  private async processQueuedChannelAction(
+    jobId: string,
+    payload: Record<string, Prisma.JsonValue>,
+    channelAction: string,
+  ) {
+    const connectionId = this.readString(payload.channel_connection_id);
+    if (!connectionId) {
+      throw new Error('Channel action job is missing channel_connection_id');
+    }
+
+    if (channelAction === 'PROPERTY_ACTIVATION') {
+      await this.processQueuedPropertyActivation(jobId, connectionId, payload);
+      return;
+    }
+
+    if (channelAction === 'ROOMS_ACTIVATION') {
+      await this.processQueuedRoomsActivation(jobId, connectionId);
+      return;
+    }
+
+    throw new Error(`Unsupported channel action: ${channelAction}`);
+  }
+
+  private async processQueuedPropertyActivation(
+    jobId: string,
+    connectionId: string,
+    payload: Record<string, Prisma.JsonValue>,
+  ) {
+    const connection = await this.prisma.channelConnection.findUnique({
+      where: { id: connectionId },
+    });
+
+    if (!connection) {
+      throw new NotFoundException('Channel connection not found for background job');
+    }
+
+    const priceModelId = this.readNumber(payload.price_model_id, 0);
+    if (priceModelId <= 0) {
+      throw new BadRequestException('Property activation job is missing price_model_id.');
+    }
+
+    const token = this.readString(payload.token);
+    const response = await this.channelProviderService.activateProperty({
+      provider: connection.provider,
+      external_hotel_id: connection.externalHotelId,
+      credentials: connection.credentials,
+      price_model_id: priceModelId,
+      ...(token ? { token } : {}),
+    });
+
+    await this.auditLogService.record({
+      action: AuditAction.UPDATE,
+      entityType: 'channel_connection',
+      entityId: connection.id,
+      propertyId: connection.propertyId,
+      summary: `Activated ${connection.provider} property connection`,
+      metadata: {
+        price_model_id: priceModelId,
+        background_job_id: jobId,
+      },
+    });
+
+    if (connection.provider === ChannelProvider.ZODOMUS) {
+      await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
+        setup_status: {
+          activated: true,
+          disconnected: false,
+          activated_at: new Date().toISOString(),
+          price_model_id: priceModelId,
+          last_activation_message: this.readProviderReturnMessage(response),
+          last_activation_code: this.readProviderReturnCode(response),
+          ready: false,
+          ready_at: null,
+        },
+      });
+    }
+  }
+
+  private async processQueuedRoomsActivation(jobId: string, connectionId: string) {
+    const connection = await this.prisma.channelConnection.findUnique({
+      where: { id: connectionId },
+      include: {
+        roomMappings: { include: { roomCategory: true } },
+        rateMappings: true,
+      },
+    });
+
+    if (!connection) {
+      throw new NotFoundException('Channel connection not found for background job');
+    }
+
+    if (connection.provider !== ChannelProvider.ZODOMUS) {
+      throw new BadRequestException('Room activation is currently supported only for Zodomus connections.');
+    }
+
+    const rooms = await this.buildZodomusRoomsActivationPayload(connection);
+    const activation = await this.channelProviderService.activateRooms({
+      provider: connection.provider,
+      external_hotel_id: connection.externalHotelId,
+      credentials: connection.credentials,
+      rooms,
+    });
+
+    await this.auditLogService.record({
+      action: AuditAction.UPDATE,
+      entityType: 'channel_connection',
+      entityId: connection.id,
+      propertyId: connection.propertyId,
+      summary: `Activated ${connection.provider} room and rate mappings`,
+      metadata: {
+        activated_room_count: rooms.length,
+        background_job_id: jobId,
+      },
+    });
+
+    await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
+      setup_status: {
+        rooms_activated: true,
+        rooms_activated_at: new Date().toISOString(),
+        activated_room_count: rooms.length,
+        last_rooms_activation_message: this.readProviderReturnMessage(activation),
+        last_rooms_activation_code: this.readProviderReturnCode(activation),
+        ready: false,
+        ready_at: null,
+      },
+    });
   }
 
   private async skipCompletedTestReservationFallback(
@@ -1176,8 +1311,176 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
       : {};
   }
 
+  private readPlainRecord(value: Prisma.JsonValue | null) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  }
+
   private readStringArray(value: Prisma.JsonValue | undefined) {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  }
+
+  private async updateZodomusConnectionConfig(
+    connectionId: string,
+    existingCredentials: Prisma.JsonValue | null,
+    patch: Record<string, unknown>,
+  ) {
+    const existing = this.readPlainRecord(existingCredentials);
+    const setupPatch = this.readPlainPatchRecord(patch.setup_status);
+    const automationPatch = this.readPlainPatchRecord(patch.automation);
+    const nextCredentials = {
+      ...existing,
+      ...patch,
+      ...(Object.keys(setupPatch).length > 0
+        ? {
+            setup_status: {
+              ...this.readPlainPatchRecord(existing.setup_status),
+              ...setupPatch,
+            },
+          }
+        : {}),
+      ...(Object.keys(automationPatch).length > 0
+        ? {
+            automation: {
+              ...this.readPlainPatchRecord(existing.automation),
+              ...automationPatch,
+            },
+          }
+        : {}),
+    };
+
+    await this.prisma.channelConnection.update({
+      where: { id: connectionId },
+      data: {
+        credentials: nextCredentials as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  private readPlainPatchRecord(value: unknown) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  }
+
+  private readProviderReturnMessage(response: unknown) {
+    const wrapper = this.readUnknownRecord(response);
+    const rawResponse = this.readUnknownRecord(wrapper.response);
+    const status = this.readUnknownRecord(rawResponse.status);
+    const returnMessage = status.returnMessage;
+
+    if (typeof returnMessage === 'string') {
+      return returnMessage;
+    }
+
+    if (returnMessage && typeof returnMessage === 'object') {
+      return JSON.stringify(returnMessage);
+    }
+
+    return null;
+  }
+
+  private readProviderReturnCode(response: unknown) {
+    const wrapper = this.readUnknownRecord(response);
+    const rawResponse = this.readUnknownRecord(wrapper.response);
+    const status = this.readUnknownRecord(rawResponse.status);
+    const value = status.returnCode;
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value.toString();
+    }
+
+    return null;
+  }
+
+  private readUnknownRecord(value: unknown) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  }
+
+  private async buildZodomusRoomsActivationPayload(connection: {
+    propertyId: string;
+    roomMappings: Array<{
+      roomCategoryId: string;
+      externalRoomId: string;
+      externalRoomName: string | null;
+      isActivationEnabled: boolean;
+      roomCategory: { code: string; name: string };
+    }>;
+    rateMappings: Array<{
+      externalRoomId: string | null;
+      externalRateId: string;
+      isActivationEnabled: boolean;
+    }>;
+  }) {
+    if (connection.roomMappings.length === 0) {
+      throw new BadRequestException('At least one room mapping is required before Zodomus room activation.');
+    }
+
+    if (connection.rateMappings.length === 0) {
+      throw new BadRequestException('At least one rate mapping is required before Zodomus room activation.');
+    }
+
+    const rateIdsByExternalRoomId = new Map<string, string[]>();
+    for (const mapping of connection.rateMappings.filter((rateMapping) => rateMapping.isActivationEnabled)) {
+      const key = mapping.externalRoomId;
+      if (!key) {
+        continue;
+      }
+
+      const existing = rateIdsByExternalRoomId.get(key) ?? [];
+      if (!existing.includes(mapping.externalRateId)) {
+        existing.push(mapping.externalRateId);
+      }
+      rateIdsByExternalRoomId.set(key, existing);
+    }
+
+    if (rateIdsByExternalRoomId.size === 0) {
+      throw new BadRequestException('Enable at least one mapped rate before Zodomus room activation.');
+    }
+
+    const activeRoomMappings = connection.roomMappings.filter((mapping) => mapping.isActivationEnabled);
+    if (activeRoomMappings.length === 0) {
+      throw new BadRequestException('Enable at least one mapped room before Zodomus room activation.');
+    }
+
+    return Promise.all(
+      activeRoomMappings.map(async (mapping) => {
+        const quantity = await this.prisma.room.count({
+          where: {
+            propertyId: connection.propertyId,
+            roomCategoryId: mapping.roomCategoryId,
+          },
+        });
+
+        if (quantity <= 0) {
+          throw new BadRequestException(
+            `Cannot activate Zodomus room ${mapping.externalRoomId} because room category ${mapping.roomCategory.code} has no physical rooms in HMS.`,
+          );
+        }
+
+        const rates = rateIdsByExternalRoomId.get(mapping.externalRoomId) ?? [];
+        if (rates.length === 0) {
+          throw new BadRequestException(
+            `Cannot activate Zodomus room ${mapping.externalRoomId} because room category ${mapping.roomCategory.code} has no mapped rates.`,
+          );
+        }
+
+        return {
+          roomId: mapping.externalRoomId,
+          roomName: mapping.externalRoomName?.trim() || mapping.roomCategory.name,
+          quantity,
+          status: 1,
+          rates,
+        };
+      }),
+    );
   }
 
   private async markWebhookProcessed(input: {

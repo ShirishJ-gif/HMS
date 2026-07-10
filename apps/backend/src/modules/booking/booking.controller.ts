@@ -1,10 +1,10 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { CheckInReservationRoomDto } from './dto/check-in-reservation-room.dto';
 import { CreateDirectReservationDto } from './dto/create-direct-reservation.dto';
 import { FindReservationFeedQueryDto } from './dto/find-reservation-feed-query.dto';
+import { FindReservationGroupsQueryDto } from './dto/find-reservation-groups-query.dto';
 import { BookingService } from './booking.service';
 
 @Controller()
@@ -17,7 +17,7 @@ export class BookingController {
   }
 
   @Get('bookings/groups')
-  findReservationGroups(@CurrentUser() user: AuthenticatedUser, @Query() query: PaginationQueryDto) {
+  findReservationGroups(@CurrentUser() user: AuthenticatedUser, @Query() query: FindReservationGroupsQueryDto) {
     return this.bookingService.findReservationGroups(query, user);
   }
 

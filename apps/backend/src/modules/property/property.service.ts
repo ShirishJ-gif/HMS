@@ -80,6 +80,70 @@ export class PropertyService {
     return paginatedResponse(properties.map((property) => this.toPropertyResponse(property)), total, page, limit);
   }
 
+  async getSetupWorkspace(user?: AuthenticatedUser) {
+    const scopedPropertyId = propertyIdFilter(user);
+    const propertyWhere: Prisma.PropertyWhereInput = scopedPropertyId ? { id: scopedPropertyId } : {};
+    const childWhere: Prisma.RoomCategoryWhereInput = scopedPropertyId ? { propertyId: scopedPropertyId } : {};
+
+    const [properties, categories, ratePlans, pricingRules, rooms] = await this.prisma.$transaction([
+      this.prisma.property.findMany({
+        where: propertyWhere,
+        include: {
+          images: {
+            orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }],
+          },
+        },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.roomCategory.findMany({
+        where: childWhere,
+        include: {
+          property: true,
+          images: {
+            orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }],
+          },
+        },
+        orderBy: [{ property: { name: 'asc' } }, { name: 'asc' }],
+      }),
+      this.prisma.ratePlan.findMany({
+        where: scopedPropertyId ? { propertyId: scopedPropertyId } : {},
+        include: {
+          property: true,
+          roomCategory: true,
+        },
+        orderBy: [{ property: { name: 'asc' } }, { roomCategory: { name: 'asc' } }, { name: 'asc' }],
+      }),
+      this.prisma.pricingRule.findMany({
+        where: scopedPropertyId ? { propertyId: scopedPropertyId } : {},
+        include: {
+          property: true,
+          ratePlan: {
+            include: {
+              roomCategory: true,
+            },
+          },
+        },
+        orderBy: [{ property: { name: 'asc' } }, { ratePlan: { name: 'asc' } }, { createdAt: 'asc' }],
+      }),
+      this.prisma.room.findMany({
+        where: scopedPropertyId ? { propertyId: scopedPropertyId } : {},
+        include: {
+          property: true,
+          roomCategory: true,
+        },
+        orderBy: [{ property: { name: 'asc' } }, { roomNumber: 'asc' }],
+      }),
+    ]);
+
+    return {
+      properties: properties.map((property) => this.toPropertyResponse(property)),
+      categories: categories.map((category) => this.toRoomCategoryResponse(category)),
+      rate_plans: ratePlans.map((ratePlan) => this.toRatePlanResponse(ratePlan)),
+      pricing_rules: pricingRules.map((rule) => this.toPricingRuleResponse(rule)),
+      rooms: rooms.map((room) => this.toRoomResponse(room)),
+    };
+  }
+
   async updatePropertyStatus(id: string, dto: UpdatePropertyStatusDto) {
     try {
       const updatedCount = await this.prisma.$executeRaw`
@@ -943,6 +1007,30 @@ export class PropertyService {
       room_category: ratePlan.roomCategory,
       created_at: ratePlan.createdAt,
       updated_at: ratePlan.updatedAt,
+    };
+  }
+
+  private toRoomResponse(room: {
+    id: string;
+    propertyId: string;
+    roomCategoryId: string;
+    roomNumber: string;
+    status: string;
+    property: { id: string; name: string; code: string };
+    roomCategory: { id: string; name: string; code: string };
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    return {
+      id: room.id,
+      property_id: room.propertyId,
+      room_category_id: room.roomCategoryId,
+      room_number: room.roomNumber,
+      property: room.property,
+      room_category: room.roomCategory,
+      status: room.status,
+      created_at: room.createdAt,
+      updated_at: room.updatedAt,
     };
   }
 

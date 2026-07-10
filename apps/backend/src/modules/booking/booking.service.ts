@@ -15,7 +15,6 @@ import {
 } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import { BackgroundJobService } from '../background-job/background-job.service';
-import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginatedResponse, paginationParams } from '../../common/pagination/paginated-response';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
@@ -27,6 +26,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CheckInReservationRoomDto } from './dto/check-in-reservation-room.dto';
 import { CreateDirectReservationDto } from './dto/create-direct-reservation.dto';
 import { FindReservationFeedQueryDto } from './dto/find-reservation-feed-query.dto';
+import { FindReservationGroupsQueryDto } from './dto/find-reservation-groups-query.dto';
 
 type ReservationGroupWithRelations = Prisma.ReservationGroupGetPayload<{
   include: {
@@ -267,28 +267,26 @@ export class BookingService {
             });
 
             if (advanceAmount) {
-              const allocation = remainingAdvance && remainingAdvance.gt(0)
-                ? remainingAdvance.lessThan(pricing.totalAmount)
-                  ? remainingAdvance
-                  : pricing.totalAmount
-                : null;
-              const billing = await tx.billing.create({
-                data: {
-                  reservationRoomId: reservationRoom.id,
-                  amount: pricing.totalAmount,
-                  tax: new Prisma.Decimal(0),
-                  total: pricing.totalAmount,
-                  paymentStatus: allocation
-                    ? allocation.gte(pricing.totalAmount)
-                      ? PaymentStatus.PAID
-                      : PaymentStatus.PARTIAL
-                    : PaymentStatus.PENDING,
-                },
-              });
-
+              const allocation =
+                remainingAdvance && remainingAdvance.gt(0)
+                  ? remainingAdvance.lessThan(pricing.totalAmount)
+                    ? remainingAdvance
+                    : pricing.totalAmount
+                  : null;
               if (!allocation) {
                 continue;
               }
+
+              const billing = await tx.billing.create({
+                data: {
+                  reservationRoomId: reservationRoom.id,
+                  amount: allocation,
+                  tax: new Prisma.Decimal(0),
+                  total: allocation,
+                  paymentStatus: PaymentStatus.PAID,
+                },
+              });
+
               const providerResult = await this.paymentProviderService.collect({
                 amount: allocation.toFixed(2),
                 provider: advanceProvider,
@@ -408,12 +406,23 @@ export class BookingService {
     return this.toReservationGroupResponse(reservationGroup);
   }
 
-  async findReservationGroups(query: PaginationQueryDto, user?: AuthenticatedUser) {
+  async findReservationGroups(query: FindReservationGroupsQueryDto, user?: AuthenticatedUser) {
     const { page, limit, skip, take } = paginationParams(query);
     const scopedPropertyId = propertyIdFilter(user);
+    if (query.property_id) {
+      assertCanAccessProperty(user, query.property_id);
+    }
+
+    const effectivePropertyId = query.property_id ?? scopedPropertyId ?? null;
     const search = query.search?.trim();
+    const dateWindow = this.reservationFeedDateWindow(query.date_from, query.date_to);
+    const roomFilters: Prisma.ReservationRoomWhereInput = {
+      ...(query.status ? { status: query.status } : {}),
+      ...this.reservationRoomDateWindowWhere(dateWindow),
+    };
     const where: Prisma.ReservationGroupWhereInput = {
-      ...(scopedPropertyId ? { propertyId: scopedPropertyId } : {}),
+      ...(effectivePropertyId ? { propertyId: effectivePropertyId } : {}),
+      ...(Object.keys(roomFilters).length > 0 ? { rooms: { some: roomFilters } } : {}),
       ...(search
         ? {
             OR: [
@@ -619,6 +628,7 @@ export class BookingService {
       });
 
       await this.recomputeReservationGroupStatus(tx, updated.reservationGroupId);
+      await this.ensureReservationRoomBilling(tx, updated);
 
       return updated;
     });
@@ -685,7 +695,7 @@ export class BookingService {
         },
       });
 
-      await this.ensureCheckoutBilling(tx, updated);
+      await this.ensureReservationRoomBilling(tx, updated);
 
       if (updated.roomId) {
         await this.createCheckoutHousekeepingTask(tx, {
@@ -1196,8 +1206,7 @@ export class BookingService {
             rooms: {
               some: {
                 ...(includeCancelled || status === BookingStatus.CANCELLED ? {} : { status: { not: BookingStatus.CANCELLED } }),
-                ...(dateWindow.toExclusive ? { arrivalDate: { lt: dateWindow.toExclusive } } : {}),
-                ...(dateWindow.from ? { departureDate: { gt: dateWindow.from } } : {}),
+                ...this.reservationRoomDateWindowWhere(dateWindow),
               },
             },
           }
@@ -1237,6 +1246,31 @@ export class BookingService {
         {
           channelConnectionId: null,
           source: { in: ['DIRECT', 'WALK_IN'] },
+        },
+      ],
+    };
+  }
+
+  private reservationRoomDateWindowWhere(dateWindow?: { from?: Date; toExclusive?: Date }): Prisma.ReservationRoomWhereInput {
+    if (!dateWindow?.from && !dateWindow?.toExclusive) return {};
+
+    return {
+      OR: [
+        {
+          ...(dateWindow.toExclusive ? { arrivalDate: { lt: dateWindow.toExclusive } } : {}),
+          ...(dateWindow.from ? { departureDate: { gt: dateWindow.from } } : {}),
+        },
+        {
+          checkedInAt: {
+            ...(dateWindow.from ? { gte: dateWindow.from } : {}),
+            ...(dateWindow.toExclusive ? { lt: dateWindow.toExclusive } : {}),
+          },
+        },
+        {
+          checkedOutAt: {
+            ...(dateWindow.from ? { gte: dateWindow.from } : {}),
+            ...(dateWindow.toExclusive ? { lt: dateWindow.toExclusive } : {}),
+          },
         },
       ],
     };
@@ -1514,7 +1548,7 @@ export class BookingService {
     return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
 
-  private async ensureCheckoutBilling(
+  private async ensureReservationRoomBilling(
     tx: Prisma.TransactionClient,
     reservationRoom: {
       id: string;
@@ -1523,13 +1557,35 @@ export class BookingService {
   ) {
     const existingBilling = await tx.billing.findUnique({
       where: { reservationRoomId: reservationRoom.id },
+      include: {
+        payments: true,
+      },
     });
 
-    if (existingBilling) {
-      return existingBilling;
-    }
-
     const amount = reservationRoom.totalAmount ?? new Prisma.Decimal(0);
+
+    if (existingBilling) {
+      const succeededTotal = existingBilling.payments
+        .filter((payment) => payment.status === PaymentTransactionStatus.SUCCEEDED)
+        .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0));
+      const refundedTotal = existingBilling.payments
+        .filter((payment) => payment.status === PaymentTransactionStatus.REFUNDED)
+        .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0));
+      const netPaid = succeededTotal.sub(refundedTotal);
+
+      return tx.billing.update({
+        where: { id: existingBilling.id },
+        data: {
+          amount,
+          total: amount.add(existingBilling.tax),
+          paymentStatus: netPaid.lte(0)
+            ? PaymentStatus.PENDING
+            : netPaid.gte(amount.add(existingBilling.tax))
+              ? PaymentStatus.PAID
+              : PaymentStatus.PARTIAL,
+        },
+      });
+    }
 
     return tx.billing.create({
       data: {

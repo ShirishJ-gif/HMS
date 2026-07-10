@@ -44,6 +44,55 @@ export class HousekeepingService {
     return paginatedResponse(tasks.map((task) => this.toResponse(task)), total, page, limit);
   }
 
+  async getBoard(user?: AuthenticatedUser) {
+    const scopedPropertyId = propertyIdFilter(user);
+    const propertyWhere: Prisma.PropertyWhereInput = scopedPropertyId ? { id: scopedPropertyId } : {};
+    const childWhere: Prisma.RoomCategoryWhereInput = scopedPropertyId ? { propertyId: scopedPropertyId } : {};
+    const taskWhere: Prisma.HousekeepingTaskWhereInput = scopedPropertyId ? { propertyId: scopedPropertyId } : {};
+
+    const [tasks, properties, rooms, categories] = await this.prisma.$transaction([
+      this.prisma.housekeepingTask.findMany({
+        where: taskWhere,
+        include: this.includeRelations(),
+        orderBy: [{ dueDate: 'asc' }, { createdAt: 'desc' }],
+      }),
+      this.prisma.property.findMany({
+        where: propertyWhere,
+        include: {
+          images: {
+            orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }],
+          },
+        },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.room.findMany({
+        where: scopedPropertyId ? { propertyId: scopedPropertyId } : {},
+        include: {
+          property: { select: { id: true, name: true, code: true } },
+          roomCategory: { select: { id: true, name: true, code: true } },
+        },
+        orderBy: [{ property: { name: 'asc' } }, { roomNumber: 'asc' }],
+      }),
+      this.prisma.roomCategory.findMany({
+        where: childWhere,
+        include: {
+          property: { select: { id: true, name: true, code: true } },
+          images: {
+            orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }],
+          },
+        },
+        orderBy: [{ property: { name: 'asc' } }, { name: 'asc' }],
+      }),
+    ]);
+
+    return {
+      tasks: tasks.map((task) => this.toResponse(task)),
+      properties: properties.map((property) => this.toPropertyResponse(property)),
+      rooms: rooms.map((room) => this.toRoomResponse(room)),
+      categories: categories.map((category) => this.toRoomCategoryResponse(category)),
+    };
+  }
+
   async create(dto: CreateHousekeepingTaskDto, user?: AuthenticatedUser) {
     assertCanAccessProperty(user, dto.property_id);
 
@@ -119,6 +168,120 @@ export class HousekeepingService {
         },
       },
     } satisfies Prisma.HousekeepingTaskInclude;
+  }
+
+  private toPropertyResponse(property: {
+    id: string;
+    name: string;
+    code: string;
+    phone: string | null;
+    email: string | null;
+    address: string;
+    timezone: string;
+    defaultCheckInTime: string;
+    defaultCheckOutTime: string;
+    isActive: boolean;
+    images?: Array<{
+      id: string;
+      url: string;
+      caption: string | null;
+      sortOrder: number;
+      isPrimary: boolean;
+      createdAt: Date;
+    }>;
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    return {
+      id: property.id,
+      name: property.name,
+      code: property.code,
+      phone: property.phone,
+      email: property.email,
+      address: property.address,
+      timezone: property.timezone,
+      default_check_in_time: property.defaultCheckInTime,
+      default_check_out_time: property.defaultCheckOutTime,
+      is_active: property.isActive,
+      images: property.images?.map((image) => this.toImageResponse(image)) ?? [],
+      created_at: property.createdAt,
+      updated_at: property.updatedAt,
+    };
+  }
+
+  private toRoomResponse(room: {
+    id: string;
+    propertyId: string;
+    roomCategoryId: string;
+    roomNumber: string;
+    status: string;
+    property: { id: string; name: string; code: string };
+    roomCategory: { id: string; name: string; code: string };
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    return {
+      id: room.id,
+      property_id: room.propertyId,
+      room_category_id: room.roomCategoryId,
+      room_number: room.roomNumber,
+      property: room.property,
+      room_category: room.roomCategory,
+      status: room.status,
+      created_at: room.createdAt,
+      updated_at: room.updatedAt,
+    };
+  }
+
+  private toRoomCategoryResponse(category: {
+    id: string;
+    propertyId: string;
+    name: string;
+    code: string;
+    description: string | null;
+    maxOccupancy: number;
+    property: { id: string; name: string; code: string };
+    images?: Array<{
+      id: string;
+      url: string;
+      caption: string | null;
+      sortOrder: number;
+      isPrimary: boolean;
+      createdAt: Date;
+    }>;
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    return {
+      id: category.id,
+      property_id: category.propertyId,
+      name: category.name,
+      code: category.code,
+      description: category.description,
+      max_occupancy: category.maxOccupancy,
+      property: category.property,
+      images: category.images?.map((image) => this.toImageResponse(image)) ?? [],
+      created_at: category.createdAt,
+      updated_at: category.updatedAt,
+    };
+  }
+
+  private toImageResponse(image: {
+    id: string;
+    url: string;
+    caption: string | null;
+    sortOrder: number;
+    isPrimary: boolean;
+    createdAt: Date;
+  }) {
+    return {
+      id: image.id,
+      url: image.url,
+      caption: image.caption,
+      sort_order: image.sortOrder,
+      is_primary: image.isPrimary,
+      created_at: image.createdAt,
+    };
   }
 
   private toResponse(task: {

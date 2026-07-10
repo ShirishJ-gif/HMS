@@ -493,6 +493,9 @@ describe('ChannelService Zodomus readiness gate', () => {
         findUnique: jest.fn().mockResolvedValue(input.connection),
         update: jest.fn().mockResolvedValue(input.connection),
       },
+      backgroundJob: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
     };
     const providerService = {
       checkProperty: jest.fn().mockResolvedValue(readyCheckResponse),
@@ -517,19 +520,22 @@ describe('ChannelService Zodomus readiness gate', () => {
     const auditLogService = {
       record: jest.fn().mockResolvedValue(undefined),
     };
+    const backgroundJobService = {
+      enqueue: jest.fn().mockResolvedValue({ id: 'job-1' }),
+    };
     const service = new ChannelService(
       prisma as never,
       providerService as never,
       auditLogService as never,
       {} as never,
-      {} as never,
+      backgroundJobService as never,
       {} as never,
       {} as never,
       {} as never,
       {} as never,
     );
 
-    return { service, prisma, providerService };
+    return { service, prisma, providerService, backgroundJobService };
   }
 
   it('does not mark Zodomus ready when property check passes before rooms are activated', async () => {
@@ -581,7 +587,7 @@ describe('ChannelService Zodomus readiness gate', () => {
         },
       },
     };
-    const { service, prisma, providerService } = createService({ connection });
+    const { service, prisma, providerService, backgroundJobService } = createService({ connection });
     jest
       .spyOn(service as unknown as { buildZodomusRoomsActivationPayload: () => Promise<unknown[]> }, 'buildZodomusRoomsActivationPayload')
       .mockResolvedValue([{ roomId: '10001', rates: ['100991'] }]);
@@ -589,24 +595,64 @@ describe('ChannelService Zodomus readiness gate', () => {
       .spyOn(service as unknown as { getConnectionResponse: () => Promise<typeof connection> }, 'getConnectionResponse')
       .mockResolvedValue(connection);
 
-    await service.activateProviderRooms('connection-1');
+    const response = await service.activateProviderRooms('connection-1');
 
     expect(providerService.checkProperty).not.toHaveBeenCalled();
-    expect(prisma.channelConnection.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'connection-1' },
-        data: {
-          credentials: expect.objectContaining({
-            setup_status: expect.objectContaining({
-              rooms_activated: true,
-              activated_room_count: 1,
-              ready: false,
-              ready_at: null,
-            }),
-          }),
+    expect(providerService.activateRooms).not.toHaveBeenCalled();
+    expect(prisma.channelConnection.update).not.toHaveBeenCalled();
+    expect(backgroundJobService.enqueue).toHaveBeenCalledWith({
+      type: 'CHANNEL_SYNC',
+      propertyId: 'property-1',
+      entityType: 'channel_connection',
+      entityId: 'connection-1',
+      payload: {
+        channel_action: 'ROOMS_ACTIVATION',
+        channel_connection_id: 'connection-1',
+      },
+      maxAttempts: 3,
+    });
+    expect(response).toEqual(expect.objectContaining({
+      queued: true,
+      job_id: 'job-1',
+      sync_log_id: null,
+    }));
+  });
+
+  it('reuses an existing pending room activation job instead of queueing a duplicate', async () => {
+    const connection = {
+      id: 'connection-1',
+      propertyId: 'property-1',
+      provider: ChannelProvider.ZODOMUS,
+      externalHotelId: 'hotel-1',
+      credentials: {
+        setup_status: {
+          activated: true,
+          rooms_activated: false,
+          ready: false,
         },
-      }),
-    );
+      },
+    };
+    const { service, prisma, backgroundJobService } = createService({ connection });
+    const existingJob = {
+      id: 'existing-job-1',
+      payload: {
+        channel_action: 'ROOMS_ACTIVATION',
+        channel_connection_id: 'connection-1',
+      },
+    };
+    prisma.backgroundJob.findMany.mockResolvedValue([existingJob]);
+    jest
+      .spyOn(service as unknown as { buildZodomusRoomsActivationPayload: () => Promise<unknown[]> }, 'buildZodomusRoomsActivationPayload')
+      .mockResolvedValue([{ roomId: '10001', rates: ['100991'] }]);
+
+    const response = await service.activateProviderRooms('connection-1');
+
+    expect(backgroundJobService.enqueue).not.toHaveBeenCalled();
+    expect(response).toEqual(expect.objectContaining({
+      queued: true,
+      job_id: 'existing-job-1',
+      sync_log_id: null,
+    }));
   });
 
   it('cancels Zodomus room associations and resets ready status', async () => {
@@ -832,11 +878,15 @@ describe('ChannelService reservation summary backfill', () => {
         findUnique: jest.fn().mockResolvedValue(connection),
       },
       channelSyncLog: {
+        findMany: jest.fn().mockResolvedValue([]),
         create: jest.fn().mockResolvedValue(queuedLog),
+      },
+      backgroundJob: {
+        findMany: jest.fn().mockResolvedValue([]),
       },
     };
     const backgroundJobService = {
-      enqueue: jest.fn().mockResolvedValue(undefined),
+      enqueue: jest.fn().mockResolvedValue({ id: 'job-1' }),
     };
     const metricsService = {
       recordChannelSyncQueued: jest.fn(),
@@ -886,6 +936,85 @@ describe('ChannelService reservation summary backfill', () => {
       },
       trigger: 'manual_summary_backfill',
     });
+  });
+
+  it('reuses an existing pending summary backfill sync job instead of queueing a duplicate', async () => {
+    const connection = {
+      id: 'connection-1',
+      propertyId: 'property-1',
+      provider: ChannelProvider.ZODOMUS,
+      credentials: {
+        setup_status: {
+          activated: true,
+          rooms_activated: true,
+          ready: true,
+          disconnected: false,
+        },
+      },
+    };
+    const existingLog = {
+      id: 'sync-log-existing',
+      channelConnectionId: connection.id,
+      syncType: ChannelSyncType.BOOKINGS,
+      status: ChannelSyncStatus.QUEUED,
+      requestPayload: {
+        reservation_import: {
+          mode: 'summary_backfill',
+        },
+        trigger: 'manual_summary_backfill',
+      },
+      responsePayload: null,
+      errorMessage: null,
+      createdAt: new Date('2026-05-15T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-15T00:00:00.000Z'),
+    };
+    const existingJob = {
+      id: 'job-existing',
+      entityId: existingLog.id,
+      payload: {
+        channel_sync_log_id: existingLog.id,
+      },
+    };
+    const prisma = {
+      channelConnection: {
+        findUnique: jest.fn().mockResolvedValue(connection),
+      },
+      channelSyncLog: {
+        findMany: jest.fn().mockResolvedValue([existingLog]),
+        create: jest.fn(),
+      },
+      backgroundJob: {
+        findMany: jest.fn().mockResolvedValue([existingJob]),
+      },
+    };
+    const backgroundJobService = {
+      enqueue: jest.fn(),
+    };
+    const metricsService = {
+      recordChannelSyncQueued: jest.fn(),
+    };
+    const service = new ChannelService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      backgroundJobService as never,
+      {} as never,
+      {} as never,
+      metricsService as never,
+      {} as never,
+    );
+
+    const response = await service.backfillReservationsSummary(connection.id);
+
+    expect(prisma.channelSyncLog.create).not.toHaveBeenCalled();
+    expect(backgroundJobService.enqueue).not.toHaveBeenCalled();
+    expect(metricsService.recordChannelSyncQueued).not.toHaveBeenCalled();
+    expect(response).toEqual(expect.objectContaining({
+      queued: true,
+      job_id: 'job-existing',
+      sync_log_id: existingLog.id,
+    }));
   });
 
   it('rejects summary backfill until the Zodomus connection is ready', async () => {

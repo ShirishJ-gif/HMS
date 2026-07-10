@@ -1,21 +1,68 @@
 import { useEffect, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
-import { fetchAllPages } from '../api/pagination';
-import { Billing, ChannelConnection, DashboardSummary, Property, ReservationGroup } from '../api/types';
+import { InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { CustomSelect } from '../components/CustomSelect';
 import { formatCurrency } from '../utils/format';
 
 /* ─── types ──────────────────────────────────────────────────────────────── */
+type ReportProperty = { id: string; name: string; code: string };
+type ReportStatusSegment = { label: string; value: number; color: string };
+type ReportPropertyPerformance = {
+  id: string;
+  name: string;
+  code: string;
+  groups: number;
+  blocked: number;
+  nights: number;
+  inhouse: number;
+  billed: number;
+  balance: number;
+  share: number;
+};
+type ReportChannelReadiness = {
+  id: string;
+  property_name: string;
+  ota_name: string;
+  ready: boolean;
+  rooms_activated: boolean;
+  last_inventory_status: string | null;
+  last_bookings_status: string | null;
+};
 type ReportsData = {
-  billings: Billing[];
-  channels: ChannelConnection[];
-  dashboard: DashboardSummary;
-  properties: Property[];
-  reservationGroups: ReservationGroup[];
+  from: string;
+  to: string;
+  property_id: string;
+  properties: ReportProperty[];
+  summary: {
+    room_nights_sold: number;
+    active_reservation_groups: number;
+    billed_total: number;
+    paid_total: number;
+    refunded_total: number;
+    balance_due: number;
+    blocked_reservation_groups: number;
+    checked_in_room_lines: number;
+    reservation_groups: number;
+  };
+  reservation_posture: ReportStatusSegment[];
+  property_performance: ReportPropertyPerformance[];
+  payments_by_method: Array<{ provider: string; amount: number }>;
+  room_category_performance: Array<{ id: string; name: string; code: string; room_nights: number; billed_total: number }>;
+  channel_readiness: ReportChannelReadiness[];
 };
 type ReportsState = { data: ReportsData | null; error: string | null; loading: boolean };
+type ReportRangePreset = 'today' | 'yesterday' | 'last_7' | 'this_month' | 'custom';
+
+const REPORT_RANGE_CHIPS: { label: string; value: ReportRangePreset }[] = [
+  { label: 'Today', value: 'today' },
+  { label: 'Yesterday', value: 'yesterday' },
+  { label: 'Last 7 days', value: 'last_7' },
+  { label: 'This month', value: 'this_month' },
+  { label: 'Custom', value: 'custom' },
+];
 
 let reportsCache: ReportsData | null = null;
+let reportsCacheKey = '';
 let reportsCacheUpdatedAt = 0;
 const reportsCacheTtlMs = 60_000;
 
@@ -97,6 +144,44 @@ function SyncStatus({ status }: { status: string | null }) {
   );
 }
 
+function ReportDateField({
+  align = 'left',
+  label,
+  onChange,
+  open,
+  setOpen,
+  value,
+}: {
+  align?: 'left' | 'right';
+  label: string;
+  onChange: (value: string) => void;
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  value: string;
+}) {
+  return (
+    <div className="w-[6.25rem]">
+      <InlineCalendarDatePicker
+        align={align}
+        buttonClassName="flex h-8 w-full min-w-0 items-center rounded-md border border-transparent bg-white px-2.5 text-left text-[11.5px] font-semibold text-slate-700 focus:outline-none"
+        label={label}
+        onChange={onChange}
+        open={open}
+        renderTrigger={(pickerLabel) => (
+          <>
+            <span className="min-w-0">
+              <span className="block text-[8.5px] font-bold uppercase tracking-wider text-slate-400">{label}</span>
+              <span className="block truncate">{pickerLabel}</span>
+            </span>
+          </>
+        )}
+        setOpen={setOpen}
+        value={value}
+      />
+    </div>
+  );
+}
+
 /* ─── decorative sparkline data (trend shapes only, no historical API) ───── */
 const SPARK_UP_A   = [30,38,28,44,40,52,48,60,54,68,58,72];
 const SPARK_UP_B   = [18,20,22,19,24,21,26,28,25,30,27,34];
@@ -108,38 +193,38 @@ const REV_BAR_PCT = [68, 72, 58, 84, 90, 100];
 
 /* ─── main component ─────────────────────────────────────────────────────── */
 export function ReportsPage() {
+  const today = getLocalDate();
+  const initialRange = getReportPresetRange('today', today);
+  const [from, setFrom] = useState(initialRange.from);
+  const [to, setTo] = useState(initialRange.to);
+  const [rangePreset, setRangePreset] = useState<ReportRangePreset>('today');
+  const [openDatePicker, setOpenDatePicker] = useState<'from' | 'to' | null>(null);
   const [propertyFilter, setPropertyFilter] = useState('ALL');
+  const initialCacheKey = `ALL:${initialRange.from}:${initialRange.to}`;
+  const initialReportsCache = reportsCacheKey === initialCacheKey ? reportsCache : null;
   const [reportsState, setReportsState] = useState<ReportsState>(() => ({
-    data: reportsCache,
+    data: initialReportsCache,
     error: null,
-    loading: !reportsCache,
+    loading: !initialReportsCache,
   }));
 
   useEffect(() => {
     let active = true;
-    const hasFreshCache = reportsCache && Date.now() - reportsCacheUpdatedAt < reportsCacheTtlMs;
+    const cacheKey = `${propertyFilter}:${from}:${to}`;
+    const hasFreshCache = reportsCache && reportsCacheKey === cacheKey && Date.now() - reportsCacheUpdatedAt < reportsCacheTtlMs;
     if (hasFreshCache) {
       setReportsState({ data: reportsCache, error: null, loading: false });
       return () => { active = false; };
     }
     setReportsState((c) => ({ ...c, error: null, loading: !c.data }));
-    Promise.all([
-      api.get<DashboardSummary>('/dashboard/summary'),
-      fetchAllPages<Property>('/properties'),
-      fetchAllPages<ReservationGroup>('/bookings/feed', { params: { include_cancelled: true } }),
-      fetchAllPages<Billing>('/billings'),
-      fetchAllPages<ChannelConnection>('/channels'),
-    ])
-      .then(([dashRes, loadedProperties, loadedGroups, loadedBillings, loadedChannels]) => {
+    api.get<ReportsData>('/reports/analytics', {
+      params: { property_id: propertyFilter, from, to },
+    })
+      .then((res) => {
         if (!active) return;
-        const nextData: ReportsData = {
-          billings: loadedBillings,
-          channels: loadedChannels,
-          dashboard: dashRes.data,
-          properties: loadedProperties,
-          reservationGroups: loadedGroups,
-        };
+        const nextData = res.data;
         reportsCache = nextData;
+        reportsCacheKey = cacheKey;
         reportsCacheUpdatedAt = Date.now();
         setReportsState({ data: nextData, error: null, loading: false });
       })
@@ -148,90 +233,51 @@ export function ReportsPage() {
         setReportsState((c) => ({ data: c.data, error: getApiErrorMessage(err), loading: false }));
       });
     return () => { active = false; };
-  }, []);
+  }, [from, propertyFilter, to]);
 
   /* ── derived data ── */
   const properties  = reportsState.data?.properties ?? [];
   const hasMultiple = properties.length > 1;
   const selectedProperty = propertyFilter === 'ALL' ? null : properties.find((p) => p.id === propertyFilter) ?? null;
-
-  const reservationGroups = (reportsState.data?.reservationGroups ?? []).filter(
-    (g) => propertyFilter === 'ALL' || g.property.id === propertyFilter,
-  );
-  const importedGroups = reservationGroups.filter((g) => !g.import_blocked);
-  const blockedGroups  = reservationGroups.filter((g) => g.import_blocked);
-
-  const billings = (reportsState.data?.billings ?? []).filter(
-    (b) => propertyFilter === 'ALL' || b.reservation_room.property.id === propertyFilter,
-  );
-  const channels = (reportsState.data?.channels ?? []).filter(
-    (c) => propertyFilter === 'ALL' || c.property_id === propertyFilter,
-  );
-
-  const roomLines          = importedGroups.flatMap((g) => g.rooms.map((r) => ({ group: g, room: r })));
-  const roomNightsSold     = roomLines.reduce((t, e) => t + calcNights(e.room.arrival_date, e.room.departure_date), 0);
-  const activeGroups       = importedGroups.filter((g) => ['BOOKED', 'CHECKED_IN'].includes(g.reservation_status)).length;
-  const cancelledGroups    = importedGroups.filter((g) => g.reservation_status === 'CANCELLED').length;
-  const checkedInRoomLines = roomLines.filter((e) => e.room.reservation_status === 'CHECKED_IN').length;
-  const balanceDue         = billings.reduce((t, b) => t + b.balance_due, 0);
-  const billedTotal        = billings.reduce((t, b) => t + b.total, 0);
-  const paidTotal          = billings.reduce((t, b) => t + (b.paid_total - b.refunded_total), 0);
-  const totalGroupsInScope = reservationGroups.length;
-  const importedGroupCount = importedGroups.length;
-
-  const statusSegments = [
-    { label: 'Active',      value: activeGroups,        color: '#10b981' },
-    { label: 'Cancelled',   value: cancelledGroups,     color: '#94a3b8' },
-    { label: 'Blocked',     value: blockedGroups.length, color: '#f87171' },
-    { label: 'Checked-in',  value: checkedInRoomLines,  color: '#38bdf8' },
-  ];
-  const donutTotal = activeGroups + cancelledGroups + blockedGroups.length + checkedInRoomLines;
-
-  const propertyPerformance = properties
-    .map((p) => {
-      const pg = importedGroups.filter((g) => g.property.id === p.id);
-      const pb = billings.filter((b) => b.reservation_room.property.id === p.id);
-      const rl = pg.flatMap((g) => g.rooms);
-      const allBilled = billings.reduce((t, b) => t + b.total, 0);
-      const thisShare = allBilled > 0 ? Math.round((pb.reduce((t, b) => t + b.total, 0) / allBilled) * 100) : 0;
-      return {
-        id: p.id,
-        name: p.name,
-        code: p.code,
-        groups: pg.length,
-        blocked: blockedGroups.filter((g) => g.property.id === p.id).length,
-        nights: rl.reduce((t, r) => t + calcNights(r.arrival_date, r.departure_date), 0),
-        inhouse: rl.filter((r) => r.reservation_status === 'CHECKED_IN').length,
-        billed: pb.reduce((t, b) => t + b.total, 0),
-        balance: pb.reduce((t, b) => t + b.balance_due, 0),
-        share: thisShare,
-      };
-    })
-    .filter((r) => propertyFilter === 'ALL' || r.id === propertyFilter);
-
-  const channelReadiness = channels
-    .map((c) => ({
-      id: c.id,
-      property_name: c.property.name,
-      ota_name: c.provider_config_summary?.ota_name ?? c.provider,
-      ready: c.provider_config_summary?.setup_status.ready ?? false,
-      rooms_activated: c.provider_config_summary?.setup_status.rooms_activated ?? false,
-      last_inventory_status: c.sync_summary.inventory.last_status,
-      last_bookings_status: c.sync_summary.bookings.last_status,
-    }))
-    .sort((a, b) => (
-      a.property_name.localeCompare(b.property_name) ||
-      a.ota_name.localeCompare(b.ota_name)
-    ));
+  const summary = reportsState.data?.summary;
+  const roomNightsSold = summary?.room_nights_sold ?? 0;
+  const activeGroups = summary?.active_reservation_groups ?? 0;
+  const balanceDue = summary?.balance_due ?? 0;
+  const billedTotal = summary?.billed_total ?? 0;
+  const paidTotal = summary?.paid_total ?? 0;
+  const blockedGroupCount = summary?.blocked_reservation_groups ?? 0;
+  const statusSegments = reportsState.data?.reservation_posture ?? [];
+  const donutTotal = statusSegments.reduce((total, segment) => total + segment.value, 0);
+  const propertyPerformance = reportsState.data?.property_performance ?? [];
+  const channelReadiness = reportsState.data?.channel_readiness ?? [];
 
   const postureAttention = [
-    blockedGroups.length > 0 ? `${blockedGroups.length} provider booking${blockedGroups.length === 1 ? '' : 's'} blocked from import.` : null,
+    blockedGroupCount > 0 ? `${blockedGroupCount} provider booking${blockedGroupCount === 1 ? '' : 's'} blocked from import.` : null,
     balanceDue > 0 ? `${formatCurrency(balanceDue)} remains open across visible folios.` : null,
     channelReadiness.some((r) => !r.ready) ? 'At least one channel connection needs readiness attention.' : null,
   ].filter((m): m is string => Boolean(m));
 
   const loading = reportsState.loading && !reportsState.data;
   const error   = reportsState.error;
+  function applyRangePreset(preset: ReportRangePreset) {
+    setRangePreset(preset);
+    if (preset === 'custom') return;
+    const nextRange = getReportPresetRange(preset, today);
+    setFrom(nextRange.from);
+    setTo(nextRange.to);
+  }
+
+  function updateFromDate(value: string) {
+    setFrom(value);
+    if (value > to) setTo(value);
+    setRangePreset('custom');
+  }
+
+  function updateToDate(value: string) {
+    setTo(value);
+    if (value < from) setFrom(value);
+    setRangePreset('custom');
+  }
 
   const kpis = [
     { label: 'Room nights sold',   value: roomNightsSold.toString(), delta: '+trend', up: true,  spark: SPARK_UP_A },
@@ -288,10 +334,47 @@ export function ReportsPage() {
           </div>
         </div>
 
-        {/* ── Loading / error ── */}
-        {loading && (
-          <p className="text-sm text-slate-400 animate-pulse">Loading reports…</p>
-        )}
+        {/* ── Date range scope ── */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1">
+            {REPORT_RANGE_CHIPS.map((chip) => (
+              <button
+                className={`h-8 rounded-md px-3 text-[11.5px] font-semibold transition-colors ${
+                  rangePreset === chip.value
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-500'
+                }`}
+                key={chip.value}
+                onClick={() => applyRangePreset(chip.value)}
+                type="button"
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
+          {rangePreset === 'custom' && (
+            <div className="flex h-10 items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-1">
+                <ReportDateField
+                  label="From"
+                  value={from}
+                  open={openDatePicker === 'from'}
+                  setOpen={(open) => setOpenDatePicker(open ? 'from' : null)}
+                  onChange={updateFromDate}
+                />
+                <span className="-ml-1 mr-5 text-slate-300">→</span>
+                <ReportDateField
+                  align="right"
+                  label="To"
+                  value={to}
+                  open={openDatePicker === 'to'}
+                  setOpen={(open) => setOpenDatePicker(open ? 'to' : null)}
+                  onChange={updateToDate}
+                />
+              </div>
+          )}
+        </div>
+
+        {/* ── Error ── */}
         {error && (
           <p className="text-sm font-semibold text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-4 py-3">{error}</p>
         )}
@@ -518,10 +601,33 @@ export function ReportsPage() {
   );
 }
 
-/* ─── helpers ─────────────────────────────────────────────────────────────── */
-function calcNights(ci: string, co: string) {
-  if (!ci || !co) return 0;
-  return Math.max(0, Math.round(
-    (new Date(`${co}T00:00:00Z`).getTime() - new Date(`${ci}T00:00:00Z`).getTime()) / 86400000,
-  ));
+function getLocalDate() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function addDays(value: string, days: number) {
+  const date = new Date(`${value}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return dateToInputValue(date);
+}
+
+function dateToInputValue(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getReportPresetRange(preset: Exclude<ReportRangePreset, 'custom'>, today: string) {
+  if (preset === 'today') return { from: today, to: today };
+  if (preset === 'yesterday') {
+    const yesterday = addDays(today, -1);
+    return { from: yesterday, to: yesterday };
+  }
+  if (preset === 'last_7') return { from: addDays(today, -6), to: today };
+  const current = new Date(`${today}T00:00:00`);
+  const start = new Date(current.getFullYear(), current.getMonth(), 1);
+  const end = new Date(current.getFullYear(), current.getMonth() + 1, 0);
+  return { from: dateToInputValue(start), to: dateToInputValue(end) };
 }

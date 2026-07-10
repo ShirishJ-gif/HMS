@@ -13,8 +13,12 @@ import {
   ChannelProvider,
   ChannelSyncStatus,
   ChannelSyncType,
+  BackgroundJobType,
+  BackgroundJobStatus,
   Prisma,
   RoomStatus,
+  WebhookDomain,
+  WebhookEventStatus,
 } from '@prisma/client';
 import { BackgroundJobService } from '../background-job/background-job.service';
 import { MetricsService } from '../metrics/metrics.service';
@@ -73,6 +77,14 @@ type InventorySyncRowResult = {
 };
 
 type DbClient = PrismaService | Prisma.TransactionClient;
+type QueuedChannelJobResponse = {
+  queued: true;
+  job_id: string;
+  sync_log_id: string | null;
+  job: unknown;
+  sync_log?: Record<string, unknown>;
+  [key: string]: unknown;
+};
 type ImportedReservationCleanupSummary = {
   reservation_groups_deleted: number;
   reservation_rooms_deleted: number;
@@ -214,6 +226,61 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     ]);
 
     return paginatedResponse(connections.map((connection) => this.toConnectionResponse(connection)), total, page, limit);
+  }
+
+  async getWorkspace(user?: AuthenticatedUser) {
+    const scopedPropertyId = propertyIdFilter(user);
+    const propertyWhere: Prisma.PropertyWhereInput = scopedPropertyId ? { id: scopedPropertyId } : {};
+    const childWhere: Prisma.RoomCategoryWhereInput = scopedPropertyId ? { propertyId: scopedPropertyId } : {};
+    const ratePlanWhere: Prisma.RatePlanWhereInput = scopedPropertyId ? { propertyId: scopedPropertyId } : {};
+    const connectionWhere: Prisma.ChannelConnectionWhereInput = scopedPropertyId ? { propertyId: scopedPropertyId } : {};
+
+    const [connections, properties, categories, ratePlans] = await this.prisma.$transaction([
+      this.prisma.channelConnection.findMany({
+        where: connectionWhere,
+        include: this.connectionInclude(),
+        orderBy: [{ property: { name: 'asc' } }, { provider: 'asc' }, { name: 'asc' }],
+      }),
+      this.prisma.property.findMany({
+        where: propertyWhere,
+        include: {
+          images: {
+            orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }],
+          },
+        },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.roomCategory.findMany({
+        where: childWhere,
+        include: {
+          property: { select: { id: true, name: true, code: true } },
+          images: {
+            orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }],
+          },
+        },
+        orderBy: [{ property: { name: 'asc' } }, { name: 'asc' }],
+      }),
+      this.prisma.ratePlan.findMany({
+        where: ratePlanWhere,
+        include: {
+          property: { select: { id: true, name: true, code: true } },
+          roomCategory: { select: { id: true, name: true, code: true } },
+        },
+        orderBy: [{ property: { name: 'asc' } }, { roomCategory: { name: 'asc' } }, { name: 'asc' }],
+      }),
+    ]);
+
+    return {
+      connections: connections.map((connection) => this.toConnectionResponse(connection)),
+      properties: properties.map((property) => this.toWorkspacePropertyResponse(property)),
+      categories: categories.map((category) => this.toWorkspaceRoomCategoryResponse(category)),
+      rate_plans: ratePlans.map((ratePlan) => this.toWorkspaceRatePlanResponse(ratePlan)),
+    };
+  }
+
+  async findConnection(connectionId: string, user?: AuthenticatedUser) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.getConnectionResponse(connection.id);
   }
 
   async deleteConnection(connectionId: string, user?: AuthenticatedUser) {
@@ -564,42 +631,10 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       this.assertValidZodomusPriceModel(connectionConfig.ota_key, priceModelId);
     }
 
-    const response = await this.providerService.activateProperty({
-      provider: connection.provider,
-      external_hotel_id: connection.externalHotelId,
-      credentials: connection.credentials,
+    return this.queueProviderAction(connection, 'PROPERTY_ACTIVATION', {
       price_model_id: priceModelId,
-      token,
+      ...(token?.trim() ? { token: token.trim() } : {}),
     });
-
-    await this.auditLogService.record({
-      action: AuditAction.UPDATE,
-      entityType: 'channel_connection',
-      entityId: connection.id,
-      propertyId: connection.propertyId,
-      summary: `Activated ${connection.provider} property connection`,
-      metadata: {
-        price_model_id: priceModelId,
-      },
-      user,
-    });
-
-    if (connection.provider === ChannelProvider.ZODOMUS) {
-      await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-        setup_status: {
-          activated: true,
-          disconnected: false,
-          activated_at: new Date().toISOString(),
-          price_model_id: priceModelId,
-          last_activation_message: this.readProviderReturnMessage(response),
-          last_activation_code: this.readProviderReturnCode(response),
-          ready: false,
-          ready_at: null,
-        },
-      });
-    }
-
-    return response;
   }
 
   async activateProviderRooms(connectionId: string, user?: AuthenticatedUser) {
@@ -621,42 +656,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Room activation is currently supported only for Zodomus connections.');
     }
 
-    const rooms = await this.buildZodomusRoomsActivationPayload(connection);
-    const activation = await this.providerService.activateRooms({
-      provider: connection.provider,
-      external_hotel_id: connection.externalHotelId,
-      credentials: connection.credentials,
-      rooms,
-    });
-
-    await this.auditLogService.record({
-      action: AuditAction.UPDATE,
-      entityType: 'channel_connection',
-      entityId: connection.id,
-      propertyId: connection.propertyId,
-      summary: `Activated ${connection.provider} room and rate mappings`,
-      metadata: {
-        activated_room_count: rooms.length,
-      },
-      user,
-    });
-
-    await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-      setup_status: {
-        rooms_activated: true,
-        rooms_activated_at: new Date().toISOString(),
-        activated_room_count: rooms.length,
-        last_rooms_activation_message: this.readProviderReturnMessage(activation),
-        last_rooms_activation_code: this.readProviderReturnCode(activation),
-        ready: false,
-        ready_at: null,
-      },
-    });
-
-    return {
-      activation,
-      connection: await this.getConnectionResponse(connection.id),
-    };
+    await this.assertCanBuildZodomusRoomsActivationPayload(connection);
+    return this.queueProviderAction(connection, 'ROOMS_ACTIVATION');
   }
 
   async cancelProviderRooms(connectionId: string, dto: CancelChannelRoomsDto, user?: AuthenticatedUser) {
@@ -823,48 +824,11 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   }
 
   async pushProviderAvailabilityMultiple(connectionId: string, dto: SyncChannelDto, user?: AuthenticatedUser) {
-    const connection = await this.findAccessibleConnectionForSync(connectionId, user);
-    const { client, channelId, propertyId } = this.zodomusClientForConnection(connection);
-    const payload = await this.buildSyncPayload(connection, { ...dto, sync_type: ChannelSyncType.INVENTORY });
-    const inventoryRows = Array.isArray((payload as { inventory?: unknown }).inventory)
-      ? ((payload as { inventory: Array<Record<string, unknown>> }).inventory)
-      : [];
-
-    const body = {
-      channelId,
-      propertyId,
-      ...(channelId === 3 ? { pnaModel: 'STANDARD' } : {}),
-      roomIds: this.availabilityMultipleLines(inventoryRows, channelId),
-    };
-
-    if (channelId === 3) {
-      await this.ensureAirbnbStandardPricingAvailability(client, channelId, propertyId);
-    }
-
-    return client.pushAvailabilityMultiple(body);
+    return this.syncOnce(connectionId, { ...dto, sync_type: ChannelSyncType.INVENTORY }, user);
   }
 
   async pushProviderRatesMultiple(connectionId: string, dto: SyncChannelDto, user?: AuthenticatedUser) {
-    const connection = await this.findAccessibleConnectionForSync(connectionId, user);
-    const { client, channelId, propertyId } = this.zodomusClientForConnection(connection);
-    const payload = await this.buildSyncPayload(connection, { ...dto, sync_type: ChannelSyncType.RATES });
-    const rateRows = Array.isArray((payload as { rates?: unknown }).rates)
-      ? ((payload as { rates: Array<Record<string, unknown>> }).rates)
-      : [];
-    const priceModelId = Number((payload as { price_model_id?: unknown }).price_model_id ?? 1);
-
-    const body = {
-      channelId,
-      propertyId,
-      ...(channelId === 3 ? { pnaModel: 'STANDARD' } : {}),
-      roomIds: this.ratesMultipleLines(rateRows, channelId, priceModelId),
-    };
-
-    if (channelId === 3) {
-      await this.ensureAirbnbStandardPricingAvailability(client, channelId, propertyId);
-    }
-
-    return client.pushRatesMultiple(body);
+    return this.syncOnce(connectionId, { ...dto, sync_type: ChannelSyncType.RATES }, user);
   }
 
   async getProviderReservationsQueue(connectionId: string, user?: AuthenticatedUser) {
@@ -1879,22 +1843,32 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Reservation summary backfill requires a ready Zodomus connection.');
     }
 
+    const requestPayload = {
+      reservation_import: {
+        mode: 'summary_backfill',
+      },
+      trigger: 'manual_summary_backfill',
+    } satisfies Prisma.InputJsonObject;
+    const existingJob = await this.findPendingChannelSyncJob(
+      connection.id,
+      ChannelSyncType.BOOKINGS,
+      requestPayload,
+    );
+    if (existingJob) {
+      return this.toQueuedChannelJobResponse(existingJob.job, existingJob.syncLog);
+    }
+
     const queuedLog = await this.prisma.channelSyncLog.create({
       data: {
         channelConnectionId: connection.id,
         syncType: ChannelSyncType.BOOKINGS,
         status: ChannelSyncStatus.QUEUED,
-        requestPayload: {
-          reservation_import: {
-            mode: 'summary_backfill',
-          },
-          trigger: 'manual_summary_backfill',
-        } satisfies Prisma.InputJsonObject,
+        requestPayload,
       },
     });
 
-    await this.backgroundJobService.enqueue({
-      type: 'CHANNEL_SYNC',
+    const job = await this.backgroundJobService.enqueue({
+      type: BackgroundJobType.CHANNEL_SYNC,
       propertyId: connection.propertyId,
       dedupeKey: `channel-sync:${queuedLog.id}`,
       entityType: 'channel_sync_log',
@@ -1907,7 +1881,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     this.metricsService.recordChannelSyncQueued(ChannelSyncType.BOOKINGS, connection.provider);
 
-    return this.toSyncLogResponse(queuedLog);
+    return this.toQueuedChannelJobResponse(job, queuedLog);
   }
 
   private async syncOnce(connectionId: string, dto: SyncChannelDto, user?: AuthenticatedUser) {
@@ -1927,6 +1901,11 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     assertCanAccessProperty(user, connection.propertyId);
 
     const requestPayload = await this.buildSyncPayload(connection, dto);
+    const existingJob = await this.findPendingChannelSyncJob(connection.id, dto.sync_type, requestPayload);
+    if (existingJob) {
+      return this.toQueuedChannelJobResponse(existingJob.job, existingJob.syncLog);
+    }
+
     const queuedLog = await this.prisma.channelSyncLog.create({
       data: {
         channelConnectionId: connection.id,
@@ -1936,8 +1915,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    await this.backgroundJobService.enqueue({
-      type: 'CHANNEL_SYNC',
+    const job = await this.backgroundJobService.enqueue({
+      type: BackgroundJobType.CHANNEL_SYNC,
       propertyId: connection.propertyId,
       dedupeKey: `channel-sync:${queuedLog.id}`,
       entityType: 'channel_sync_log',
@@ -1950,7 +1929,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     this.metricsService.recordChannelSyncQueued(dto.sync_type, connection.provider);
 
-    return this.toSyncLogResponse(queuedLog);
+    return this.toQueuedChannelJobResponse(job, queuedLog);
   }
 
   async processQueuedSyncLog(syncLogId: string) {
@@ -2173,6 +2152,50 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  async findDiagnostics(connectionId: string, user?: AuthenticatedUser) {
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    const [inventoryReconciliation, inventoryRowResults, syncLogs, webhookEvents, backgroundJobs] =
+      await Promise.all([
+        this.findInventoryReconciliation(connection.id, user),
+        this.findInventoryRowResults(connection.id, user),
+        this.prisma.channelSyncLog.findMany({
+          where: { channelConnectionId: connection.id },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+        }),
+        this.prisma.webhookEvent.findMany({
+          where: {
+            domain: WebhookDomain.CHANNEL,
+            propertyId: connection.propertyId,
+            provider: connection.provider,
+          },
+          orderBy: { receivedAt: 'desc' },
+          take: 50,
+        }),
+        this.prisma.backgroundJob.findMany({
+          where: {
+            OR: [
+              { entityId: connection.id },
+              {
+                propertyId: connection.propertyId,
+                type: BackgroundJobType.CHANNEL_SYNC,
+              },
+            ],
+          },
+          orderBy: [{ runAt: 'desc' }, { createdAt: 'desc' }],
+          take: 50,
+        }),
+      ]);
+
+    return {
+      inventory_reconciliation: inventoryReconciliation,
+      inventory_row_results: inventoryRowResults,
+      sync_logs: syncLogs.map((log) => this.toSyncLogResponse(log)),
+      webhook_events: webhookEvents.map((event) => this.toWebhookEventResponse(event, false)),
+      background_jobs: backgroundJobs.map((job) => this.toBackgroundJobResponse(job)),
+    };
+  }
+
   async retryFailedInventoryRows(connectionId: string, syncLogId: string, user?: AuthenticatedUser) {
     const connection = await this.findAccessibleConnection(connectionId, user);
     const sourceLog = await this.prisma.channelSyncLog.findUnique({
@@ -2233,6 +2256,131 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     this.metricsService.recordChannelSyncQueued(sourceLog.syncType, connection.provider);
     return this.toSyncLogResponse(queuedLog);
+  }
+
+  private async queueProviderAction(
+    connection: {
+      id: string;
+      propertyId: string;
+      provider: ChannelProvider;
+      externalHotelId: string | null;
+    },
+    action: 'PROPERTY_ACTIVATION' | 'ROOMS_ACTIVATION',
+    input: Prisma.InputJsonObject = {},
+  ) {
+    const existingJob = await this.findPendingChannelActionJob(connection.id, action);
+    if (existingJob) {
+      return this.toQueuedChannelJobResponse(existingJob);
+    }
+
+    const job = await this.backgroundJobService.enqueue({
+      type: BackgroundJobType.CHANNEL_SYNC,
+      propertyId: connection.propertyId,
+      entityType: 'channel_connection',
+      entityId: connection.id,
+      payload: {
+        channel_action: action,
+        channel_connection_id: connection.id,
+        ...input,
+      } satisfies Prisma.InputJsonObject,
+      maxAttempts: 3,
+    });
+
+    return this.toQueuedChannelJobResponse(job);
+  }
+
+  private async findPendingChannelSyncJob(
+    connectionId: string,
+    syncType: ChannelSyncType,
+    requestPayload: Prisma.InputJsonObject,
+  ) {
+    const targetKey = this.channelSyncDedupeKey(connectionId, syncType, requestPayload);
+    const candidateLogs = await this.prisma.channelSyncLog.findMany({
+      where: {
+        channelConnectionId: connectionId,
+        syncType,
+        status: ChannelSyncStatus.QUEUED,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+    const matchingLogs = candidateLogs.filter((log) =>
+      this.channelSyncDedupeKey(connectionId, syncType, this.readPlainRecord(log.requestPayload)) === targetKey,
+    );
+    if (matchingLogs.length === 0) {
+      return null;
+    }
+
+    const activeJobs = await this.prisma.backgroundJob.findMany({
+      where: {
+        type: BackgroundJobType.CHANNEL_SYNC,
+        entityType: 'channel_sync_log',
+        entityId: { in: matchingLogs.map((log) => log.id) },
+        status: { in: ['PENDING', 'PROCESSING'] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    const activeJob = activeJobs[0];
+    if (!activeJob) {
+      return null;
+    }
+
+    const syncLog = matchingLogs.find((log) => log.id === activeJob.entityId);
+    return syncLog ? { job: activeJob, syncLog } : null;
+  }
+
+  private channelSyncDedupeKey(
+    connectionId: string,
+    syncType: ChannelSyncType,
+    requestPayload: Record<string, unknown>,
+  ) {
+    if (syncType === ChannelSyncType.INVENTORY || syncType === ChannelSyncType.RATES) {
+      return `zodomus:${syncType.toLowerCase()}:${connectionId}:${this.readStringValue(requestPayload.from) ?? ''}:${this.readStringValue(requestPayload.to) ?? ''}`;
+    }
+
+    const reservationImport = this.readPlainRecord(requestPayload.reservation_import as Prisma.JsonValue | null);
+    const mode = this.readStringValue(reservationImport.mode) ?? 'reservation_queue_poll';
+    const reservationIds = Array.isArray(reservationImport.reservation_ids)
+      ? reservationImport.reservation_ids
+          .map((value) => this.readStringValue(value))
+          .filter((value): value is string => Boolean(value))
+          .sort()
+          .join(',')
+      : this.readStringValue(reservationImport.reservation_id) ?? '';
+
+    return `zodomus:bookings:${connectionId}:${mode}:${reservationIds}`;
+  }
+
+  private async findPendingChannelActionJob(
+    connectionId: string,
+    action: 'PROPERTY_ACTIVATION' | 'ROOMS_ACTIVATION',
+  ) {
+    const candidateJobs = await this.prisma.backgroundJob.findMany({
+      where: {
+        type: BackgroundJobType.CHANNEL_SYNC,
+        entityType: 'channel_connection',
+        entityId: connectionId,
+        status: { in: ['PENDING', 'PROCESSING'] },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    });
+
+    return candidateJobs.find((job) => {
+      const payload = this.readPlainRecord(job.payload);
+      return payload.channel_action === action && payload.channel_connection_id === connectionId;
+    }) ?? null;
+  }
+
+  private async assertCanBuildZodomusRoomsActivationPayload(
+    connection: Prisma.ChannelConnectionGetPayload<{
+      include: {
+        roomMappings: { include: { roomCategory: true } };
+        rateMappings: { include: { ratePlan: true } };
+      };
+    }>,
+  ) {
+    await this.buildZodomusRoomsActivationPayload(connection);
   }
 
   private async findConnectionForValidation(id: string) {
@@ -2914,6 +3062,126 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       sync_summary: this.buildSyncSummary(connection.syncLogs, providerConfigSummary),
       created_at: connection.createdAt,
       updated_at: connection.updatedAt,
+    };
+  }
+
+  private toWorkspacePropertyResponse(property: {
+    id: string;
+    name: string;
+    code: string;
+    phone: string | null;
+    email: string | null;
+    address: string;
+    timezone: string;
+    defaultCheckInTime: string;
+    defaultCheckOutTime: string;
+    isActive: boolean;
+    images?: Array<{
+      id: string;
+      url: string;
+      caption: string | null;
+      sortOrder: number;
+      isPrimary: boolean;
+      createdAt: Date;
+    }>;
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    return {
+      id: property.id,
+      name: property.name,
+      code: property.code,
+      phone: property.phone,
+      email: property.email,
+      address: property.address,
+      timezone: property.timezone,
+      default_check_in_time: property.defaultCheckInTime,
+      default_check_out_time: property.defaultCheckOutTime,
+      is_active: property.isActive,
+      images: property.images?.map((image) => this.toWorkspaceImageResponse(image)) ?? [],
+      created_at: property.createdAt,
+      updated_at: property.updatedAt,
+    };
+  }
+
+  private toWorkspaceRoomCategoryResponse(category: {
+    id: string;
+    propertyId: string;
+    name: string;
+    code: string;
+    description: string | null;
+    maxOccupancy: number;
+    property: { id: string; name: string; code: string };
+    images?: Array<{
+      id: string;
+      url: string;
+      caption: string | null;
+      sortOrder: number;
+      isPrimary: boolean;
+      createdAt: Date;
+    }>;
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    return {
+      id: category.id,
+      property_id: category.propertyId,
+      name: category.name,
+      code: category.code,
+      description: category.description,
+      max_occupancy: category.maxOccupancy,
+      property: category.property,
+      images: category.images?.map((image) => this.toWorkspaceImageResponse(image)) ?? [],
+      created_at: category.createdAt,
+      updated_at: category.updatedAt,
+    };
+  }
+
+  private toWorkspaceRatePlanResponse(ratePlan: {
+    id: string;
+    propertyId: string;
+    roomCategoryId: string;
+    name: string;
+    code: string;
+    baseRate: Prisma.Decimal;
+    currency: string;
+    isActive: boolean;
+    property: { id: string; name: string; code: string };
+    roomCategory: { id: string; name: string; code: string };
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    return {
+      id: ratePlan.id,
+      property_id: ratePlan.propertyId,
+      room_category_id: ratePlan.roomCategoryId,
+      name: ratePlan.name,
+      code: ratePlan.code,
+      base_rate: ratePlan.baseRate.toNumber(),
+      currency: ratePlan.currency,
+      is_active: ratePlan.isActive,
+      property: ratePlan.property,
+      room_category: ratePlan.roomCategory,
+      created_at: ratePlan.createdAt,
+      updated_at: ratePlan.updatedAt,
+    };
+  }
+
+  private toWorkspaceImageResponse(image: {
+    id: string;
+    url: string;
+    caption: string | null;
+    sortOrder: number;
+    isPrimary: boolean;
+    createdAt: Date;
+  }) {
+    return {
+      id: image.id,
+      url: image.url,
+      caption: image.caption,
+      sort_order: image.sortOrder,
+      is_primary: image.isPrimary,
+      created_at: image.createdAt,
     };
   }
 
@@ -3628,6 +3896,89 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       error_message: log.errorMessage,
       created_at: log.createdAt,
       updated_at: log.updatedAt,
+    };
+  }
+
+  private toWebhookEventResponse(
+    event: {
+      id: string;
+      domain: WebhookDomain;
+      provider: string;
+      propertyId: string | null;
+      externalEventId: string | null;
+      eventType: string;
+      dedupeKey: string;
+      status: WebhookEventStatus;
+      processingError: string | null;
+      receivedAt: Date;
+      processedAt: Date | null;
+    },
+    duplicate: boolean,
+  ) {
+    return {
+      id: event.id,
+      domain: event.domain,
+      provider: event.provider,
+      property_id: event.propertyId,
+      external_event_id: event.externalEventId,
+      event_type: event.eventType,
+      dedupe_key: event.dedupeKey,
+      status: event.status,
+      processing_error: event.processingError,
+      duplicate,
+      received_at: event.receivedAt,
+      processed_at: event.processedAt,
+    };
+  }
+
+  private toBackgroundJobResponse(job: {
+    id: string;
+    type: BackgroundJobType;
+    status: BackgroundJobStatus;
+    propertyId: string | null;
+    dedupeKey: string | null;
+    entityType: string | null;
+    entityId: string | null;
+    attempts: number;
+    maxAttempts: number;
+    runAt: Date;
+    lastError: string | null;
+    completedAt: Date | null;
+    deadLetteredAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }) {
+    return {
+      id: job.id,
+      type: job.type,
+      status: job.status,
+      property_id: job.propertyId,
+      dedupe_key: job.dedupeKey,
+      entity_type: job.entityType,
+      entity_id: job.entityId,
+      attempts: job.attempts,
+      max_attempts: job.maxAttempts,
+      run_at: job.runAt,
+      last_error: job.lastError,
+      completed_at: job.completedAt,
+      dead_lettered_at: job.deadLetteredAt,
+      created_at: job.createdAt,
+      updated_at: job.updatedAt,
+    };
+  }
+
+  private toQueuedChannelJobResponse(
+    job: { id: string },
+    syncLog?: Parameters<ChannelService['toSyncLogResponse']>[0] | null,
+  ): QueuedChannelJobResponse {
+    const syncLogResponse = syncLog ? this.toSyncLogResponse(syncLog) : null;
+    return {
+      ...(syncLogResponse ?? {}),
+      queued: true,
+      job_id: job.id,
+      sync_log_id: syncLog?.id ?? null,
+      job,
+      ...(syncLogResponse ? { sync_log: syncLogResponse } : {}),
     };
   }
 

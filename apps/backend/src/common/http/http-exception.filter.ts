@@ -38,6 +38,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       path: request.originalUrl,
       request_id: request.requestId,
       timestamp: new Date().toISOString(),
+      ...this.resolveExtraFields(exceptionResponse),
     });
   }
 
@@ -56,5 +57,22 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
 
     return exception instanceof Error ? exception.message : 'Internal server error';
+  }
+
+  private resolveExtraFields(exceptionResponse: unknown) {
+    if (!exceptionResponse || typeof exceptionResponse !== 'object' || Array.isArray(exceptionResponse)) {
+      return {};
+    }
+
+    const extraFields: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(exceptionResponse)) {
+      if (key === 'message' || key === 'statusCode' || key === 'error') {
+        continue;
+      }
+
+      extraFields[key] = value;
+    }
+
+    return extraFields;
   }
 }

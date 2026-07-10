@@ -40,6 +40,7 @@ describe('BookingService', () => {
       update: jest.fn(),
     },
     room: {
+      findFirst: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
     },
@@ -244,6 +245,7 @@ describe('BookingService', () => {
     });
     tx.reservationRoom.findMany.mockResolvedValue([{ status: BookingStatus.CHECKED_OUT }]);
     tx.reservationGroup.update.mockResolvedValue(null);
+    tx.room.findFirst.mockResolvedValue(reservationRoom.room);
     tx.housekeepingTask.create.mockResolvedValue(null);
     tx.billing.findUnique.mockResolvedValue(null);
     tx.billing.create.mockResolvedValue({
@@ -297,11 +299,79 @@ describe('BookingService', () => {
     }
   });
 
+  it('creates a pending invoice automatically when checking in a room stay without billing', async () => {
+    tx.reservationRoom.findUnique.mockResolvedValue({
+      ...reservationRoom,
+      status: BookingStatus.BOOKED,
+      room: null,
+    });
+    tx.reservationRoom.update.mockResolvedValue({
+      ...reservationRoom,
+      status: BookingStatus.CHECKED_IN,
+      room: reservationRoom.room,
+    });
+
+    const response = await service.checkInReservationRoom(reservationRoom.id, {});
+
+    expect(tx.billing.findUnique).toHaveBeenCalledWith({
+      where: { reservationRoomId: reservationRoom.id },
+      include: { payments: true },
+    });
+    expect(tx.billing.create).toHaveBeenCalledTimes(1);
+    const billingCreatePayload = tx.billing.create.mock.calls[0][0];
+    expect(billingCreatePayload.data.reservationRoomId).toBe(reservationRoom.id);
+    expect(billingCreatePayload.data.paymentStatus).toBe(PaymentStatus.PENDING);
+    expect(billingCreatePayload.data.amount.toString()).toBe('4200');
+    expect(billingCreatePayload.data.tax.toString()).toBe('0');
+    expect(billingCreatePayload.data.total.toString()).toBe('4200');
+    expect(response.reservation_status).toBe(BookingStatus.CHECKED_IN);
+  });
+
+  it('expands advance billing to the full stay amount when checking in', async () => {
+    tx.reservationRoom.findUnique.mockResolvedValue({
+      ...reservationRoom,
+      status: BookingStatus.BOOKED,
+      room: null,
+    });
+    tx.reservationRoom.update.mockResolvedValue({
+      ...reservationRoom,
+      status: BookingStatus.CHECKED_IN,
+      room: reservationRoom.room,
+    });
+    tx.billing.findUnique.mockResolvedValue({
+      id: 'billing-1',
+      reservationRoomId: reservationRoom.id,
+      amount: new Prisma.Decimal('2500.00'),
+      tax: new Prisma.Decimal('0'),
+      total: new Prisma.Decimal('2500.00'),
+      paymentStatus: PaymentStatus.PAID,
+      payments: [
+        {
+          amount: new Prisma.Decimal('2500.00'),
+          status: PaymentTransactionStatus.SUCCEEDED,
+        },
+      ],
+    });
+
+    await service.checkInReservationRoom(reservationRoom.id, {});
+
+    expect(tx.billing.create).not.toHaveBeenCalled();
+    expect(tx.billing.update).toHaveBeenCalledWith({
+      where: { id: 'billing-1' },
+      data: {
+        amount: reservationRoom.totalAmount,
+        total: reservationRoom.totalAmount,
+        paymentStatus: PaymentStatus.PARTIAL,
+      },
+    });
+  });
+
   it('creates a pending invoice automatically when checking out a room stay without billing', async () => {
     const response = await service.checkOutReservationRoom(reservationRoom.id);
 
     expect(tx.billing.findUnique).toHaveBeenCalledWith({
       where: { reservationRoomId: reservationRoom.id },
+      include: { payments: true },
     });
     expect(tx.billing.create).toHaveBeenCalledTimes(1);
     const billingCreatePayload = tx.billing.create.mock.calls[0][0];
@@ -317,11 +387,21 @@ describe('BookingService', () => {
     tx.billing.findUnique.mockResolvedValue({
       id: 'billing-1',
       reservationRoomId: reservationRoom.id,
+      tax: new Prisma.Decimal('0'),
+      payments: [],
     });
 
     await service.checkOutReservationRoom(reservationRoom.id);
 
     expect(tx.billing.create).not.toHaveBeenCalled();
+    expect(tx.billing.update).toHaveBeenCalledWith({
+      where: { id: 'billing-1' },
+      data: {
+        amount: reservationRoom.totalAmount,
+        total: reservationRoom.totalAmount,
+        paymentStatus: PaymentStatus.PENDING,
+      },
+    });
   });
 
   it('builds reservation feed status filters with the prisma status field', () => {
@@ -430,8 +510,24 @@ describe('BookingService', () => {
       rooms: {
         some: {
           status: { not: BookingStatus.CANCELLED },
-          arrivalDate: { lt: new Date('2026-08-02T00:00:00.000Z') },
-          departureDate: { gt: new Date('2026-08-01T00:00:00.000Z') },
+          OR: [
+            {
+              arrivalDate: { lt: new Date('2026-08-02T00:00:00.000Z') },
+              departureDate: { gt: new Date('2026-08-01T00:00:00.000Z') },
+            },
+            {
+              checkedInAt: {
+                gte: new Date('2026-08-01T00:00:00.000Z'),
+                lt: new Date('2026-08-02T00:00:00.000Z'),
+              },
+            },
+            {
+              checkedOutAt: {
+                gte: new Date('2026-08-01T00:00:00.000Z'),
+                lt: new Date('2026-08-02T00:00:00.000Z'),
+              },
+            },
+          ],
         },
       },
     });
@@ -501,6 +597,7 @@ describe('BookingService', () => {
       from: '2026-06-25',
       to: '2026-06-26',
     });
+    expect(tx.billing.create).not.toHaveBeenCalled();
     expect(response.external_reservation_id).toBe('HBR-D-260623-ABCD');
   });
 
@@ -523,13 +620,17 @@ describe('BookingService', () => {
     expect(tx.billing.create.mock.calls[0][0]).toMatchObject({
       data: {
         reservationRoomId: 'direct-room-1',
+        amount: new Prisma.Decimal('4200.00'),
+        total: new Prisma.Decimal('4200.00'),
         paymentStatus: PaymentStatus.PAID,
       },
     });
     expect(tx.billing.create.mock.calls[1][0]).toMatchObject({
       data: {
         reservationRoomId: 'direct-room-2',
-        paymentStatus: PaymentStatus.PARTIAL,
+        amount: new Prisma.Decimal('800.00'),
+        total: new Prisma.Decimal('800.00'),
+        paymentStatus: PaymentStatus.PAID,
       },
     });
     expect(tx.paymentTransaction.create).toHaveBeenCalledTimes(2);
@@ -555,18 +656,12 @@ describe('BookingService', () => {
     );
   });
 
-  it('creates pending invoices for room lines not covered by a smaller walk-in advance', async () => {
-    tx.billing.create
-      .mockResolvedValueOnce({
-        id: 'billing-1',
-        total: new Prisma.Decimal('4200.00'),
-        paymentStatus: PaymentStatus.PARTIAL,
-      })
-      .mockResolvedValueOnce({
-        id: 'billing-2',
-        total: new Prisma.Decimal('4200.00'),
-        paymentStatus: PaymentStatus.PENDING,
-      });
+  it('records only collected advance billing for room lines covered by a smaller walk-in advance', async () => {
+    tx.billing.create.mockResolvedValueOnce({
+      id: 'billing-1',
+      total: new Prisma.Decimal('2500.00'),
+      paymentStatus: PaymentStatus.PAID,
+    });
 
     await service.createDirectReservation({
       property_id: 'property-1',
@@ -581,17 +676,13 @@ describe('BookingService', () => {
       advance_payment_provider: PaymentProvider.CASH,
     });
 
-    expect(tx.billing.create).toHaveBeenCalledTimes(2);
+    expect(tx.billing.create).toHaveBeenCalledTimes(1);
     expect(tx.billing.create.mock.calls[0][0]).toMatchObject({
       data: {
         reservationRoomId: 'direct-room-1',
-        paymentStatus: PaymentStatus.PARTIAL,
-      },
-    });
-    expect(tx.billing.create.mock.calls[1][0]).toMatchObject({
-      data: {
-        reservationRoomId: 'direct-room-2',
-        paymentStatus: PaymentStatus.PENDING,
+        amount: new Prisma.Decimal('2500.00'),
+        total: new Prisma.Decimal('2500.00'),
+        paymentStatus: PaymentStatus.PAID,
       },
     });
     expect(tx.paymentTransaction.create).toHaveBeenCalledTimes(1);

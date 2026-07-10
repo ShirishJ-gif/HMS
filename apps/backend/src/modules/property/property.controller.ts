@@ -49,6 +49,11 @@ export class PropertyController {
     return this.propertyService.findProperties(query, user);
   }
 
+  @Get('property-setup/workspace')
+  getSetupWorkspace(@CurrentUser() user: AuthenticatedUser) {
+    return this.propertyService.getSetupWorkspace(user);
+  }
+
   @Put('properties/:id/status')
   @Roles(UserRole.PLATFORM_OWNER)
   updatePropertyStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdatePropertyStatusDto) {

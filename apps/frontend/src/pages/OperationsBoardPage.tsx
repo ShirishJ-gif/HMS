@@ -2,12 +2,11 @@ import { ReactNode, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api, getApiErrorMessage } from '../api/client';
 import { Billing, DashboardSummary, Guest, HousekeepingTask, Property, ReservationGroup, Room } from '../api/types';
-import { fetchAllPages } from '../api/pagination';
 import { CustomSelect } from '../components/CustomSelect';
 import { useScrollLock } from '../hooks/useScrollLock';
 import { capitalizeFirstLetter, formatCompactReservationId, formatCurrency } from '../utils/format';
 import { createPreviewData, isPreviewId } from './previewData';
-import { FloatingSuccessToast } from './ui';
+import { FloatingSuccessToast, SearchInput } from './ui';
 
 type BoardRow = {
   reservation_group_id: string;
@@ -30,6 +29,7 @@ type OperationsBoardData = {
 type OperationsBoardState = { data: OperationsBoardData | null; error: string | null; loading: boolean };
 
 let operationsBoardCache: OperationsBoardData | null = null;
+let operationsBoardCacheKey = '';
 let operationsBoardCacheUpdatedAt = 0;
 const operationsBoardCacheTtlMs = 60_000;
 
@@ -39,6 +39,9 @@ function getLocalDate() {
 }
 function fmtDate(d: string) {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(`${d}T00:00:00`));
+}
+function fmtFullDate(d: string) {
+  return new Intl.DateTimeFormat(undefined, { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(`${d}T00:00:00`));
 }
 function fmtPolicyTime(value?: string | null) {
   const raw = value || '00:00';
@@ -176,7 +179,7 @@ function CheckInCard({ row, balanceDue, hkOpen, today, onVerify, onRemind, check
           >
             {formatCompactReservationId(row.external_reservation_id)}
           </code>
-          <span>{fmtDate(row.room.arrival_date)} → {fmtDate(row.room.departure_date)}</span>
+          <span>{fmtFullDate(row.room.arrival_date)} → {fmtFullDate(row.room.departure_date)}</span>
           {hkOpen && <span className="text-[9.5px] font-bold px-2 py-0.5 rounded-full border border-sky-200 bg-sky-50 text-sky-700">HK open</span>}
         </div>
 
@@ -189,14 +192,14 @@ function CheckInCard({ row, balanceDue, hkOpen, today, onVerify, onRemind, check
             <button
               disabled={reminderPending}
               onClick={onRemind}
-              className="h-8 flex-1 min-w-0 px-3 text-[11.5px] font-bold rounded-lg border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 disabled:opacity-40 transition-colors"
+              className="h-8 flex-1 min-w-0 px-3 text-[11.5px] font-bold rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
             >
               {reminderPending ? 'Sending…' : 'Remind'}
             </button>
             <button
               disabled={checkInPending}
               onClick={onVerify}
-              className="h-8 flex-1 min-w-0 px-3 text-[11.5px] font-bold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-40 transition-colors"
+              className="h-8 flex-1 min-w-0 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-[11.5px] font-bold text-emerald-600 shadow-sm shadow-emerald-900/5 transition-all hover:border-emerald-500 hover:bg-emerald-500 hover:text-white hover:shadow-md hover:shadow-emerald-900/10 disabled:opacity-40 disabled:hover:border-emerald-100 disabled:hover:bg-emerald-50 disabled:hover:text-emerald-600 disabled:hover:shadow-sm"
             >
               {checkInPending ? 'Processing…' : 'Verify'}
             </button>
@@ -239,7 +242,7 @@ function DepartureCard({ row, balanceDue, today, onCheckOut, pending }: {
           >
             {formatCompactReservationId(row.external_reservation_id)}
           </code>
-          <span>{fmtDate(row.room.arrival_date)} → {fmtDate(row.room.departure_date)}</span>
+          <span>{fmtFullDate(row.room.arrival_date)} → {fmtFullDate(row.room.departure_date)}</span>
         </div>
         <div className="flex items-center justify-between pt-3 border-t border-slate-50">
           <div className="flex items-center gap-2">
@@ -359,10 +362,12 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
   const [actionError, setActionError]     = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<{ id: string; type: 'checkin' | 'checkout' | 'reminder' } | null>(null);
-  const [boardState, setBoardState]       = useState<OperationsBoardState>(() => ({
-    data: operationsBoardCache, error: null, loading: !operationsBoardCache,
-  }));
   const today = getLocalDate();
+  const initialCacheKey = `ALL:${today}`;
+  const initialOperationsBoardCache = operationsBoardCacheKey === initialCacheKey ? operationsBoardCache : null;
+  const [boardState, setBoardState]       = useState<OperationsBoardState>(() => ({
+    data: initialOperationsBoardCache, error: null, loading: !initialOperationsBoardCache,
+  }));
 
   useEffect(() => {
     if (!actionSuccess) return;
@@ -372,28 +377,21 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
 
   useEffect(() => {
     let active = true;
-    const hasFreshCache = operationsBoardCache && reloadKey === 0 && Date.now() - operationsBoardCacheUpdatedAt < operationsBoardCacheTtlMs;
+    const cacheKey = `${propertyFilter}:${today}`;
+    const hasFreshCache = operationsBoardCache && operationsBoardCacheKey === cacheKey && reloadKey === 0 && Date.now() - operationsBoardCacheUpdatedAt < operationsBoardCacheTtlMs;
     if (hasFreshCache) { setBoardState({ data: operationsBoardCache, error: null, loading: false }); return () => { active = false; }; }
     setBoardState(cur => ({ ...cur, error: null, loading: !cur.data }));
-    Promise.all([
-      api.get<DashboardSummary>('/dashboard/summary'),
-      fetchAllPages<ReservationGroup>('/bookings/groups'),
-      fetchAllPages<Guest>('/guests'),
-      fetchAllPages<Property>('/properties'),
-      fetchAllPages<Room>('/rooms'),
-      fetchAllPages<HousekeepingTask>('/housekeeping'),
-      fetchAllPages<Billing>('/billings'),
-    ]).then(([dashRes, groups, guests, props, rooms, hk, bills]) => {
+    api.get<OperationsBoardData>('/operations-board', { params: { property_id: propertyFilter, date: today } }).then((res) => {
       if (!active) return;
-      const next: OperationsBoardData = { billings: bills, dashboard: dashRes.data, guests, housekeeping: hk, properties: props, rooms, reservationGroups: groups };
-      operationsBoardCache = next; operationsBoardCacheUpdatedAt = Date.now();
+      const next = res.data;
+      operationsBoardCache = next; operationsBoardCacheKey = cacheKey; operationsBoardCacheUpdatedAt = Date.now();
       setBoardState({ data: next, error: null, loading: false });
     }).catch((err: unknown) => {
       if (!active) return;
       setBoardState(cur => ({ data: cur.data, error: getApiErrorMessage(err), loading: false }));
     });
     return () => { active = false; };
-  }, [reloadKey]);
+  }, [propertyFilter, reloadKey, today]);
 
   function blockPreviewAction(id: string) {
     if (!isPreviewId(id)) return false;
@@ -506,6 +504,9 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
   const occupancyPct = occupancyTotal > 0 ? Math.round((occupancyDone / occupancyTotal) * 100) : 0;
   const checkInTotal = checkedInToday + arrivals.length;
   const hasAlerts    = lateArrivals.length > 0 || hkBlockedRows.length > 0 || balanceDueRows.length > 0;
+  const alertBannerTone = lateArrivals.length > 0
+    ? { border: 'border-rose-200', headerBg: 'bg-rose-50/80', headerBorder: 'border-rose-100', dot: 'bg-rose-400', text: 'text-rose-800' }
+    : { border: 'border-sky-200', headerBg: 'bg-sky-50/70', headerBorder: 'border-sky-100', dot: 'bg-sky-400', text: 'text-sky-800' };
   const hkOpen       = hkTasks.filter(t => isHousekeepingOpenStatus(t.status));
   const hkStatuses   = ['DIRTY', 'CLEANING', 'CLEAN', 'INSPECTED', 'OUT_OF_SERVICE'] as const;
 
@@ -536,7 +537,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
           <div className="flex w-full max-w-[34rem] flex-shrink-0 flex-col gap-3 pt-1">
             <div className="flex items-center justify-end gap-2">
               {[
-                { label: `${checkInQueue.length} arriving`,  dot: 'bg-indigo-400', alert: lateArrivals.length > 0 },
+                { label: `${checkInQueue.length} arriving`,  dot: 'bg-indigo-400', alert: false },
                 { label: `${inHouse.length} in house`,       dot: 'bg-emerald-400', alert: false },
                 { label: `${departures.length} departing`,   dot: 'bg-amber-400',  alert: false },
               ].map(c => (
@@ -567,17 +568,14 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
 
         {/* Row 2: search + property filter */}
         <div className="flex items-center gap-3 px-5 lg:px-8 pb-4">
-          <div className="relative">
-            <svg className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-              <path d="m21 21-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z"/>
-            </svg>
-            <input
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Guest, room, reservation…"
-              className="h-10 w-72 rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-3 text-[12px] text-slate-700 outline-none placeholder-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
-            />
-          </div>
+          <SearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Guest, room, reservation…"
+            className="relative"
+            iconClassName="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+            inputClassName="h-10 w-72 rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-3 text-[12px] text-slate-700 outline-none placeholder-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+          />
 
           {/* Property toggle pills */}
           <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1">
@@ -636,10 +634,10 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
 
         {/* ── Alert banner ── */}
         {hasAlerts && activeTab === 'board' && (
-          <div className="bg-white rounded-2xl border border-sky-200 overflow-hidden">
-            <div className="flex items-center gap-2.5 px-5 py-2.5 bg-sky-50/70 border-b border-sky-100">
-              <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse flex-shrink-0" />
-              <p className="text-[11.5px] font-bold text-sky-800">
+          <div className={`bg-white rounded-2xl border ${alertBannerTone.border} overflow-hidden`}>
+            <div className={`flex items-center gap-2.5 px-5 py-2.5 ${alertBannerTone.headerBg} border-b ${alertBannerTone.headerBorder}`}>
+              <span className={`w-2 h-2 rounded-full ${alertBannerTone.dot} animate-pulse flex-shrink-0`} />
+              <p className={`text-[11.5px] font-bold ${alertBannerTone.text}`}>
                 {[
                   lateArrivals.length > 0    && `${lateArrivals.length} late arrival${lateArrivals.length > 1 ? 's' : ''}`,
                   hkBlockedRows.length > 0   && `${hkBlockedRows.length} HK alert${hkBlockedRows.length > 1 ? 's' : ''}`,
@@ -650,7 +648,6 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
             <div className="px-5 py-3 flex flex-wrap gap-2">
               {lateArrivals.map(r => (
                 <div key={r.room.id} className="flex items-center gap-2 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2">
-                  <RoomBadge categoryName={r.room.room_category.name} num={r.room.room.room_number ?? null} size="sm" />
                   <div><p className="text-[11px] font-bold text-rose-700">{r.room.guest_name ?? r.primary_guest_name}</p><p className="text-[10px] text-rose-500">Late since {fmtDate(r.room.arrival_date)}</p></div>
                 </div>
               ))}
@@ -679,7 +676,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
               <ColHeader label="Arrivals today" title="Check-in queue" count={checkInQueue.length}
                 right={
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">{checkInPolicyLabel}</span>
+                    {/* <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">{checkInPolicyLabel}</span> */}
                     {lateArrivals.length > 0 && <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-100">{lateArrivals.length} late</span>}
                   </div>
                 } />
@@ -927,21 +924,24 @@ function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending,
       <section aria-label="Arrival verification details" className="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-3rem)] w-[calc(100vw_-_2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-3.5">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-500">Arrival verification</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Arrival verification</p>
             <h3 className="mt-1 text-[17px] font-black text-slate-900">{guestName}</h3>
             <p className="mt-0.5 text-[12px] text-slate-400">{row.property.name}</p>
           </div>
           <button aria-label="Close arrival verification" className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onClick={onClose} type="button">×</button>
         </div>
         <div className="min-h-0 space-y-3 overflow-y-auto p-4">
-          <div className="flex items-center gap-3 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
-            <RoomBadge categoryName={row.room.room_category.name} num={selectedRoom?.room_number ?? row.room.room.room_number ?? null} size="lg" />
+          <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+            <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-[13px] font-extrabold text-slate-700">
+              {selectedRoom?.room_number ?? row.room.room.room_number ?? 'TBD'}
+            </span>
             <div className="min-w-0">
+              <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Room type</p>
               <p className="text-[13px] font-bold text-slate-800">{row.room.room_category.name}</p>
               <p className="text-[11px] text-slate-500">{row.room.rate_plan.name}</p>
-              <p className="mt-1 text-[10.5px] font-semibold text-indigo-600">
+              {/* <p className="mt-1 text-[10.5px] font-semibold text-emerald-700">
                 {selectedRoom ? `Assigning room ${selectedRoom.room_number}` : 'Select a room for check-in'}
-              </p>
+              </p> */}
             </div>
           </div>
           <div className="space-y-2 rounded-xl border border-slate-100 bg-slate-50/70 p-3.5">
@@ -955,11 +955,12 @@ function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending,
                 value: room.id,
               }))}
               placeholder={assignableRooms.length === 0 ? 'No room available for this stay' : 'Select room to assign'}
+              tone="neutral"
               value={selectedRoomId}
               onChange={setSelectedRoomId}
             />
             {assignableRooms.length === 0 ? (
-              <p className="text-[11px] font-medium text-rose-500">No available room matches this stay window and room category.</p>
+              <p className="text-[11px] font-medium text-rose-500">No available room matches this stay window and room type.</p>
             ) : (
               <p className="text-[11px] text-slate-500">Check-in will assign the selected room and move the stay into that room on the timeline.</p>
             )}
@@ -978,8 +979,8 @@ function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending,
             <dl className="divide-y divide-slate-100 rounded-xl border border-slate-100 px-4">
               {[
                 ['Reservation', row.external_reservation_id],
-                ['Arrival', fmtDate(row.room.arrival_date)],
-                ['Departure', fmtDate(row.room.departure_date)],
+                ['Arrival', fmtFullDate(row.room.arrival_date)],
+                ['Departure', fmtFullDate(row.room.departure_date)],
                 ['Guests', formatGuestCount(row.room.adults, row.room.children)],
                 ['Stay total', row.room.total_amount == null ? '—' : formatCurrency(row.room.total_amount)],
               ].map(([label, value]) => (
@@ -1008,7 +1009,7 @@ function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending,
         <div className="flex items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/80 px-5 py-3.5">
           <p className="text-[11px] text-slate-500">Review guest and room details before completing check-in.</p>
           <button
-            className="h-9 rounded-lg bg-indigo-600 px-4 text-[12px] font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
+            className="h-9 rounded-lg border border-emerald-100 bg-emerald-50 px-4 text-[12px] font-semibold text-emerald-600 shadow-sm shadow-emerald-900/5 transition-all hover:border-emerald-500 hover:bg-emerald-500 hover:text-white hover:shadow-md hover:shadow-emerald-900/10 disabled:opacity-50 disabled:hover:border-emerald-100 disabled:hover:bg-emerald-50 disabled:hover:text-emerald-600 disabled:hover:shadow-sm"
             disabled={checkInPending || !selectedRoomId}
             onClick={() => onConfirm(selectedRoomId)}
             type="button"
@@ -1067,8 +1068,8 @@ function InHouseStayModal({ balanceDue, checkOutPending, hkOpen, onClose, onChec
           <dl className="divide-y divide-slate-100 rounded-xl border border-slate-100 px-4">
             {[
               ['Reservation', row.external_reservation_id],
-              ['Arrival', fmtDate(row.room.arrival_date)],
-              ['Departure', fmtDate(row.room.departure_date)],
+              ['Arrival', fmtFullDate(row.room.arrival_date)],
+              ['Departure', fmtFullDate(row.room.departure_date)],
               ['Remaining', remainingDays === 0 ? 'Due out today' : `${remainingDays} day${remainingDays === 1 ? '' : 's'}`],
               ['Guests', formatGuestCount(row.room.adults, row.room.children)],
               ['Stay total', row.room.total_amount == null ? '—' : formatCurrency(row.room.total_amount)],

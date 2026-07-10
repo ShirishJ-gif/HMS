@@ -186,12 +186,12 @@ function makeGroup(input: StayInput): ReservationGroup {
 
 function buildGroups(today: string) {
   return [
-    makeGroup({ id: 'mehta', guest: 'Riya Mehta', phone: '+91 98100 41001', roomNumber: '201', categorySlug: 'deluxe', arrival: today, departure: addDays(today, 3), status: 'BOOKED', total: 26700 }),
-    makeGroup({ id: 'nair', guest: 'Arjun Nair', phone: '+91 98100 41002', roomNumber: '401', categorySlug: 'suite', arrival: addDays(today, -1), departure: addDays(today, 2), status: 'BOOKED', total: 42600 }),
-    makeGroup({ id: 'shah', guest: 'Kabir Shah', phone: '+91 98100 41003', roomNumber: '301', categorySlug: 'twin', arrival: addDays(today, -2), departure: addDays(today, 2), status: 'CHECKED_IN', total: 30400 }),
-    makeGroup({ id: 'rao', guest: 'Ananya Rao', phone: '+91 98100 41004', roomNumber: '402', categorySlug: 'suite', arrival: addDays(today, -3), departure: today, status: 'CHECKED_IN', total: 42600 }),
+    makeGroup({ id: 'mehta', guest: 'Riya Mehta', phone: '+91 98100 41001', roomNumber: '201', categorySlug: 'deluxe', arrival: today, departure: addDays(today, 3), status: 'BOOKED', total: 26700, source: 'Booking.com' }),
+    makeGroup({ id: 'nair', guest: 'Arjun Nair', phone: '+91 98100 41002', roomNumber: '401', categorySlug: 'suite', arrival: addDays(today, -1), departure: addDays(today, 2), status: 'BOOKED', total: 42600, source: 'Airbnb' }),
+    makeGroup({ id: 'shah', guest: 'Kabir Shah', phone: '+91 98100 41003', roomNumber: '301', categorySlug: 'twin', arrival: addDays(today, -2), departure: addDays(today, 2), status: 'CHECKED_IN', total: 30400, source: 'Booking.com' }),
+    makeGroup({ id: 'rao', guest: 'Ananya Rao', phone: '+91 98100 41004', roomNumber: '402', categorySlug: 'suite', arrival: addDays(today, -3), departure: today, status: 'CHECKED_IN', total: 42600, source: 'Expedia' }),
     makeGroup({ id: 'kapoor', guest: 'Vikram Kapoor', phone: '+91 98100 41005', roomNumber: '102', categorySlug: 'classic', arrival: addDays(today, -2), departure: today, status: 'CHECKED_OUT', total: 12800, source: 'DIRECT' }),
-    makeGroup({ id: 'iyer', guest: 'Maya Iyer', phone: '+91 98100 41006', roomNumber: '202', categorySlug: 'deluxe', arrival: addDays(today, 2), departure: addDays(today, 5), status: 'BOOKED', total: 26700 }),
+    makeGroup({ id: 'iyer', guest: 'Maya Iyer', phone: '+91 98100 41006', roomNumber: '202', categorySlug: 'deluxe', arrival: addDays(today, 2), departure: addDays(today, 5), status: 'BOOKED', total: 26700, source: 'Airbnb' }),
   ];
 }
 
@@ -275,6 +275,29 @@ function buildBilling(groups: ReservationGroup[]) {
   ];
 }
 
+function buildRevenueByOta(groups: ReservationGroup[]) {
+  const rows = new Map<string, number>();
+  for (const group of groups) {
+    const label = displayOtaLabel(formatSourceLabel(group.source ?? 'OTA'));
+    rows.set(label, (rows.get(label) ?? 0) + (group.total_amount ?? 0));
+  }
+  return Array.from(rows.entries())
+    .map(([label, amount]) => ({ label, amount }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
+function displayOtaLabel(value: string) {
+  return value.trim().toLowerCase() === 'booking.com' ? 'Booking' : value;
+}
+
+function formatSourceLabel(value: string) {
+  return value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ') || 'Direct';
+}
+
 function buildTransactions(billings: Billing[]): PaymentTransaction[] {
   return billings.flatMap(billing => billing.payments.map(payment => ({
     id: payment.id,
@@ -356,6 +379,7 @@ export function createPreviewData() {
     active_reservation_groups: 5,
     open_housekeeping_tasks: housekeeping.filter(task => !task.completed_at).length,
     pending_balance_total: billings.reduce((sum, billing) => sum + billing.balance_due, 0),
+    revenue_by_ota: buildRevenueByOta(reservationGroups),
   };
   const folios = new Map<string, ReservationGroupFolio>();
   for (const group of reservationGroups) {

@@ -1,8 +1,9 @@
-import { useDeferredValue, useEffect, useState } from 'react';
-import { fetchAllPages } from '../api/pagination';
-import { Guest, Property, ReservationGroup } from '../api/types';
+import { useEffect, useState } from 'react';
+import { api, getApiErrorMessage } from '../api/client';
+import { Property } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
-import { useAsync } from '../hooks/useAsync';
+import { DelayedSpinnerOverlay } from '../components/Spinner';
+import { ErrorMsg, SearchInput, StatCard } from './ui';
 
 type DisplayGuest = {
   id: string; property_id: string; name: string; phone: string; email: string | null;
@@ -11,6 +12,26 @@ type DisplayGuest = {
   source: 'GUEST_REGISTRY' | 'RESERVATION_FEED';
   import_blocked: boolean; import_error: string | null; reservation_ids: string[];
 };
+
+type GuestDirectoryResponse = {
+  guests: DisplayGuest[];
+  meta: {
+    limit: number;
+    page: number;
+    total: number;
+    total_pages: number;
+  };
+  properties: Property[];
+  summary: {
+    reservation_feed: number;
+    repeat_guests: number;
+    total_guests: number;
+    with_email: number;
+  };
+};
+
+const guestPageLimit = 50;
+const guestSearchDebounceMs = 550;
 
 /* ── Avatar helpers ── */
 const AVATAR_COLORS = [
@@ -54,44 +75,84 @@ function GuestDetailField({ icon, label, value, mono }: { icon: string; label: s
 
 /* ══ Main page ══ */
 export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: string }) {
-  const [reloadKey, setReloadKey] = useState(0);
-  const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), [reloadKey]);
-  const guestsState     = useAsync(async () => fetchAllPages<Guest>('/guests'), [reloadKey]);
-  const feedState       = useAsync(async () => fetchAllPages<ReservationGroup>('/bookings/feed'), [reloadKey]);
-
-  const properties    = propertiesState.data ?? [];
-  const mergedGuests  = buildGuestDisplayRows(guestsState.data ?? [], feedState.data ?? []);
-  const totalCount    = mergedGuests.length;
-  const feedCount     = mergedGuests.filter(g => g.source === 'RESERVATION_FEED').length;
-  const withEmail     = mergedGuests.filter(g => g.email).length;
-  const repeatGuests  = mergedGuests.filter(g => g.reservation_ids.length > 1).length;
-
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch]         = useState('');
-  const deferredSearch              = useDeferredValue(search);
   const [sourceFilter, setSourceFilter] = useState<'ALL' | 'GUEST_REGISTRY' | 'RESERVATION_FEED'>('ALL');
   const [propertyFilter, setPropertyFilter] = useState(activePropertyId || 'ALL');
+  const [page, setPage] = useState(1);
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  const [directory, setDirectory] = useState<GuestDirectoryResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const filtered = mergedGuests.filter(g => {
-    if (sourceFilter !== 'ALL' && g.source !== sourceFilter) return false;
-    if (propertyFilter !== 'ALL' && g.property_id !== propertyFilter) return false;
-    return matchesGuestSearch(g, deferredSearch);
-  });
-
-  const selected = filtered.find(g => g.id === selectedId) ?? null;
-  const filteredIds = filtered.map(g => g.id).join('|');
+  const properties = directory?.properties ?? [];
+  const guests = directory?.guests ?? [];
+  const meta = directory?.meta ?? { limit: guestPageLimit, page: 1, total: 0, total_pages: 1 };
+  const summary = directory?.summary ?? { reservation_feed: 0, repeat_guests: 0, total_guests: 0, with_email: 0 };
+  const selected = guests.find(g => g.id === selectedId) ?? null;
+  const guestIds = guests.map(g => g.id).join('|');
 
   useEffect(() => {
     if (activePropertyId) setPropertyFilter(activePropertyId);
   }, [activePropertyId]);
 
   useEffect(() => {
-    if (selectedId && filtered.some(g => g.id === selectedId)) return;
-    setSelectedId(filtered[0]?.id ?? null);
-  }, [filteredIds, selectedId]);
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, guestSearchDebounceMs);
+
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [propertyFilter, sourceFilter]);
+
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+
+    async function loadDirectory() {
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await api.get<GuestDirectoryResponse>('/guests/directory', {
+          params: {
+            limit: guestPageLimit,
+            page,
+            property_id: propertyFilter,
+            search: debouncedSearch.trim() || undefined,
+            source: sourceFilter,
+          },
+          signal: controller.signal,
+        });
+        if (!active) return;
+        setDirectory(response.data);
+      } catch (loadError) {
+        if (!active || controller.signal.aborted) return;
+        setError(getApiErrorMessage(loadError));
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    void loadDirectory();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [debouncedSearch, page, propertyFilter, sourceFilter]);
+
+  useEffect(() => {
+    if (selectedId && guests.some(g => g.id === selectedId)) return;
+    setSelectedId(guests[0]?.id ?? null);
+  }, [guestIds, selectedId]);
 
   return (
     <div className="relative min-h-screen -mx-5 lg:-mx-8 -my-6 lg:-my-8 bg-[#f5f5f3] flex flex-col">
+      <DelayedSpinnerOverlay loading={loading} />
       {/* ── Header ── */}
       <div className="px-5 lg:px-8 pt-6 lg:pt-8 pb-4 flex items-start justify-between gap-4 flex-shrink-0">
         <div>
@@ -106,27 +167,25 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
         {/* ── KPI strip ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {([
-            ['Total guests',     totalCount],
-            ['Reservation feed', feedCount],
-            ['Repeat guests',    repeatGuests],
-            ['With email',       withEmail],
+            ['Total guests',     summary.total_guests],
+            ['Reservation feed', summary.reservation_feed],
+            ['Repeat guests',    summary.repeat_guests],
+            ['With email',       summary.with_email],
           ] as [string, number][]).map(([label, val]) => (
-            <div key={label} className="bg-white rounded-xl border border-black/[0.06] px-4 py-3">
-              <p className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{label}</p>
-              <p className="text-[24px] font-bold text-slate-900 tracking-tight leading-none">{val}</p>
-            </div>
+            <StatCard key={label} label={label} value={val} />
           ))}
         </div>
 
         {/* ── Filter row ── */}
         <div className="flex items-center gap-2.5 flex-wrap">
-          <div className="relative w-64">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-              <path d="m21 21-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z"/>
-            </svg>
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Name, phone, email…"
-              className="w-full h-10 pl-9 pr-3 rounded-lg bg-white border border-black/[0.07] text-[12.5px] text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-indigo-200 transition-all" />
-          </div>
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="Name, phone, email…"
+            className="relative w-64"
+            iconClassName="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none"
+            inputClassName="w-full h-10 pl-9 pr-3 rounded-lg bg-white border border-black/[0.07] text-[12.5px] text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-indigo-200 transition-all"
+          />
           <div className="w-[220px] max-w-full">
             <CustomSelect
               onChange={value => setSourceFilter(value as typeof sourceFilter)}
@@ -144,7 +203,6 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
                 options={[{ label: 'All properties', value: 'ALL' }, ...properties.map(p => ({ label: p.name, value: p.id }))]} />
             </div>
           )}
-          <span className="ml-auto text-[11px] text-slate-400 flex-shrink-0">{filtered.length} profiles</span>
         </div>
 
         {/* ── Split panel ── */}
@@ -153,23 +211,21 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
           {/* Guest list */}
           <div className="flex flex-col bg-white rounded-xl border border-black/[0.06] overflow-hidden flex-shrink-0" style={{ width: 340 }}>
             <div className="flex-shrink-0 px-4 py-2.5 border-b border-slate-100">
-              <p className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wider">{filtered.length} guest{filtered.length !== 1 ? 's' : ''}</p>
+              <p className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wider">{meta.total} guest{meta.total !== 1 ? 's' : ''}</p>
             </div>
             <div className="flex-1 overflow-y-auto scrollbar-none">
-              {(guestsState.loading && !guestsState.data) && (
-                <div className="px-4 py-10 text-center text-[12px] text-slate-400">Loading guests…</div>
-              )}
-              {!guestsState.loading && filtered.length === 0 && (
+              {error && <div className="px-4 py-4"><ErrorMsg>{error}</ErrorMsg></div>}
+              {!loading && guests.length === 0 && (
                 <div className="px-4 py-10 text-center">
                   <p className="text-[13px] font-medium text-slate-400">No guests match your filters</p>
                 </div>
               )}
-              {filtered.map(g => {
+              {guests.map(g => {
                 const isSel = g.id === selectedId;
                 return (
                   <button key={g.id} onClick={() => setSelectedId(g.id)}
                     className={`w-full text-left px-4 py-3.5 border-b border-slate-50 flex items-start gap-3 transition-colors ${isSel ? 'bg-slate-100' : 'hover:bg-slate-50/70'}`}>
-                    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-extrabold flex-shrink-0 ${avatarColor(g.id)} ${isSel ? 'ring-2 ring-slate-300' : ''}`}>
+                    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-extrabold flex-shrink-0 ${avatarColor(g.id)}`}>
                       {initials(g.name)}
                     </div>
                     <div className="flex-1 min-w-0">
@@ -189,15 +245,35 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
                           {g.source === 'GUEST_REGISTRY' ? 'Registry' : 'Feed'}
                         </span>
                         {g.property?.code && <span className="text-[9.5px] text-slate-400 font-medium">{g.property.code}</span>}
-                        {g.reservation_ids.length > 0 && (
-                          <span className="text-[9.5px] text-slate-400 font-medium">· {g.reservation_ids.length} stay{g.reservation_ids.length !== 1 ? 's' : ''}</span>
-                        )}
                       </div>
                     </div>
                   </button>
                 );
               })}
             </div>
+            {meta.total_pages > 1 && (
+              <div className="flex flex-shrink-0 items-center justify-between gap-2 border-t border-slate-100 px-3 py-2">
+                <button
+                  type="button"
+                  disabled={loading || meta.page <= 1}
+                  onClick={() => setPage(current => Math.max(current - 1, 1))}
+                  className="h-8 rounded-lg border border-slate-200 px-3 text-[11px] font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Prev
+                </button>
+                <span className="text-[11px] font-semibold text-slate-400">
+                  {meta.page} / {meta.total_pages}
+                </span>
+                <button
+                  type="button"
+                  disabled={loading || meta.page >= meta.total_pages}
+                  onClick={() => setPage(current => Math.min(current + 1, meta.total_pages))}
+                  className="h-8 rounded-lg border border-slate-200 px-3 text-[11px] font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Detail panel */}
@@ -298,7 +374,7 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
                   </svg>
                 </div>
                 <p className="text-[13px] font-semibold text-slate-600">Select a guest to view details</p>
-                <p className="text-[11px] text-slate-400 mt-1">{filtered.length} profile{filtered.length !== 1 ? 's' : ''} available</p>
+                <p className="text-[11px] text-slate-400 mt-1">{meta.total} profile{meta.total !== 1 ? 's' : ''} available</p>
               </div>
             </div>
           )}
@@ -307,46 +383,4 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
 
     </div>
   );
-}
-
-/* ── Business logic helpers (unchanged) ── */
-function buildGuestDisplayRows(guests: Guest[], reservationFeed: ReservationGroup[]): DisplayGuest[] {
-  const bySignature = new Map<string, DisplayGuest>();
-  for (const guest of guests) {
-    const row: DisplayGuest = { ...guest, source: 'GUEST_REGISTRY', import_blocked: false, import_error: null, reservation_ids: [] };
-    bySignature.set(guestSignature(row.property_id, row.name, row.phone, row.email), row);
-  }
-  for (const group of reservationFeed) {
-    const guestName  = group.primary_guest?.name?.trim();
-    const guestPhone = group.primary_guest?.phone?.trim();
-    const guestEmail = group.primary_guest?.email?.trim() ?? null;
-    if (!guestName || !guestPhone) continue;
-    const signature = guestSignature(group.property_id, guestName, guestPhone, guestEmail);
-    const existing  = bySignature.get(signature);
-    if (existing) {
-      existing.reservation_ids = Array.from(new Set([...existing.reservation_ids, group.external_reservation_id]));
-      if (!existing.import_error && group.import_error) existing.import_error = group.import_error;
-      existing.import_blocked = existing.import_blocked || Boolean(group.import_blocked);
-      continue;
-    }
-    bySignature.set(signature, {
-      id: `feed-guest:${signature}`, property_id: group.property_id, name: guestName, phone: guestPhone, email: guestEmail,
-      id_proof: '-', address: group.import_blocked ? 'From provider reservation feed' : 'From reservation feed',
-      property: group.property, source: 'RESERVATION_FEED', import_blocked: Boolean(group.import_blocked),
-      import_error: group.import_error ?? null, reservation_ids: [group.external_reservation_id],
-      created_at: group.created_at, updated_at: group.updated_at,
-    });
-  }
-  return Array.from(bySignature.values()).sort((a, b) => a.name.localeCompare(b.name));
-}
-
-function guestSignature(propertyId: string, name: string, phone: string, email: string | null) {
-  return [propertyId, name.trim().toLowerCase(), phone.trim(), (email ?? '').trim().toLowerCase()].join('::');
-}
-
-function matchesGuestSearch(guest: DisplayGuest, search: string) {
-  const q = search.trim().toLowerCase();
-  if (!q) return true;
-  return [guest.name, guest.phone, guest.email ?? '', guest.id_proof, guest.address, guest.property?.name ?? '', guest.property?.code ?? '', ...guest.reservation_ids]
-    .join(' ').toLowerCase().includes(q);
 }

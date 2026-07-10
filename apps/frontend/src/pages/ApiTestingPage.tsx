@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
-import { ErrorMsg, LoadingMsg } from './ui';
+import { ErrorMsg, LoadingMsg, StatCard } from './ui';
 
 type TraceKind = 'ALL' | 'SYSTEM' | 'ZODOMUS';
 
@@ -164,10 +164,13 @@ export function ApiTestingPage() {
           { label: 'Zodomus calls', value: stats.zodomus },
           { label: 'Failed calls', value: stats.failed },
         ].map((item) => (
-          <div key={item.label} className="rounded-xl border border-black/[0.06] bg-white px-4 py-5">
-            <p className="mb-1 text-[9.5px] font-semibold uppercase tracking-wide text-slate-400">{item.label}</p>
-            <p className="text-[1.5rem] font-bold leading-none tracking-tight text-slate-900">{item.value}</p>
-          </div>
+          <StatCard
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            className="py-5"
+            valueClassName="text-[1.5rem] text-slate-900"
+          />
         ))}
       </div>
 

@@ -134,6 +134,7 @@ export function App() {
 
   // Property selector state
   const [properties, setProperties] = useState<Property[]>([]);
+  const [propertiesLoaded, setPropertiesLoaded] = useState(false);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>(
     () => localStorage.getItem('hms_active_property_id') ?? '',
   );
@@ -162,8 +163,10 @@ export function App() {
   }, [searchValue, user]);
   const channelWorkspaceActive = isChannelWorkspacePage(activePage);
   const channelWorkspace = useChannelWorkspace({
+    activePropertyId: selectedPropertyId,
     enabled: Boolean(user) && channelWorkspaceActive,
     diagnosticsEnabled: activePage === 'webhooks',
+    onPropertyChange: handlePropertySelect,
     sessionKey: user?.id ?? 'anonymous',
   });
 
@@ -191,7 +194,12 @@ export function App() {
 
   // Fetch properties for property selector
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setProperties([]);
+      setPropertiesLoaded(false);
+      return;
+    }
+    setPropertiesLoaded(false);
     fetchAllPages<Property>('/properties')
       .then((props) => {
         setProperties(props);
@@ -203,7 +211,8 @@ export function App() {
           localStorage.setItem('hms_active_property_id', props[0].id);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setPropertiesLoaded(true));
   }, [user]);
 
   // Close dropdowns on outside click
@@ -628,7 +637,7 @@ export function App() {
           className={`flex-1 min-h-0 overscroll-contain scrollbar-none ${activePage === 'setup' ? 'overflow-hidden' : 'overflow-y-auto'}`}
         >
           <div key={pageKey} className="px-5 lg:px-8 py-6 lg:py-8 animate-page-in">
-            {activePage === 'dashboard'    && <DashboardPage />}
+            {activePage === 'dashboard'    && <DashboardPage previewDataEnabled={previewDataEnabled} />}
             {isPlatformPage(activePage)     && <PlatformOwnerPage section={activePage} />}
             {activePage === 'org-users'    && <OrganizationUsersPage />}
             {activePage === 'notifications' && <NotificationsPage />}
@@ -636,7 +645,15 @@ export function App() {
             {/* {activePage === 'graphs'       && <GraphInsightsPage />} */}
             {activePage === 'operations'   && <OperationsBoardPage previewDataEnabled={previewDataEnabled} />}
             {activePage === 'setup'        && <PropertySetupPage onAddRooms={() => handlePageSelect('rooms')} onConfigureOta={() => handlePageSelect('mapping')} />}
-            {activePage === 'availability' && <AvailabilityPage previewDataEnabled={previewDataEnabled} />}
+            {activePage === 'availability' && (
+              <AvailabilityPage
+                activePropertyId={selectedPropertyId}
+                onPropertyChange={handlePropertySelect}
+                previewDataEnabled={previewDataEnabled}
+                properties={properties}
+                propertiesLoaded={propertiesLoaded}
+              />
+            )}
             {activePage === 'mapping'      && <OtaMappingPage onFullWorkspaceChange={setOtaMappingFullWorkspace} workspace={channelWorkspace} />}
             {activePage === 'rooms'        && <RoomsPage />}
             {activePage === 'bookings'     && <BookingsPage previewDataEnabled={previewDataEnabled} />}

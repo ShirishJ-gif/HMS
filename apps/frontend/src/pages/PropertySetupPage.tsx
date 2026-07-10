@@ -1,11 +1,11 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import '@daypicker/react/style.css';
 import { api, getApiErrorMessage } from '../api/client';
-import { fetchAllPages } from '../api/pagination';
 import { getStoredAuthUser } from '../api/session';
 import { PricingRule, PricingRuleType, Property, RatePlan, Room, RoomCategory } from '../api/types';
 import { CalendarDatePickerField, formatDatePickerLabel, InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { CustomSelect } from '../components/CustomSelect';
+import { formatPropertyTime, TimePolicyPicker } from '../components/TimePolicyPicker';
 import { useAsync } from '../hooks/useAsync';
 import { formatCurrency } from '../utils/format';
 import { labelCls, inputCls, primaryBtn, secondaryBtn, ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
@@ -19,28 +19,6 @@ const PROPERTY_COLORS = [
   { bg: 'bg-violet-600',  text: 'text-violet-600',  border: 'border-violet-500',  ring: 'stroke-violet-500',  bar: 'bg-violet-500'  },
 ];
 function getColor(idx: number) { return PROPERTY_COLORS[idx % PROPERTY_COLORS.length]; }
-function formatPropertyTime(value: string) {
-  const [hoursText, minutes = '00'] = value.split(':');
-  const hours = Number(hoursText);
-  if (!Number.isFinite(hours)) return value;
-  const suffix = hours >= 12 ? 'PM' : 'AM';
-  const displayHours = hours % 12 || 12;
-  return `${displayHours}:${minutes} ${suffix}`;
-}
-function parsePolicyTime(value: string) {
-  const [hoursText, minutesText = '00'] = value.split(':');
-  const hours24 = Number(hoursText);
-  const minute = Number(minutesText);
-  return {
-    hour12: hours24 % 12 || 12,
-    minute: Number.isFinite(minute) ? minute : 0,
-    period: hours24 >= 12 ? 'PM' : 'AM',
-  };
-}
-function buildPolicyTime(hour12: number, minute: number, period: string) {
-  const normalizedHour = period === 'PM' ? (hour12 === 12 ? 12 : hour12 + 12) : (hour12 === 12 ? 0 : hour12);
-  return `${String(normalizedHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-}
 const SETUP_PROGRESS_COLOR = {
   text: 'text-emerald-600',
   border: 'border-emerald-500',
@@ -66,6 +44,13 @@ const SETUP_STEPS = [
 ];
 type SetupKey = typeof SETUP_STEPS[number]['key'];
 type SetupState = Record<SetupKey, boolean>;
+type PropertySetupWorkspace = {
+  categories: RoomCategory[];
+  pricing_rules: PricingRule[];
+  properties: Property[];
+  rate_plans: RatePlan[];
+  rooms: Room[];
+};
 const OPTIONAL_SETUP_KEYS = new Set<SetupKey>(['media']);
 
 function isSetupStepComplete(setup: SetupState, key: SetupKey) {
@@ -89,109 +74,6 @@ function computeSetup(p: Property, cats: RoomCategory[], rps: RatePlan[], rules:
     physicalRooms: hasPhysicalRooms,
     ota:          hasRoomTypes && hasRatePlans && hasPricingRules && hasPhysicalRooms,
   };
-}
-
-export function TimePolicyPicker({ invalid = false, onChange, value }: { invalid?: boolean; onChange: (value: string) => void; value: string }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const { hour12, minute, period } = parsePolicyTime(value);
-  const hours = Array.from({ length: 12 }, (_, index) => index + 1);
-  const minutes = Array.from({ length: 12 }, (_, index) => index * 5);
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [open]);
-
-  function commit(nextHour = hour12, nextMinute = minute, nextPeriod = period) {
-    onChange(buildPolicyTime(nextHour, nextMinute, nextPeriod));
-  }
-
-  return (
-    <div className="relative" ref={rootRef}>
-      <button
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        className={`flex h-11 w-full items-center justify-between rounded-xl border bg-white px-3.5 text-left shadow-sm shadow-slate-950/[0.03] outline-none transition ${invalid ? 'border-rose-300 ring-4 ring-rose-500/10' : open ? 'border-slate-400 ring-4 ring-slate-900/5' : 'border-slate-200 hover:border-slate-300'}`}
-        onClick={() => setOpen((current) => !current)}
-        type="button"
-      >
-        <span className="text-[13px] font-bold text-slate-900">{formatPropertyTime(value)}</span>
-      </button>
-
-      {open && (
-        <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-[18rem] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/15">
-          <div className="flex items-center justify-between border-b border-slate-100 bg-stone-50 px-3.5 py-2.5">
-            <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Select time</span>
-            <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 ring-1 ring-slate-200">{formatPropertyTime(value)}</span>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2 p-3">
-            <div>
-              <p className="mb-2 text-center text-[9.5px] font-bold uppercase tracking-[0.14em] text-slate-400">Hour</p>
-              <div className="scrollbar-none max-h-44 space-y-1 overflow-y-auto rounded-xl bg-slate-50 p-1">
-                {hours.map((hour) => (
-                  <button
-                    className={`w-full rounded-lg px-2 py-2.5 text-[12px] font-bold transition ${hour === hour12 ? 'bg-white text-slate-900 ring-1 ring-slate-300 shadow-sm' : 'text-slate-600 hover:bg-white hover:text-slate-900'}`}
-                    key={hour}
-                    onClick={() => commit(hour)}
-                    type="button"
-                  >
-                    {hour}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <p className="mb-2 text-center text-[9.5px] font-bold uppercase tracking-[0.14em] text-slate-400">Min</p>
-              <div className="scrollbar-none max-h-44 space-y-1 overflow-y-auto rounded-xl bg-slate-50 p-1">
-                {minutes.map((option) => (
-                  <button
-                    className={`w-full rounded-lg px-2 py-2.5 text-[12px] font-bold transition ${option === minute ? 'bg-white text-slate-900 ring-1 ring-slate-300 shadow-sm' : 'text-slate-600 hover:bg-white hover:text-slate-900'}`}
-                    key={option}
-                    onClick={() => commit(hour12, option)}
-                    type="button"
-                  >
-                    {String(option).padStart(2, '0')}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <p className="mb-2 text-center text-[9.5px] font-bold uppercase tracking-[0.14em] text-slate-400">AM/PM</p>
-              <div className="scrollbar-none max-h-44 space-y-1 overflow-y-auto rounded-xl bg-slate-50 p-1">
-                {['AM', 'PM'].map((option) => (
-                  <button
-                    className={`w-full rounded-lg px-2 py-2.5 text-[12px] font-bold transition ${option === period ? 'bg-white text-slate-900 ring-1 ring-slate-300 shadow-sm' : 'text-slate-600 hover:bg-white hover:text-slate-900'}`}
-                    key={option}
-                    onClick={() => commit(hour12, minute, option)}
-                    type="button"
-                  >
-                    {option}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="border-t border-slate-100 bg-white px-3 py-2.5">
-            <button
-              className="h-9 w-full rounded-xl border border-slate-200 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-700 transition hover:bg-slate-100"
-              onClick={() => setOpen(false)}
-              type="button"
-            >
-              Done
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
 }
 
 /* ── Health ring SVG ─────────────────────────────────────────── */
@@ -418,20 +300,16 @@ export function PropertySetupPage({
   const [roomImageInputKey,     setRoomImageInputKey]     = useState(0);
 
   /* ── data ── */
-  const propertiesState  = useAsync(async () => fetchAllPages<Property>('/properties'), [reloadKey]);
-  const categoriesState  = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), [reloadKey]);
-  const ratePlansState   = useAsync(async () => fetchAllPages<RatePlan>('/rate-plans'), [reloadKey]);
-  const pricingRulesState = useAsync(async () => fetchAllPages<PricingRule>('/pricing-rules'), [reloadKey]);
-  const roomsState = useAsync(async () => fetchAllPages<Room>('/rooms'), [reloadKey]);
-  const properties   = propertiesState.data  ?? [];
-  const categories   = categoriesState.data  ?? [];
-  const ratePlans    = ratePlansState.data    ?? [];
-  const pricingRules = pricingRulesState.data ?? [];
-  const rooms = roomsState.data ?? [];
+  const workspaceState = useAsync(async () => (await api.get<PropertySetupWorkspace>('/property-setup/workspace')).data, [reloadKey]);
+  const properties   = workspaceState.data?.properties  ?? [];
+  const categories   = workspaceState.data?.categories  ?? [];
+  const ratePlans    = workspaceState.data?.rate_plans  ?? [];
+  const pricingRules = workspaceState.data?.pricing_rules ?? [];
+  const rooms = workspaceState.data?.rooms ?? [];
   const activeProperties = properties.filter((p) => p.is_active);
-  const isLoading = propertiesState.loading || categoriesState.loading || ratePlansState.loading || pricingRulesState.loading || roomsState.loading;
-  const isLoadingProperties = propertiesState.loading && properties.length === 0;
-  const loadError = propertiesState.error ?? categoriesState.error ?? ratePlansState.error ?? pricingRulesState.error ?? roomsState.error;
+  const isLoading = workspaceState.loading;
+  const isLoadingProperties = workspaceState.loading && properties.length === 0;
+  const loadError = workspaceState.error;
   const selectedPropertyId = controlledSelectedPropertyId !== undefined ? controlledSelectedPropertyId : internalSelectedPropertyId;
   const currentUser = getStoredAuthUser();
   const canEditSelectedProperty = currentUser?.role === 'ORG_OWNER';
@@ -448,10 +326,10 @@ export function PropertySetupPage({
   }
 
   useEffect(() => {
-    if (!embedded || isLoadingProperties || propertiesState.error || properties.length > 0 || autoOpenedCreatePropertyRef.current) return;
+    if (!embedded || isLoadingProperties || workspaceState.error || properties.length > 0 || autoOpenedCreatePropertyRef.current) return;
     autoOpenedCreatePropertyRef.current = true;
     startAddingProperty();
-  }, [embedded, isLoadingProperties, propertiesState.error, properties.length]);
+  }, [embedded, isLoadingProperties, workspaceState.error, properties.length]);
 
   /* ── auto-select first active property on load ── */
   useEffect(() => {

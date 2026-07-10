@@ -38,6 +38,16 @@ export class ChannelController {
     return this.channelService.findConnections(query, user);
   }
 
+  @Get('workspace')
+  getWorkspace(@CurrentUser() user: AuthenticatedUser) {
+    return this.channelService.getWorkspace(user);
+  }
+
+  @Get(':id')
+  findConnection(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.channelService.findConnection(id, user);
+  }
+
   @Delete(':id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
   deleteConnection(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string) {
@@ -413,6 +423,14 @@ export class ChannelController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.channelService.findInventoryRowResults(id, user);
+  }
+
+  @Get(':id/diagnostics')
+  findDiagnostics(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.channelService.findDiagnostics(id, user);
   }
 
   @Post(':id/sync-logs/:syncLogId/retry-failed-rows')

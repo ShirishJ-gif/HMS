@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, getApiErrorMessage } from '../../api/client';
 import { fetchAllPages } from '../../api/pagination';
 import {
@@ -16,7 +16,6 @@ import {
   WebhookEvent,
   ZodomusSetupResponse,
 } from '../../api/types';
-import { usePersistedPropertyId } from '../../hooks/usePersistedPropertyId';
 import { formatConnectionLabel } from './ChannelUi';
 
 const zodomusOtaOptions = [
@@ -28,6 +27,15 @@ const zodomusOtaOptions = [
 type ZodomusOtaKey = (typeof zodomusOtaOptions)[number]['key'];
 const providerReservationEventOptions = ['new', 'modified', 'cancelled'] as const;
 type ProviderReservationEventStatus = (typeof providerReservationEventOptions)[number];
+type QueuedWorkResponse = {
+  queued?: boolean;
+  job_id?: string | null;
+  sync_log_id?: string | null;
+  id?: string;
+  status?: string;
+  error_message?: string | null;
+  last_error?: string | null;
+};
 
 const fallbackZodomusPriceModels: ChannelProviderPriceModel[] = [
   { id: 1, model: 'Maximum / Single occupancy' },
@@ -38,9 +46,26 @@ const fallbackZodomusPriceModels: ChannelProviderPriceModel[] = [
 ];
 
 type UseChannelWorkspaceOptions = {
+  activePropertyId?: string;
   diagnosticsEnabled?: boolean;
   enabled?: boolean;
+  onPropertyChange?: (propertyId: string) => void;
   sessionKey?: string | null;
+};
+
+type ChannelWorkspaceResponse = {
+  categories: RoomCategory[];
+  connections: ChannelConnection[];
+  properties: Property[];
+  rate_plans: RatePlan[];
+};
+
+type ChannelDiagnosticsResponse = {
+  background_jobs: BackgroundJob[];
+  inventory_reconciliation: InventoryReconciliation;
+  inventory_row_results: InventoryRowResults;
+  sync_logs: ChannelSyncLog[];
+  webhook_events: WebhookEvent[];
 };
 
 type ChannelWorkspaceCache = {
@@ -91,9 +116,17 @@ type ChannelWorkspaceCache = {
 };
 
 const channelWorkspaceCacheBySession = new Map<string, ChannelWorkspaceCache>();
+const diagnosticsCacheByKey = new Map<string, ChannelDiagnosticsResponse>();
 const diagnosticsCacheUpdatedAtByKey = new Map<string, number>();
+const diagnosticsRequestByKey = new Map<string, Promise<ChannelDiagnosticsResponse>>();
+const syncLogsCacheByKey = new Map<string, ChannelSyncLog[]>();
+const syncLogsCacheUpdatedAtByKey = new Map<string, number>();
+const syncLogsRequestByKey = new Map<string, Promise<ChannelSyncLog[]>>();
 const diagnosticsCacheTtlMs = 60_000;
+const syncLogsCacheTtlMs = 60_000;
 const statusAutoClearMs = 5000;
+const queuedWorkPollIntervalMs = 2500;
+const queuedWorkPollTimeoutMs = 120_000;
 const selectedConnectionStorageKey = 'hms_selected_channel_connection_id';
 const airbnbCompletedActionsStoragePrefix = 'hms_airbnb_completed_actions';
 
@@ -204,13 +237,72 @@ function getDiagnosticsCacheKey(sessionKey: string, connectionId: string, proper
   return `${sessionKey}:${connectionId}:${propertyId ?? 'all'}`;
 }
 
+function getSyncLogsCacheKey(sessionKey: string, connectionId: string) {
+  return `${sessionKey}:${connectionId}`;
+}
+
+function applyDiagnosticsPayload(
+  payload: ChannelDiagnosticsResponse,
+  setters: {
+    setBackgroundJobs: (jobs: BackgroundJob[]) => void;
+    setInventoryReconciliation: (reconciliation: InventoryReconciliation) => void;
+    setInventoryRowResults: (results: InventoryRowResults) => void;
+    setSyncLogs: (logs: ChannelSyncLog[]) => void;
+    setWebhookEvents: (events: WebhookEvent[]) => void;
+  },
+) {
+  setters.setInventoryReconciliation(payload.inventory_reconciliation);
+  setters.setInventoryRowResults(payload.inventory_row_results);
+  setters.setSyncLogs(payload.sync_logs);
+  setters.setWebhookEvents(payload.webhook_events);
+  setters.setBackgroundJobs(payload.background_jobs);
+}
+
 export function clearChannelWorkspaceCache(sessionKey?: string | null) {
   if (sessionKey == null) {
     channelWorkspaceCacheBySession.clear();
+    diagnosticsCacheByKey.clear();
+    diagnosticsCacheUpdatedAtByKey.clear();
+    diagnosticsRequestByKey.clear();
+    syncLogsCacheByKey.clear();
+    syncLogsCacheUpdatedAtByKey.clear();
+    syncLogsRequestByKey.clear();
     return;
   }
 
   channelWorkspaceCacheBySession.delete(sessionKey);
+  for (const key of diagnosticsCacheByKey.keys()) {
+    if (key.startsWith(`${sessionKey}:`)) {
+      diagnosticsCacheByKey.delete(key);
+      diagnosticsCacheUpdatedAtByKey.delete(key);
+    }
+  }
+  for (const key of diagnosticsCacheUpdatedAtByKey.keys()) {
+    if (key.startsWith(`${sessionKey}:`)) {
+      diagnosticsCacheUpdatedAtByKey.delete(key);
+    }
+  }
+  for (const key of diagnosticsRequestByKey.keys()) {
+    if (key.startsWith(`${sessionKey}:`)) {
+      diagnosticsRequestByKey.delete(key);
+    }
+  }
+  for (const key of syncLogsCacheByKey.keys()) {
+    if (key.startsWith(`${sessionKey}:`)) {
+      syncLogsCacheByKey.delete(key);
+      syncLogsCacheUpdatedAtByKey.delete(key);
+    }
+  }
+  for (const key of syncLogsCacheUpdatedAtByKey.keys()) {
+    if (key.startsWith(`${sessionKey}:`)) {
+      syncLogsCacheUpdatedAtByKey.delete(key);
+    }
+  }
+  for (const key of syncLogsRequestByKey.keys()) {
+    if (key.startsWith(`${sessionKey}:`)) {
+      syncLogsRequestByKey.delete(key);
+    }
+  }
 }
 
 function formatDateInput(date: Date) {
@@ -298,8 +390,10 @@ function parseProviderStatusMessage(message: string | null | undefined) {
 
 export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   const {
+    activePropertyId = '',
     diagnosticsEnabled = true,
     enabled = true,
+    onPropertyChange,
     sessionKey = 'default',
   } = options;
   const resolvedSessionKey = sessionKey ?? 'default';
@@ -309,7 +403,11 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   const [categories, setCategories] = useState<RoomCategory[]>(() => cachedState.categories);
   const [ratePlans, setRatePlans] = useState<RatePlan[]>(() => cachedState.ratePlans);
   const [selectedConnectionId, setSelectedConnectionId] = useState(() => cachedState.selectedConnectionId);
-  const [propertyId, setPropertyId] = usePersistedPropertyId();
+  const [propertyId, setPropertyIdState] = useState(activePropertyId);
+  const setPropertyId = useCallback((nextPropertyId: string) => {
+    setPropertyIdState(nextPropertyId);
+    onPropertyChange?.(nextPropertyId);
+  }, [onPropertyChange]);
   const [zodomusPropertyId, setZodomusPropertyId] = useState(() => cachedState.zodomusPropertyId);
   const [zodomusOtaKey, setZodomusOtaKey] = useState<ZodomusOtaKey>(() => cachedState.zodomusOtaKey);
   const [zodomusPriceModelId, setZodomusPriceModelId] = useState(() => cachedState.zodomusPriceModelId);
@@ -383,6 +481,12 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   const selectedConnection = zodomusConnections.find((connection) => connection.id === selectedConnectionId) ?? null;
   const selectedPropertyId = selectedConnection?.property_id ?? propertyId;
   const selectedProperty = properties.find((property) => property.id === propertyId) ?? null;
+
+  useEffect(() => {
+    if (activePropertyId && activePropertyId !== propertyId) {
+      setPropertyIdState(activePropertyId);
+    }
+  }, [activePropertyId, propertyId]);
 
   useEffect(() => {
     if (statusAutoClearTimerRef.current != null) {
@@ -687,12 +791,11 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     }
     setError(null);
     try {
-      const [loadedConnections, loadedProperties, loadedCategories, loadedRatePlans] = await Promise.all([
-        fetchAllPages<ChannelConnection>('/channels'),
-        fetchAllPages<Property>('/properties'),
-        fetchAllPages<RoomCategory>('/room-categories'),
-        fetchAllPages<RatePlan>('/rate-plans'),
-      ]);
+      const response = await api.get<ChannelWorkspaceResponse>('/channels/workspace');
+      const loadedConnections = response.data.connections;
+      const loadedProperties = response.data.properties;
+      const loadedCategories = response.data.categories;
+      const loadedRatePlans = response.data.rate_plans;
       const loadedZodomusConnections = loadedConnections.filter((connection) => connection.provider === 'ZODOMUS');
       const nextSelectedConnectionId = loadedZodomusConnections.some((connection) => connection.id === selectedConnectionId)
         ? selectedConnectionId
@@ -708,6 +811,17 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     } finally {
       setLoading(false);
     }
+  }
+
+  function replaceConnection(updatedConnection: ChannelConnection) {
+    setConnections((current) =>
+      current.map((connection) => connection.id === updatedConnection.id ? updatedConnection : connection),
+    );
+  }
+
+  async function refreshConnection(connectionId: string) {
+    const response = await api.get<ChannelConnection>(`/channels/${connectionId}`);
+    replaceConnection(response.data);
   }
 
   useEffect(() => {
@@ -966,16 +1080,49 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     }
   }
 
-  async function loadSyncLogs(connectionId: string) {
+  async function loadSyncLogs(connectionId: string, options?: { force?: boolean }) {
+    const syncLogsCacheKey = getSyncLogsCacheKey(resolvedSessionKey, connectionId);
+    const cachedLogs = syncLogsCacheByKey.get(syncLogsCacheKey);
+    const cachedAt = syncLogsCacheUpdatedAtByKey.get(syncLogsCacheKey) ?? 0;
+    if (!options?.force && cachedLogs && Date.now() - cachedAt < syncLogsCacheTtlMs) {
+      setSyncLogs(cachedLogs);
+      setSyncLogsError(null);
+      return;
+    }
+
     setSyncLogsLoading(true);
     setSyncLogsError(null);
     try {
-      setSyncLogs(await fetchAllPages<ChannelSyncLog>(`/channels/${connectionId}/sync-logs`));
+      let request = syncLogsRequestByKey.get(syncLogsCacheKey);
+      if (!request || options?.force) {
+        request = fetchAllPages<ChannelSyncLog>(`/channels/${connectionId}/sync-logs`);
+        syncLogsRequestByKey.set(syncLogsCacheKey, request);
+      }
+      const logs = await request;
+      setSyncLogs(logs);
+      syncLogsCacheByKey.set(syncLogsCacheKey, logs);
+      syncLogsCacheUpdatedAtByKey.set(syncLogsCacheKey, Date.now());
+      updateCachedSyncLogs(connectionId, logs);
     } catch (loadError) {
       setSyncLogsError(getApiErrorMessage(loadError));
     } finally {
+      syncLogsRequestByKey.delete(syncLogsCacheKey);
       setSyncLogsLoading(false);
     }
+  }
+
+  function updateCachedSyncLogs(connectionId: string, logs: ChannelSyncLog[]) {
+    const diagnosticsCacheKey = getDiagnosticsCacheKey(resolvedSessionKey, connectionId, selectedPropertyScopeId);
+    const cachedDiagnostics = diagnosticsCacheByKey.get(diagnosticsCacheKey);
+    if (!cachedDiagnostics) {
+      return;
+    }
+
+    diagnosticsCacheByKey.set(diagnosticsCacheKey, { ...cachedDiagnostics, sync_logs: logs });
+    diagnosticsCacheUpdatedAtByKey.set(diagnosticsCacheKey, Date.now());
+    const syncLogsCacheKey = getSyncLogsCacheKey(resolvedSessionKey, connectionId);
+    syncLogsCacheByKey.set(syncLogsCacheKey, logs);
+    syncLogsCacheUpdatedAtByKey.set(syncLogsCacheKey, Date.now());
   }
 
   async function loadWebhookEvents() {
@@ -1006,6 +1153,134 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     } finally {
       setBackgroundJobsLoading(false);
     }
+  }
+
+  async function loadDiagnostics(connectionId: string) {
+    const diagnosticsCacheKey = getDiagnosticsCacheKey(
+      resolvedSessionKey,
+      connectionId,
+      selectedPropertyScopeId,
+    );
+    setInventoryReconciliationLoading(true);
+    setInventoryRowResultsLoading(true);
+    setSyncLogsLoading(true);
+    setWebhookEventsLoading(true);
+    setBackgroundJobsLoading(true);
+    setInventoryReconciliationError(null);
+    setInventoryRowResultsError(null);
+    setSyncLogsError(null);
+    setWebhookEventsError(null);
+    setBackgroundJobsError(null);
+    try {
+      let request = diagnosticsRequestByKey.get(diagnosticsCacheKey);
+      if (!request) {
+        request = api
+          .get<ChannelDiagnosticsResponse>(`/channels/${connectionId}/diagnostics`)
+          .then((response) => response.data);
+        diagnosticsRequestByKey.set(diagnosticsCacheKey, request);
+      }
+      const diagnostics = await request;
+      diagnosticsCacheByKey.set(diagnosticsCacheKey, diagnostics);
+      diagnosticsCacheUpdatedAtByKey.set(diagnosticsCacheKey, Date.now());
+      applyDiagnosticsPayload(diagnostics, {
+        setBackgroundJobs,
+        setInventoryReconciliation,
+        setInventoryRowResults,
+        setSyncLogs,
+        setWebhookEvents,
+      });
+    } catch (loadError) {
+      const message = getApiErrorMessage(loadError);
+      setInventoryReconciliationError(message);
+      setInventoryRowResultsError(message);
+      setSyncLogsError(message);
+      setWebhookEventsError(message);
+      setBackgroundJobsError(message);
+    } finally {
+      diagnosticsRequestByKey.delete(diagnosticsCacheKey);
+      setInventoryReconciliationLoading(false);
+      setInventoryRowResultsLoading(false);
+      setSyncLogsLoading(false);
+      setWebhookEventsLoading(false);
+      setBackgroundJobsLoading(false);
+    }
+  }
+
+  async function waitForQueuedWork(
+    connectionId: string,
+    payload: QueuedWorkResponse,
+    messages: {
+      queued: string;
+      processing: string;
+      success: string;
+      partial?: string;
+      failure: string;
+      timeout: string;
+    },
+  ) {
+    const syncLogId = payload.sync_log_id ?? (payload.status && payload.id ? payload.id : null);
+    const jobId = payload.job_id ?? null;
+
+    if (!syncLogId && !jobId) {
+      return;
+    }
+
+    setStatus(messages.queued);
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < queuedWorkPollTimeoutMs) {
+      await wait(queuedWorkPollIntervalMs);
+
+      if (syncLogId) {
+        const logs = await fetchAllPages<ChannelSyncLog>(`/channels/${connectionId}/sync-logs`);
+        setSyncLogs(logs);
+        updateCachedSyncLogs(connectionId, logs);
+        const syncLog = logs.find((log) => log.id === syncLogId);
+
+        if (!syncLog || syncLog.status === 'QUEUED') {
+          setStatus(messages.processing);
+          continue;
+        }
+
+        if (syncLog.status === 'SUCCEEDED') {
+          setStatus(messages.success);
+          return;
+        }
+
+        if (syncLog.status === 'PARTIAL_FAILED') {
+          setStatus(messages.partial ?? messages.failure);
+          throw new Error(syncLog.error_message ?? messages.partial ?? messages.failure);
+        }
+
+        throw new Error(syncLog.error_message ?? messages.failure);
+      }
+
+      if (jobId) {
+        const jobs = await fetchAllPages<BackgroundJob>('/background-jobs');
+        const filteredJobs = jobs.filter((job) =>
+          selectedPropertyScopeId ? job.property_id === selectedPropertyScopeId || job.entity_id === connectionId : true,
+        );
+        setBackgroundJobs(filteredJobs);
+        const job = jobs.find((entry) => entry.id === jobId);
+
+        if (!job || job.status === 'PENDING' || job.status === 'PROCESSING') {
+          setStatus(messages.processing);
+          continue;
+        }
+
+        if (job.status === 'SUCCEEDED') {
+          setStatus(messages.success);
+          return;
+        }
+
+        throw new Error(job.last_error ?? messages.failure);
+      }
+    }
+
+    setStatus(messages.timeout);
+  }
+
+  function wait(ms: number) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
   async function loadProviderPriceModels(connectionId: string) {
@@ -1051,20 +1326,25 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       selectedConnectionId,
       selectedPropertyScopeId,
     );
+    const cachedDiagnostics = diagnosticsCacheByKey.get(diagnosticsCacheKey);
     const cachedAt = diagnosticsCacheUpdatedAtByKey.get(diagnosticsCacheKey) ?? 0;
-    if (Date.now() - cachedAt < diagnosticsCacheTtlMs) {
+    if (cachedDiagnostics && Date.now() - cachedAt < diagnosticsCacheTtlMs) {
+      applyDiagnosticsPayload(cachedDiagnostics, {
+        setBackgroundJobs,
+        setInventoryReconciliation,
+        setInventoryRowResults,
+        setSyncLogs,
+        setWebhookEvents,
+      });
+      setInventoryReconciliationError(null);
+      setInventoryRowResultsError(null);
+      setSyncLogsError(null);
+      setWebhookEventsError(null);
+      setBackgroundJobsError(null);
       return;
     }
 
-    void Promise.all([
-      loadInventoryReconciliation(selectedConnectionId),
-      loadInventoryRowResults(selectedConnectionId),
-      loadSyncLogs(selectedConnectionId),
-      loadWebhookEvents(),
-      loadBackgroundJobs(),
-    ]).then(() => {
-      diagnosticsCacheUpdatedAtByKey.set(diagnosticsCacheKey, Date.now());
-    });
+    void loadDiagnostics(selectedConnectionId);
   }, [diagnosticsEnabled, enabled, resolvedSessionKey, selectedConnectionId, selectedPropertyScopeId]);
 
   function selectConnection(connectionId: string) {
@@ -1295,7 +1575,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       });
       setExternalRoomId(hasCatalogRooms ? catalogRooms[0]?.external_room_id ?? '' : '');
       setStatus('Room mappings are saved.');
-      await loadData();
+      await refreshConnection(selectedConnection.id);
     });
   }
 
@@ -1310,7 +1590,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       setRoomCategoryId(input.roomCategoryId);
       setExternalRoomId(input.externalRoomId);
       setStatus('Room mapping saved.');
-      await loadData();
+      await refreshConnection(selectedConnection.id);
     });
   }
 
@@ -1325,7 +1605,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         })),
       });
       setStatus('Room mappings are saved.');
-      await loadData();
+      await refreshConnection(selectedConnection.id);
     });
   }
 
@@ -1337,7 +1617,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         external_room_id: input.externalRoomId,
       });
       setStatus('Room mappings are saved.');
-      await loadData();
+      await refreshConnection(selectedConnection.id);
     });
   }
 
@@ -1348,7 +1628,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     await runAction('delete-room-mapping', async () => {
       await api.delete(`/channels/${selectedConnection.id}/room-mappings/${mappingId}`);
       setStatus('Room mappings are saved.');
-      await loadData();
+      await refreshConnection(selectedConnection.id);
     });
   }
 
@@ -1369,7 +1649,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
           : selectedRoomMappingForRatePlan?.external_room_id ?? '',
       );
       setStatus('Rate mappings are saved.');
-      await loadData();
+      await refreshConnection(selectedConnection.id);
     });
   }
 
@@ -1385,7 +1665,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         })),
       });
       setStatus('Rate mappings are saved.');
-      await loadData();
+      await refreshConnection(selectedConnection.id);
     });
   }
 
@@ -1398,7 +1678,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         external_rate_id: input.externalRateId,
       });
       setStatus('Rate mappings are saved.');
-      await loadData();
+      await refreshConnection(selectedConnection.id);
     });
   }
 
@@ -1409,7 +1689,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     await runAction('delete-rate-mapping', async () => {
       await api.delete(`/channels/${selectedConnection.id}/rate-mappings/${mappingId}`);
       setStatus('Rate mappings are saved.');
-      await loadData();
+      await refreshConnection(selectedConnection.id);
     });
   }
 
@@ -1432,9 +1712,15 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   async function activateMappedRooms() {
     if (!selectedConnection) return;
     await runAction('activate-mapped-rooms', async () => {
-      const response = await api.post(`/channels/${selectedConnection.id}/rooms-activate`);
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/rooms-activate`);
       rememberCertificationResponse('Activate rooms/rates', response.data);
-      setStatus('Mapped rooms and rates activated in Zodomus. Run property check before syncing.');
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: 'Room activation queued.',
+        processing: 'Room activation is still processing...',
+        success: 'Mapped rooms and rates activated in Zodomus. Run property check before syncing.',
+        failure: 'Room activation failed.',
+        timeout: 'Room activation is still processing. Check background jobs for the final result.',
+      });
       await loadData();
       setSelectedConnectionId(selectedConnection.id);
     });
@@ -1488,7 +1774,13 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
         ...(isAirbnb && airbnbToken.trim() ? { token: airbnbToken.trim() } : {}),
       });
       rememberCertificationResponse('Activate property', response.data);
-      setStatus('Property activation request sent to Zodomus.');
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: 'Property activation queued.',
+        processing: 'Property activation is still processing...',
+        success: 'Property activation completed.',
+        failure: 'Property activation failed.',
+        timeout: 'Property activation is still processing. Check background jobs for the final result.',
+      });
       await loadData();
       setSelectedConnectionId(selectedConnection.id);
     });
@@ -1545,13 +1837,20 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
   async function runReservationImportSync() {
     if (!selectedConnection) return;
     await runAction('reservation-import-sync', async () => {
-      const response = await api.post(`/channels/${selectedConnection.id}/sync`, {
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/sync`, {
         sync_type: 'BOOKINGS',
       });
       rememberCertificationResponse('Import bookings sync', response.data);
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: 'Reservation import queued.',
+        processing: 'Reservation import is still processing...',
+        success: 'Reservation import completed.',
+        partial: 'Reservation import partially failed.',
+        failure: 'Reservation import failed.',
+        timeout: 'Reservation import is still processing. Check sync logs for the final result.',
+      });
       await loadData();
-      await loadSyncLogs(selectedConnection.id);
-      setStatus('Queued reservation import sync.');
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
@@ -1559,13 +1858,21 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     if (!selectedConnection) return;
     const syncWindow = buildSyncWindow(Number(syncWindowDays));
     await runAction('availability-multiple-sync', async () => {
-      const response = await api.post(`/channels/${selectedConnection.id}/availability-multiple`, {
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/availability-multiple`, {
         sync_type: 'INVENTORY',
         from: syncWindow.from,
         to: syncWindow.to,
       });
       rememberCertificationResponse('Post availability multiple', response.data);
-      setStatus(`Posted availability-multiple for ${syncWindow.from} to ${syncWindow.to}.`);
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: `Availability sync queued for ${syncWindow.from} to ${syncWindow.to}.`,
+        processing: 'Availability sync is still processing...',
+        success: `Availability sync completed for ${syncWindow.from} to ${syncWindow.to}.`,
+        partial: 'Availability sync partially failed.',
+        failure: 'Availability sync failed.',
+        timeout: 'Availability sync is still processing. Check sync logs for the final result.',
+      });
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
@@ -1573,13 +1880,21 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     if (!selectedConnection) return;
     const syncWindow = buildSyncWindow(Number(syncWindowDays));
     await runAction('rates-multiple-sync', async () => {
-      const response = await api.post(`/channels/${selectedConnection.id}/rates-multiple`, {
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/rates-multiple`, {
         sync_type: 'RATES',
         from: syncWindow.from,
         to: syncWindow.to,
       });
       rememberCertificationResponse('Post rates multiple', response.data);
-      setStatus(`Posted rates-multiple for ${syncWindow.from} to ${syncWindow.to}.`);
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: `Rates sync queued for ${syncWindow.from} to ${syncWindow.to}.`,
+        processing: 'Rates sync is still processing...',
+        success: `Rates sync completed for ${syncWindow.from} to ${syncWindow.to}.`,
+        partial: 'Rates sync partially failed.',
+        failure: 'Rates sync failed.',
+        timeout: 'Rates sync is still processing. Check sync logs for the final result.',
+      });
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
@@ -1652,17 +1967,24 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     if (!selectedConnection) return;
     const syncWindow = buildSyncWindow(Number(windowDaysOverride ?? syncWindowDays));
     await runAction('inventory-sync', async () => {
-      const response = await api.post(`/channels/${selectedConnection.id}/sync`, {
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/sync`, {
         sync_type: 'INVENTORY',
         from: syncWindow.from,
         to: syncWindow.to,
       });
       rememberCertificationResponse('Post availability', response.data);
-      setStatus(`Queued inventory sync for ${syncWindow.from} to ${syncWindow.to}.`);
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: `Inventory sync queued for ${syncWindow.from} to ${syncWindow.to}.`,
+        processing: 'Inventory sync is still processing...',
+        success: `Inventory sync completed for ${syncWindow.from} to ${syncWindow.to}.`,
+        partial: 'Inventory sync partially failed.',
+        failure: 'Inventory sync failed.',
+        timeout: 'Inventory sync is still processing. Check sync logs for the final result.',
+      });
       await loadData({ background: true });
       await loadInventoryReconciliation(selectedConnection.id);
       await loadInventoryRowResults(selectedConnection.id);
-      await loadSyncLogs(selectedConnection.id);
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
@@ -1670,15 +1992,22 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     if (!selectedConnection) return;
     const syncWindow = buildSyncWindow(Number(windowDaysOverride ?? syncWindowDays));
     await runAction('rates-sync', async () => {
-      const response = await api.post(`/channels/${selectedConnection.id}/sync`, {
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/sync`, {
         sync_type: 'RATES',
         from: syncWindow.from,
         to: syncWindow.to,
       });
       rememberCertificationResponse('Post rates', response.data);
-      setStatus(`Queued rates sync for ${syncWindow.from} to ${syncWindow.to}.`);
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: `Rates sync queued for ${syncWindow.from} to ${syncWindow.to}.`,
+        processing: 'Rates sync is still processing...',
+        success: `Rates sync completed for ${syncWindow.from} to ${syncWindow.to}.`,
+        partial: 'Rates sync partially failed.',
+        failure: 'Rates sync failed.',
+        timeout: 'Rates sync is still processing. Check sync logs for the final result.',
+      });
       await loadData({ background: true });
-      await loadSyncLogs(selectedConnection.id);
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
@@ -1687,16 +2016,23 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     const syncWindow = buildSyncWindow(Number(fullSyncWindowDays));
     if (!window.confirm(`Queue full inventory sync for ${syncWindow.from} to ${syncWindow.to}?`)) return;
     await runAction('full-inventory-sync', async () => {
-      await api.post(`/channels/${selectedConnection.id}/sync`, {
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/sync`, {
         sync_type: 'INVENTORY',
         from: syncWindow.from,
         to: syncWindow.to,
       });
-      setStatus(`Queued full inventory sync for ${syncWindow.from} to ${syncWindow.to}.`);
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: `Full inventory sync queued for ${syncWindow.from} to ${syncWindow.to}.`,
+        processing: 'Full inventory sync is still processing...',
+        success: `Full inventory sync completed for ${syncWindow.from} to ${syncWindow.to}.`,
+        partial: 'Full inventory sync partially failed.',
+        failure: 'Full inventory sync failed.',
+        timeout: 'Full inventory sync is still processing. Check sync logs for the final result.',
+      });
       await loadData({ background: true });
       await loadInventoryReconciliation(selectedConnection.id);
       await loadInventoryRowResults(selectedConnection.id);
-      await loadSyncLogs(selectedConnection.id);
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
@@ -1705,24 +2041,38 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     const syncWindow = buildSyncWindow(Number(fullSyncWindowDays));
     if (!window.confirm(`Queue full rates sync for ${syncWindow.from} to ${syncWindow.to}?`)) return;
     await runAction('full-rates-sync', async () => {
-      await api.post(`/channels/${selectedConnection.id}/sync`, {
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/sync`, {
         sync_type: 'RATES',
         from: syncWindow.from,
         to: syncWindow.to,
       });
-      setStatus(`Queued full rates sync for ${syncWindow.from} to ${syncWindow.to}.`);
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: `Full rates sync queued for ${syncWindow.from} to ${syncWindow.to}.`,
+        processing: 'Full rates sync is still processing...',
+        success: `Full rates sync completed for ${syncWindow.from} to ${syncWindow.to}.`,
+        partial: 'Full rates sync partially failed.',
+        failure: 'Full rates sync failed.',
+        timeout: 'Full rates sync is still processing. Check sync logs for the final result.',
+      });
       await loadData({ background: true });
-      await loadSyncLogs(selectedConnection.id);
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
   async function backfillExistingReservations() {
     if (!selectedConnection) return;
     await runAction('reservations-summary-backfill', async () => {
-      await api.post(`/channels/${selectedConnection.id}/reservations-summary-backfill`);
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/reservations-summary-backfill`);
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: 'Future reservation backfill queued.',
+        processing: 'Future reservation backfill is still processing...',
+        success: 'Future reservation backfill completed.',
+        partial: 'Future reservation backfill partially failed.',
+        failure: 'Future reservation backfill failed.',
+        timeout: 'Future reservation backfill is still processing. Check sync logs for the final result.',
+      });
       await loadData();
-      await loadSyncLogs(selectedConnection.id);
-      setStatus('Queued one-time future reservation backfill from Zodomus summary.');
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
@@ -1738,38 +2088,59 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
     if (!selectedConnection || !inventoryReconciliation?.compared_window) return;
     const comparedWindow = inventoryReconciliation.compared_window;
     await runAction('resync-reconciliation', async () => {
-      await api.post(`/channels/${selectedConnection.id}/sync`, {
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/sync`, {
         sync_type: 'INVENTORY',
         from: comparedWindow.from,
         to: comparedWindow.to,
       });
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: 'Inventory re-sync queued for the compared window.',
+        processing: 'Inventory re-sync is still processing...',
+        success: 'Inventory re-sync completed for the compared window.',
+        partial: 'Inventory re-sync partially failed.',
+        failure: 'Inventory re-sync failed.',
+        timeout: 'Inventory re-sync is still processing. Check sync logs for the final result.',
+      });
       await loadData();
       await loadInventoryReconciliation(selectedConnection.id);
       await loadInventoryRowResults(selectedConnection.id);
-      await loadSyncLogs(selectedConnection.id);
-      setStatus('Queued inventory re-sync for the compared window.');
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
   async function retryFailedInventoryRows() {
     if (!selectedConnection || !latestInventorySyncLog) return;
     await runAction('retry-failed-inventory-rows', async () => {
-      await api.post(`/channels/${selectedConnection.id}/sync-logs/${latestInventorySyncLog.id}/retry-failed-rows`);
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/sync-logs/${latestInventorySyncLog.id}/retry-failed-rows`);
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: 'Retry for failed inventory rows queued.',
+        processing: 'Failed inventory row retry is still processing...',
+        success: 'Failed inventory row retry completed.',
+        partial: 'Failed inventory row retry partially failed.',
+        failure: 'Failed inventory row retry failed.',
+        timeout: 'Failed inventory row retry is still processing. Check sync logs for the final result.',
+      });
       await loadData();
       await loadInventoryReconciliation(selectedConnection.id);
       await loadInventoryRowResults(selectedConnection.id);
-      await loadSyncLogs(selectedConnection.id);
-      setStatus('Queued retry for failed inventory rows.');
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
   async function retryFailedRateRows() {
     if (!selectedConnection || !latestRateSyncLog) return;
     await runAction('retry-failed-rate-rows', async () => {
-      await api.post(`/channels/${selectedConnection.id}/sync-logs/${latestRateSyncLog.id}/retry-failed-rows`);
+      const response = await api.post<QueuedWorkResponse>(`/channels/${selectedConnection.id}/sync-logs/${latestRateSyncLog.id}/retry-failed-rows`);
+      await waitForQueuedWork(selectedConnection.id, response.data, {
+        queued: 'Retry for failed rate rows queued.',
+        processing: 'Failed rate row retry is still processing...',
+        success: 'Failed rate row retry completed.',
+        partial: 'Failed rate row retry partially failed.',
+        failure: 'Failed rate row retry failed.',
+        timeout: 'Failed rate row retry is still processing. Check sync logs for the final result.',
+      });
       await loadData();
-      await loadSyncLogs(selectedConnection.id);
-      setStatus('Queued retry for failed rate rows.');
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
@@ -1813,7 +2184,7 @@ export function useChannelWorkspace(options: UseChannelWorkspaceOptions = {}) {
       }
 
       await loadData();
-      await loadSyncLogs(selectedConnection.id);
+      await loadSyncLogs(selectedConnection.id, { force: true });
     });
   }
 
