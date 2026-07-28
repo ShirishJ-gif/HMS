@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { AvailabilitySummary, InventoryCalendarSummary, Property } from '../api/types';
 import { InlineCalendarDatePicker } from '../components/CalendarDatePicker';
@@ -77,25 +77,27 @@ export function AvailabilityPage({
   const availabilityRequestIdRef = useRef(0);
   const autoLoadedQueryRef = useRef<string | null>(shouldRestorePersistedResults && restoredQuery ? queryKey(restoredQuery) : null);
 
-  const previewData = previewDataEnabled ? createPreviewData() : null;
+  const previewData = useMemo(() => (previewDataEnabled ? createPreviewData() : null), [previewDataEnabled]);
   const properties = previewData?.properties ?? appProperties;
   const hasLoadedProperties = previewDataEnabled || propertiesLoaded;
   const selectedPropertyExists = Boolean(propertyId && properties.some((p) => p.id === propertyId));
 
-  function setPropertyId(nextPropertyId: string) {
+  const setPropertyId = useCallback((nextPropertyId: string) => {
     setPropertyIdState(nextPropertyId);
-    onPropertyChange?.(nextPropertyId);
-  }
+    if (!previewDataEnabled) onPropertyChange?.(nextPropertyId);
+  }, [onPropertyChange, previewDataEnabled]);
 
   useEffect(() => {
+    if (previewDataEnabled) return;
     if (activePropertyId && activePropertyId !== propertyId) {
       setPropertyIdState(activePropertyId);
     }
-  }, [activePropertyId, propertyId]);
+  }, [activePropertyId, previewDataEnabled, propertyId]);
 
   useEffect(() => {
+    if (previewDataEnabled) return;
     if (!propertyId && restoredQuery?.propertyId) setPropertyId(restoredQuery.propertyId);
-  }, [propertyId, restoredQuery, setPropertyId]);
+  }, [previewDataEnabled, propertyId, restoredQuery, setPropertyId]);
 
   useEffect(() => {
     if (!hasLoadedProperties) return;
@@ -209,7 +211,7 @@ export function AvailabilityPage({
     try {
       if (!query.propertyId) { setError('Select a property first.'); return; }
       if (previewDataEnabled) {
-        const next = createPreviewData();
+        const next = previewData ?? createPreviewData();
         if (availabilityRequestIdRef.current !== requestId) return;
         setAvailability(next.availability); setInventoryCalendar(next.inventoryCalendar); setLastLoadedQuery(query);
         return;
