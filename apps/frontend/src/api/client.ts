@@ -21,6 +21,7 @@ const screenLabels: Record<string, string> = {
   availability: 'Availability & Rates',
   'ical-calendar': 'iCal Calendar',
   'google-calendar-sync': 'Google Calendar Sync',
+  'ota-email-ingestion': 'OTA Email Ingestion',
   mapping: 'OTA Mapping',
   rooms: 'Rooms',
   bookings: 'Reservations',
