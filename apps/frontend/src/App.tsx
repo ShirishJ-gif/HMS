@@ -17,8 +17,10 @@ import { BookingsPage } from './pages/BookingsPage';
 import { AvailabilityPage } from './pages/AvailabilityPage';
 import { DashboardPage } from './pages/DashboardPage';
 // import { GraphInsightsPage } from './pages/GraphInsightsPage';
+import { GoogleCalendarSyncPage } from './pages/GoogleCalendarSyncPage';
 import { GuestsPage } from './pages/GuestsPage';
 import { HousekeepingPage } from './pages/HousekeepingPage';
+import { ICalCalendarPage } from './pages/ICalCalendarPage';
 import { OtaMappingPage } from './pages/OtaMappingPage';
 import { OperationsBoardPage } from './pages/OperationsBoardPage';
 import { PaymentsPage } from './pages/PaymentsPage';
@@ -35,7 +37,7 @@ import { readPreviewDataEnabled, writePreviewDataEnabled } from './pages/preview
 
 type Page =
   | 'dashboard' | 'operations' | 'reports' | 'graphs' | 'setup'
-  | 'availability' | 'mapping' | 'rooms' | 'bookings'
+  | 'availability' | 'ical-calendar' | 'google-calendar-sync' | 'mapping' | 'rooms' | 'bookings'
   | 'guests' | 'housekeeping' | 'payments' | 'channels'
   | 'webhooks' | 'api-testing' | 'support' | 'audit' | 'notifications'
   | 'org-users'
@@ -83,6 +85,8 @@ const navGroups = [
     section: 'Commercial',
     pages: [
       { id: 'availability' as Page, label: 'Availability & Rates', icon: 'calendar' },
+      { id: 'ical-calendar' as Page, label: 'iCal Calendar', icon: 'calendar' },
+      { id: 'google-calendar-sync' as Page, label: 'Google Calendar Sync', icon: 'calendar' },
       { id: 'mapping' as Page, label: 'OTA Mapping', icon: 'puzzle' },
     ],
   },
@@ -654,6 +658,8 @@ export function App() {
                 propertiesLoaded={propertiesLoaded}
               />
             )}
+            {activePage === 'ical-calendar' && <ICalCalendarPage />}
+            {activePage === 'google-calendar-sync' && <GoogleCalendarSyncPage />}
             {activePage === 'mapping'      && <OtaMappingPage onFullWorkspaceChange={setOtaMappingFullWorkspace} workspace={channelWorkspace} />}
             {activePage === 'rooms'        && <RoomsPage />}
             {activePage === 'bookings'     && <BookingsPage previewDataEnabled={previewDataEnabled} />}

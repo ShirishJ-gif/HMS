@@ -19,6 +19,8 @@ const screenLabels: Record<string, string> = {
   graphs: 'Graph Insights',
   setup: 'Property Setup',
   availability: 'Availability & Rates',
+  'ical-calendar': 'iCal Calendar',
+  'google-calendar-sync': 'Google Calendar Sync',
   mapping: 'OTA Mapping',
   rooms: 'Rooms',
   bookings: 'Reservations',
