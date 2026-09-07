@@ -231,10 +231,11 @@ export type ReservationGroup = {
   departure_date?: string | null;
   import_blocked?: boolean;
   import_error?: string | null;
+  is_editable?: boolean;
   created_at: string;
   updated_at: string;
   property: Pick<Property, 'id' | 'name' | 'code'>;
-  primary_guest: Pick<Guest, 'id' | 'name' | 'phone' | 'email'> | null;
+  primary_guest: (Pick<Guest, 'id' | 'name' | 'phone' | 'email'> & { id_proof?: string | null; address?: string | null }) | null;
   rooms: Array<{
     id: string;
     external_room_reservation_id: string;
@@ -294,6 +295,15 @@ export type Billing = {
   balance_due: number;
   total: number;
   payment_status: PaymentStatus;
+  ota_payment_breakdown?: {
+    currency: string | null;
+    room_fee: number | null;
+    guest_service_fee: number | null;
+    occupancy_taxes: number | null;
+    guest_paid_total: number | null;
+    host_service_fee: number | null;
+    host_payout: number | null;
+  } | null;
   reservation_room: {
     id: string;
     reservation_group_id: string;
@@ -328,6 +338,7 @@ export type Billing = {
     provider_reference: string | null;
     amount: number;
     status: PaymentTransactionStatus;
+    metadata?: unknown;
     created_at: string;
   }>;
 };

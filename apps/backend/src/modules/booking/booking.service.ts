@@ -27,6 +27,7 @@ import { CheckInReservationRoomDto } from './dto/check-in-reservation-room.dto';
 import { CreateDirectReservationDto } from './dto/create-direct-reservation.dto';
 import { FindReservationFeedQueryDto } from './dto/find-reservation-feed-query.dto';
 import { FindReservationGroupsQueryDto } from './dto/find-reservation-groups-query.dto';
+import { UpdateDirectReservationDto } from './dto/update-direct-reservation.dto';
 
 type ReservationGroupWithRelations = Prisma.ReservationGroupGetPayload<{
   include: {
@@ -69,6 +70,7 @@ type ReservationGroupResponse = {
   departure_date: string | null;
   import_blocked: boolean;
   import_error: string | null;
+  is_editable: boolean;
   created_at: string;
   updated_at: string;
   property: {
@@ -81,6 +83,8 @@ type ReservationGroupResponse = {
     name: string;
     phone: string | null;
     email: string | null;
+    id_proof?: string | null;
+    address?: string | null;
   } | null;
   rooms: Array<{
     id: string;
@@ -404,6 +408,158 @@ export class BookingService {
     });
 
     return this.toReservationGroupResponse(reservationGroup);
+  }
+
+  async updateDirectReservation(id: string, dto: UpdateDirectReservationDto, user?: AuthenticatedUser) {
+    assertCanAccessProperty(user, dto.property_id);
+    const checkInDate = this.parseDateOnly(dto.check_in_date, 'check_in_date');
+    const checkOutDate = this.parseDateOnly(dto.check_out_date, 'check_out_date');
+    if (checkOutDate <= checkInDate) throw new ConflictException('check_out_date must be after check_in_date');
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.reservationGroup.findUnique({
+        where: { id },
+        include: {
+          property: true,
+          primaryGuest: true,
+          channelConnection: true,
+          rooms: {
+            include: { roomCategory: true, ratePlan: true, room: true },
+            orderBy: [{ arrivalDate: 'asc' }, { createdAt: 'asc' }],
+          },
+        },
+      });
+      if (!existing) throw new NotFoundException('Reservation not found');
+      assertCanAccessProperty(user, existing.propertyId);
+      if (!this.isEditableDirectReservation(existing)) {
+        throw new ConflictException('Only manually created direct reservations can be edited');
+      }
+      if (existing.propertyId !== dto.property_id) {
+        throw new ConflictException('Reservation property cannot be changed');
+      }
+      if (existing.status !== BookingStatus.BOOKED || existing.rooms.some((room) => room.status !== BookingStatus.BOOKED)) {
+        throw new ConflictException('Only booked direct reservations can be edited before check-in');
+      }
+
+      const requestedRoomCount = dto.room_count ?? existing.rooms.length;
+      if (requestedRoomCount !== existing.rooms.length) {
+        throw new ConflictException('Room count cannot be changed after creation yet');
+      }
+
+      const [roomCategory, ratePlan] = await Promise.all([
+        tx.roomCategory.findUnique({ where: { id: dto.room_category_id } }),
+        tx.ratePlan.findUnique({
+          where: { id: dto.rate_plan_id },
+          include: { pricingRules: { where: { isActive: true }, orderBy: { createdAt: 'asc' } } },
+        }),
+      ]);
+      if (!roomCategory || roomCategory.propertyId !== dto.property_id) throw new NotFoundException('Room category not found for this property');
+      if (!ratePlan || ratePlan.propertyId !== dto.property_id || ratePlan.roomCategoryId !== roomCategory.id) {
+        throw new NotFoundException('Rate plan not found for this room category');
+      }
+
+      for (const room of existing.rooms) {
+        await this.inventoryService.releaseInventory(tx, {
+          propertyId: existing.propertyId,
+          roomCategoryId: room.roomCategoryId,
+          checkInDate: room.arrivalDate,
+          checkOutDate: room.departureDate,
+          roomCount: 1,
+        });
+      }
+
+      await this.inventoryService.allocateInventory(tx, {
+        propertyId: dto.property_id,
+        roomCategoryId: roomCategory.id,
+        checkInDate,
+        checkOutDate,
+        roomCount: existing.rooms.length,
+      });
+
+      const guest = await this.resolveUpdatedDirectGuest(tx, existing.primaryGuestId, dto);
+      const pricing = await this.pricingService.calculateStayPricing({
+        db: tx,
+        propertyId: dto.property_id,
+        roomCategoryId: roomCategory.id,
+        ratePlan,
+        checkInDate,
+        checkOutDate,
+      });
+      const adults = dto.adults ?? 1;
+      const children = dto.children ?? 0;
+      const groupTotal = pricing.totalAmount.mul(new Prisma.Decimal(existing.rooms.length));
+
+      await tx.reservationGroup.update({
+        where: { id },
+        data: {
+          primaryGuestId: guest.id,
+          currency: pricing.currency,
+          totalAmount: groupTotal,
+          remarks: dto.remarks?.trim() || null,
+          modifiedAt: new Date(),
+          rawPayload: {
+            ...(this.readObject(existing.rawPayload) as Prisma.InputJsonObject),
+            edited_at: new Date().toISOString(),
+            edited_by_user_id: user?.sub ?? null,
+          },
+        },
+      });
+
+      for (const [index, room] of existing.rooms.entries()) {
+        await tx.reservationRoom.update({
+          where: { id: room.id },
+          data: {
+            externalRoomId: `DIRECT:${roomCategory.code}`,
+            roomCategoryId: roomCategory.id,
+            ratePlanId: ratePlan.id,
+            arrivalDate: checkInDate,
+            departureDate: checkOutDate,
+            totalAmount: pricing.totalAmount,
+            currency: pricing.currency,
+            guestName: guest.name,
+            adults,
+            children,
+            rawPayload: {
+              mode: 'direct_reservation_room',
+              line_number: index + 1,
+              adults,
+              children,
+              check_in_time: dto.check_in_time ?? existing.property.defaultCheckInTime,
+              check_out_time: dto.check_out_time ?? existing.property.defaultCheckOutTime,
+              edited_at: new Date().toISOString(),
+            } satisfies Prisma.InputJsonObject,
+          },
+        });
+      }
+
+      return tx.reservationGroup.findUniqueOrThrow({
+        where: { id },
+        include: {
+          property: true,
+          primaryGuest: true,
+          channelConnection: true,
+          rooms: { include: { roomCategory: true, ratePlan: true, room: true }, orderBy: [{ arrivalDate: 'asc' }, { createdAt: 'asc' }] },
+        },
+      });
+    });
+
+    await this.auditLogService.record({
+      action: AuditAction.UPDATE,
+      entityType: 'reservation_group',
+      entityId: updated.id,
+      propertyId: updated.propertyId,
+      summary: `Updated direct reservation ${updated.externalReservationId}`,
+      metadata: { source: updated.source, room_count: updated.rooms.length },
+      user,
+    });
+
+    await this.backgroundJobService.queueInventorySyncsForProperty(updated.propertyId, {
+      trigger: 'direct_reservation_updated',
+      from: this.formatDateOnly(checkInDate),
+      to: this.formatDateOnly(this.addDays(checkOutDate, -1)),
+    });
+
+    return this.toReservationGroupResponse(updated);
   }
 
   async findReservationGroups(query: FindReservationGroupsQueryDto, user?: AuthenticatedUser) {
@@ -909,6 +1065,33 @@ export class BookingService {
     });
   }
 
+  private async resolveUpdatedDirectGuest(
+    tx: Prisma.TransactionClient,
+    existingGuestId: string | null,
+    dto: UpdateDirectReservationDto,
+  ) {
+    if (dto.guest_id) return this.resolveDirectGuest(tx, dto);
+    if (!dto.guest) throw new ConflictException('guest is required when guest_id is not provided');
+
+    if (existingGuestId) {
+      const existingGuest = await tx.guest.findUnique({ where: { id: existingGuestId } });
+      if (existingGuest?.propertyId === dto.property_id) {
+        return tx.guest.update({
+          where: { id: existingGuestId },
+          data: {
+            name: dto.guest.name.trim(),
+            phone: dto.guest.phone.trim(),
+            email: dto.guest.email?.trim() || null,
+            idProof: dto.guest.id_proof.trim(),
+            address: dto.guest.address.trim(),
+          },
+        });
+      }
+    }
+
+    return this.resolveDirectGuest(tx, dto);
+  }
+
   private async generateDirectReservationReference(tx: Prisma.TransactionClient, propertyCode?: string | null) {
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const candidate = this.buildDirectReservationReference(propertyCode);
@@ -1005,6 +1188,7 @@ export class BookingService {
       departure_date: roomDepartureDates[roomDepartureDates.length - 1] ?? null,
       import_blocked: false,
       import_error: null,
+      is_editable: this.isEditableDirectReservation(group),
       created_at: group.createdAt.toISOString(),
       updated_at: group.updatedAt.toISOString(),
       property: {
@@ -1018,6 +1202,8 @@ export class BookingService {
             name: group.primaryGuest.name,
             phone: group.primaryGuest.phone,
             email: group.primaryGuest.email,
+            id_proof: group.primaryGuest.idProof,
+            address: group.primaryGuest.address,
           }
         : null,
       rooms: group.rooms.map((room) => ({
@@ -1057,6 +1243,15 @@ export class BookingService {
 
   private reservationSourceLabel(group: ReservationGroupWithRelations) {
     return this.connectionSourceLabel(group.channelConnection) ?? group.source;
+  }
+
+  private isEditableDirectReservation(group: ReservationGroupWithRelations) {
+    const rawPayload = this.readObject(group.rawPayload);
+    return (
+      !group.channelConnectionId &&
+      (group.source === 'DIRECT' || group.source === 'WALK_IN') &&
+      rawPayload.mode === 'direct_reservation'
+    );
   }
 
   private connectionSourceLabel(
@@ -1412,6 +1607,7 @@ export class BookingService {
       departure_date: departureDates[departureDates.length - 1] ?? null,
       import_blocked: true,
       import_error: input.importError,
+      is_editable: false,
       created_at: input.createdAt.toISOString(),
       updated_at: input.updatedAt.toISOString(),
       property: input.connection.property,

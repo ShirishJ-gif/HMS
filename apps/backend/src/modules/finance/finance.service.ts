@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { BookingStatus, ChannelConnectionStatus, PaymentTransactionStatus, Prisma } from '@prisma/client';
+import { BookingStatus, ChannelConnectionStatus, PaymentStatus, PaymentTransactionStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty, propertyIdFilter } from '../auth/property-scope';
@@ -121,8 +121,10 @@ export class FinanceService {
       arrivalDate: Date;
       departureDate: Date;
       guestName: string | null;
+      rawPayload: Prisma.JsonValue | null;
       reservationGroup: {
         externalReservationId: string;
+        rawPayload: Prisma.JsonValue | null;
         property: { id: string; name: string; code: string };
         primaryGuest: { id: string; name: string; phone: string | null; email: string | null } | null;
       };
@@ -131,7 +133,7 @@ export class FinanceService {
       room: { id: string; roomNumber: string } | null;
     } | null;
     extraCharges: Array<{ id: string; description: string; amount: Prisma.Decimal; createdAt: Date }>;
-    payments: Array<{ id: string; provider: string; providerReference: string | null; amount: Prisma.Decimal; status: PaymentTransactionStatus; createdAt: Date }>;
+    payments: Array<{ id: string; provider: string; providerReference: string | null; amount: Prisma.Decimal; status: PaymentTransactionStatus; metadata: Prisma.JsonValue | null; createdAt: Date }>;
   }) {
     if (!billing.reservationRoom || !billing.reservationRoomId) {
       throw new Error('Invoice is missing a reservation room subject');
@@ -139,19 +141,23 @@ export class FinanceService {
 
     const paidTotal = this.sumPayments(billing.payments, PaymentTransactionStatus.SUCCEEDED);
     const refundedTotal = this.sumPayments(billing.payments, PaymentTransactionStatus.REFUNDED);
-    const balanceDue = Math.max(0, billing.total.toNumber() - paidTotal + refundedTotal);
+    const billableExtraCharges = billing.extraCharges.filter((charge) => !this.isOtaMetadataCharge(charge.description));
+    const billableExtraChargesTotal = billableExtraCharges.reduce((total, charge) => total + charge.amount.toNumber(), 0);
+    const visibleTotal = billing.amount.toNumber() + billing.tax.toNumber() + billableExtraChargesTotal;
+    const balanceDue = billing.paymentStatus === PaymentStatus.PAID ? 0 : Math.max(0, visibleTotal - paidTotal + refundedTotal);
 
     return {
       id: billing.id,
       reservation_room_id: billing.reservationRoomId,
       amount: billing.amount.toNumber(),
       tax: billing.tax.toNumber(),
-      extra_charges_total: billing.extraCharges.reduce((total, charge) => total + charge.amount.toNumber(), 0),
+      extra_charges_total: billableExtraChargesTotal,
       paid_total: paidTotal,
       refunded_total: refundedTotal,
       balance_due: balanceDue,
-      total: billing.total.toNumber(),
+      total: visibleTotal,
       payment_status: billing.paymentStatus,
+      ota_payment_breakdown: this.extractOtaPaymentBreakdown(billing),
       reservation_room: {
         id: billing.reservationRoom.id,
         reservation_group_id: billing.reservationRoom.reservationGroupId,
@@ -179,7 +185,7 @@ export class FinanceService {
           room_number: billing.reservationRoom.room?.roomNumber ?? null,
         },
       },
-      extra_charges: billing.extraCharges.map((charge) => ({
+      extra_charges: billableExtraCharges.map((charge) => ({
         id: charge.id,
         description: charge.description,
         amount: charge.amount.toNumber(),
@@ -191,11 +197,51 @@ export class FinanceService {
         provider_reference: payment.providerReference,
         amount: payment.amount.toNumber(),
         status: payment.status,
+        metadata: payment.metadata,
         created_at: payment.createdAt,
       })),
       created_at: billing.createdAt,
       updated_at: billing.updatedAt,
     };
+  }
+
+  private extractOtaPaymentBreakdown(billing: {
+    reservationRoom: {
+      rawPayload: Prisma.JsonValue | null;
+      reservationGroup: { rawPayload: Prisma.JsonValue | null };
+    } | null;
+  }) {
+    const financial = this.extractFinancialObject(billing.reservationRoom?.reservationGroup.rawPayload) ?? this.extractFinancialObject(billing.reservationRoom?.rawPayload);
+    if (!financial) return null;
+    return {
+      currency: this.rawString(financial.currency),
+      room_fee: this.rawNumber(financial.roomFee),
+      guest_service_fee: this.rawNumber(financial.guestServiceFee),
+      occupancy_taxes: this.rawNumber(financial.occupancyTaxes ?? financial.tax),
+      guest_paid_total: this.rawNumber(financial.total),
+      host_service_fee: this.rawNumber(financial.hostServiceFee),
+      host_payout: this.rawNumber(financial.hostPayout),
+    };
+  }
+
+  private extractFinancialObject(raw: Prisma.JsonValue | null | undefined) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const financial = (raw as { financial?: unknown }).financial;
+    if (!financial || typeof financial !== 'object' || Array.isArray(financial)) return null;
+    return financial as Record<string, unknown>;
+  }
+
+  private rawNumber(value: unknown) {
+    return typeof value === 'number' ? value : null;
+  }
+
+  private rawString(value: unknown) {
+    return typeof value === 'string' ? value : null;
+  }
+
+  private isOtaMetadataCharge(description: string) {
+    const normalized = description.trim().toUpperCase();
+    return normalized.startsWith('OTA ') || normalized.includes('TAX WITHHOLDING');
   }
 
   private toReservationGroupResponse(group: {
@@ -303,7 +349,7 @@ export class FinanceService {
     return {
       OR: [
         { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
-        { channelConnectionId: null, source: { in: ['DIRECT', 'WALK_IN'] } },
+        { channelConnectionId: null, source: { in: ['DIRECT', 'WALK_IN', 'AIRBNB', 'BOOKING_COM', 'EXPEDIA', 'MAKEMYTRIP', 'GOIBIBO', 'AGODA', 'WEBSITE', 'OTHER'] } },
       ],
     };
   }

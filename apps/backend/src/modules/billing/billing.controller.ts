@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -46,6 +46,15 @@ export class BillingController {
     @Body() addExtraChargeDto: AddExtraChargeDto,
   ) {
     return this.billingService.addExtraCharge(id, addExtraChargeDto, user);
+  }
+
+  @Delete(':id/extra-charges/:chargeId')
+  deleteExtraCharge(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('chargeId', ParseUUIDPipe) chargeId: string,
+  ) {
+    return this.billingService.deleteExtraCharge(id, chargeId, user);
   }
 
   @Put(':id/payment-status')

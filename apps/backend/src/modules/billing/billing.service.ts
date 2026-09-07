@@ -299,6 +299,42 @@ export class BillingService {
     return this.toBillingResponse(billing);
   }
 
+  async deleteExtraCharge(id: string, chargeId: string, user?: AuthenticatedUser) {
+    const billing = await this.prisma.$transaction(async (tx) => {
+      const existingBilling = await tx.billing.findUnique({
+        where: { id },
+        include: this.includeRelations(),
+      });
+
+      if (!existingBilling) {
+        throw new NotFoundException('Invoice not found');
+      }
+
+      assertCanAccessProperty(user, this.subjectPropertyId(existingBilling));
+
+      const charge = existingBilling.extraCharges.find((extraCharge) => extraCharge.id === chargeId);
+      if (!charge) {
+        throw new NotFoundException('Extra charge not found');
+      }
+
+      await tx.billingExtraCharge.delete({ where: { id: chargeId } });
+
+      const extraChargesTotal = existingBilling.extraCharges
+        .filter((extraCharge) => extraCharge.id !== chargeId)
+        .reduce((total, extraCharge) => total.add(extraCharge.amount), new Prisma.Decimal(0));
+
+      return tx.billing.update({
+        where: { id },
+        data: {
+          total: existingBilling.amount.add(existingBilling.tax).add(extraChargesTotal),
+        },
+        include: this.includeRelations(),
+      });
+    });
+
+    return this.toBillingResponse(billing);
+  }
+
   async updatePaymentStatus(id: string, updatePaymentStatusDto: UpdatePaymentStatusDto, user?: AuthenticatedUser) {
     try {
       if (user) {
@@ -378,17 +414,18 @@ export class BillingService {
   }
 
   private toBillingResponse(billing: BillingWithRelations) {
-    const extraChargesTotal = billing.extraCharges.reduce(
-      (total, charge) => total.add(charge.amount),
-      new Prisma.Decimal(0),
-    );
+    const billableExtraCharges = billing.extraCharges.filter((charge) => !this.isOtaMetadataCharge(charge.description));
+    const billableExtraChargesTotal = billableExtraCharges.reduce((total, charge) => total.add(charge.amount), new Prisma.Decimal(0));
+    const visibleTotal = billing.amount.add(billing.tax).add(billableExtraChargesTotal);
     const paidTotal = billing.payments
       .filter((payment) => payment.status === 'SUCCEEDED')
       .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0));
     const refundedTotal = billing.payments
       .filter((payment) => payment.status === 'REFUNDED')
       .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0));
-    const balanceDue = billing.total.sub(paidTotal).add(refundedTotal);
+    const balanceDue = billing.paymentStatus === PaymentStatus.PAID
+      ? new Prisma.Decimal(0)
+      : visibleTotal.sub(paidTotal).add(refundedTotal);
     const subject = billing.reservationRoom
       ? {
           reservation_room_id: billing.reservationRoomId,
@@ -440,14 +477,15 @@ export class BillingService {
       reservation_room_id: subject.reservation_room_id,
       amount: billing.amount.toNumber(),
       tax: billing.tax.toNumber(),
-      extra_charges_total: extraChargesTotal.toNumber(),
+      extra_charges_total: billableExtraChargesTotal.toNumber(),
       paid_total: paidTotal.toNumber(),
       refunded_total: refundedTotal.toNumber(),
       balance_due: balanceDue.toNumber(),
-      total: billing.total.toNumber(),
+      total: visibleTotal.toNumber(),
       payment_status: billing.paymentStatus,
       reservation_room: subject.reservation_room,
-      extra_charges: billing.extraCharges.map((charge) => ({
+      ota_payment_breakdown: this.extractOtaPaymentBreakdown(billing),
+      extra_charges: billableExtraCharges.map((charge) => ({
         id: charge.id,
         description: charge.description,
         amount: charge.amount.toNumber(),
@@ -459,10 +497,48 @@ export class BillingService {
         provider_reference: payment.providerReference,
         amount: payment.amount.toNumber(),
         status: payment.status,
+        metadata: payment.metadata,
         created_at: payment.createdAt,
       })),
       created_at: billing.createdAt,
       updated_at: billing.updatedAt,
     };
+  }
+
+  private extractOtaPaymentBreakdown(billing: BillingWithRelations) {
+    const groupRaw = billing.reservationRoom?.reservationGroup.rawPayload;
+    const roomRaw = billing.reservationRoom?.rawPayload;
+    const financial = this.extractFinancialObject(groupRaw) ?? this.extractFinancialObject(roomRaw);
+    if (!financial) return null;
+
+    return {
+      currency: this.rawString(financial.currency),
+      room_fee: this.rawNumber(financial.roomFee),
+      guest_service_fee: this.rawNumber(financial.guestServiceFee),
+      occupancy_taxes: this.rawNumber(financial.occupancyTaxes ?? financial.tax),
+      guest_paid_total: this.rawNumber(financial.total),
+      host_service_fee: this.rawNumber(financial.hostServiceFee),
+      host_payout: this.rawNumber(financial.hostPayout),
+    };
+  }
+
+  private extractFinancialObject(raw: Prisma.JsonValue | null | undefined) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const financial = (raw as { financial?: unknown }).financial;
+    if (!financial || typeof financial !== 'object' || Array.isArray(financial)) return null;
+    return financial as Record<string, unknown>;
+  }
+
+  private rawNumber(value: unknown) {
+    return typeof value === 'number' ? value : null;
+  }
+
+  private rawString(value: unknown) {
+    return typeof value === 'string' ? value : null;
+  }
+
+  private isOtaMetadataCharge(description: string) {
+    const normalized = description.trim().toUpperCase();
+    return normalized.startsWith('OTA ') || normalized.includes('TAX WITHHOLDING');
   }
 }

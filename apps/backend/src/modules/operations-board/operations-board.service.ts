@@ -37,9 +37,10 @@ export class OperationsBoardService {
       propertyId: scopedPropertyId,
       OR: [
         {
-          status: { in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN] },
+          status: BookingStatus.BOOKED,
           departureDate: { gte: lateArrivalStart },
         },
+        { status: BookingStatus.CHECKED_IN },
         {
           status: BookingStatus.CHECKED_OUT,
           departureDate: boardDate,

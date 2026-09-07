@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { type FormEvent, useEffect, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { Property } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
 import { DelayedSpinnerOverlay } from '../components/Spinner';
-import { ErrorMsg, SearchInput, StatCard } from './ui';
+import { ActionBtn, ErrorMsg, SearchInput, StatCard, inputCls, labelCls } from './ui';
 
 type DisplayGuest = {
   id: string; property_id: string; name: string; phone: string; email: string | null;
@@ -32,6 +32,14 @@ type GuestDirectoryResponse = {
 
 const guestPageLimit = 50;
 const guestSearchDebounceMs = 550;
+const emptyGuestForm = {
+  property_id: '',
+  name: '',
+  phone: '',
+  email: '',
+  id_proof: '',
+  address: '',
+};
 
 /* ── Avatar helpers ── */
 const AVATAR_COLORS = [
@@ -84,6 +92,10 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
   const [directory, setDirectory] = useState<GuestDirectoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showAddGuest, setShowAddGuest] = useState(false);
+  const [guestForm, setGuestForm] = useState(emptyGuestForm);
+  const [guestSubmitting, setGuestSubmitting] = useState(false);
+  const [guestFormError, setGuestFormError] = useState<string | null>(null);
 
   const properties = directory?.properties ?? [];
   const guests = directory?.guests ?? [];
@@ -94,6 +106,7 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
 
   useEffect(() => {
     if (activePropertyId) setPropertyFilter(activePropertyId);
+    if (activePropertyId) setGuestForm(current => ({ ...current, property_id: activePropertyId }));
   }, [activePropertyId]);
 
   useEffect(() => {
@@ -150,6 +163,52 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
     setSelectedId(guests[0]?.id ?? null);
   }, [guestIds, selectedId]);
 
+  async function createGuest(event: FormEvent) {
+    event.preventDefault();
+    setGuestFormError(null);
+    const formPropertyId = activePropertyId || (propertyFilter !== 'ALL' ? propertyFilter : '') || guestForm.property_id;
+    if (!formPropertyId) {
+      setGuestFormError('Select a property from the top bar or property filter first.');
+      return;
+    }
+    if (!guestForm.name.trim() || !guestForm.phone.trim()) {
+      setGuestFormError('Name and phone are required.');
+      return;
+    }
+
+    setGuestSubmitting(true);
+    try {
+      await api.post('/guests', {
+        property_id: formPropertyId,
+        name: guestForm.name.trim(),
+        phone: guestForm.phone.trim(),
+        email: guestForm.email.trim() || undefined,
+        id_proof: 'Not provided',
+        address: 'Not provided',
+      });
+      setGuestForm({ ...emptyGuestForm, property_id: formPropertyId });
+      setShowAddGuest(false);
+      setSourceFilter('GUEST_REGISTRY');
+      setPage(1);
+      setDirectory(null);
+      setLoading(true);
+      const response = await api.get<GuestDirectoryResponse>('/guests/directory', {
+        params: {
+          limit: guestPageLimit,
+          page: 1,
+          property_id: formPropertyId,
+          source: 'GUEST_REGISTRY',
+        },
+      });
+      setDirectory(response.data);
+    } catch (saveError) {
+      setGuestFormError(getApiErrorMessage(saveError));
+    } finally {
+      setGuestSubmitting(false);
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="relative min-h-screen -mx-5 lg:-mx-8 -my-6 lg:-my-8 bg-[#f5f5f3] flex flex-col">
       <DelayedSpinnerOverlay loading={loading} />
@@ -160,9 +219,43 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
           <h1 className="text-[22px] font-black text-slate-900 tracking-tight leading-none">Guests</h1>
           <p className="text-[12px] text-slate-400 mt-1">Search guest contacts, IDs, and reservation-linked profiles across properties</p>
         </div>
+        <ActionBtn variant="primary" onClick={() => {
+          setGuestForm(current => ({ ...current, property_id: activePropertyId || (propertyFilter !== 'ALL' ? propertyFilter : current.property_id) }));
+          setShowAddGuest(open => !open);
+        }}>
+          {showAddGuest ? 'Close' : 'Add guest'}
+        </ActionBtn>
       </div>
 
       <div className="px-5 lg:px-8 py-5 flex flex-col gap-4">
+        {showAddGuest && (
+          <form onSubmit={createGuest} className="rounded-xl border border-black/[0.06] bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-600">Manual guest</p>
+                <h2 className="text-base font-bold text-slate-900">Add guest details</h2>
+              </div>
+              <ActionBtn type="submit" variant="primary" disabled={guestSubmitting}>
+                {guestSubmitting ? 'Saving...' : 'Save guest'}
+              </ActionBtn>
+            </div>
+            {guestFormError && <div className="mb-3"><ErrorMsg>{guestFormError}</ErrorMsg></div>}
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <label className={labelCls}>
+                <span>Name</span>
+                <input className={inputCls} value={guestForm.name} onChange={event => setGuestForm(current => ({ ...current, name: event.target.value }))} />
+              </label>
+              <label className={labelCls}>
+                <span>Phone</span>
+                <input className={inputCls} value={guestForm.phone} onChange={event => setGuestForm(current => ({ ...current, phone: event.target.value }))} />
+              </label>
+              <label className={labelCls}>
+                <span>Email</span>
+                <input className={inputCls} type="email" value={guestForm.email} onChange={event => setGuestForm(current => ({ ...current, email: event.target.value }))} />
+              </label>
+            </div>
+          </form>
+        )}
 
         {/* ── KPI strip ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

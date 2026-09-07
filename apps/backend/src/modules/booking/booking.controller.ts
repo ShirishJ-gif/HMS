@@ -5,6 +5,7 @@ import { CheckInReservationRoomDto } from './dto/check-in-reservation-room.dto';
 import { CreateDirectReservationDto } from './dto/create-direct-reservation.dto';
 import { FindReservationFeedQueryDto } from './dto/find-reservation-feed-query.dto';
 import { FindReservationGroupsQueryDto } from './dto/find-reservation-groups-query.dto';
+import { UpdateDirectReservationDto } from './dto/update-direct-reservation.dto';
 import { BookingService } from './booking.service';
 
 @Controller()
@@ -14,6 +15,15 @@ export class BookingController {
   @Post('reservations/direct')
   createDirectReservation(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateDirectReservationDto) {
     return this.bookingService.createDirectReservation(dto, user);
+  }
+
+  @Put('reservations/direct/:id')
+  updateDirectReservation(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateDirectReservationDto,
+  ) {
+    return this.bookingService.updateDirectReservation(id, dto, user);
   }
 
   @Get('bookings/groups')

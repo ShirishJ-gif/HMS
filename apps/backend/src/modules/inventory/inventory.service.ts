@@ -9,6 +9,7 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty } from '../auth/property-scope';
 import { PrismaService } from '../../prisma/prisma.service';
+import { GoogleCalendarService } from '../google-calendar/google-calendar.service';
 import { RoomOutOfServiceCalendarService } from '../room-out-of-service/room-out-of-service-calendar.service';
 import { CreateInventoryBlockDto } from './dto/create-inventory-block.dto';
 import { GetInventoryCalendarDto } from './dto/get-inventory-calendar.dto';
@@ -21,6 +22,7 @@ export class InventoryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLogService: AuditLogService,
+    private readonly googleCalendarService: GoogleCalendarService,
     private readonly roomOutOfServiceCalendarService: RoomOutOfServiceCalendarService,
   ) {}
 
@@ -154,6 +156,106 @@ export class InventoryService {
     });
 
     return this.toInventoryBlockResponse(block);
+  }
+
+  async listInventoryBlocks(propertyId: string, source?: string, user?: AuthenticatedUser) {
+    if (!propertyId) {
+      throw new BadRequestException('property_id is required');
+    }
+    assertCanAccessProperty(user, propertyId);
+
+    const blocks = await this.prisma.inventoryBlock.findMany({
+      where: {
+        propertyId,
+        ...(source ? { source } : {}),
+      },
+      include: { roomCategory: { select: { name: true, code: true } } },
+      orderBy: [{ fromDate: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    return blocks.map((block) => ({
+      ...this.toInventoryBlockResponse(block),
+      room_category_name: block.roomCategory.name,
+      room_category_code: block.roomCategory.code,
+    }));
+  }
+
+  async attachGoogleEvent(
+    id: string,
+    body: { calendar_id?: string | null; event_id?: string | null; html_link?: string | null },
+    user?: AuthenticatedUser,
+  ) {
+    const block = await this.prisma.inventoryBlock.findUnique({ where: { id } });
+    if (!block) throw new NotFoundException('Inventory block not found');
+    assertCanAccessProperty(user, block.propertyId);
+
+    const updated = await this.prisma.inventoryBlock.update({
+      where: { id },
+      data: {
+        googleCalendarId: body.calendar_id || null,
+        googleCalendarEventId: body.event_id || null,
+        googleCalendarHtmlLink: body.html_link || null,
+      },
+    });
+
+    return this.toInventoryBlockResponse(updated);
+  }
+
+  async removeInventoryBlock(id: string, deleteGoogleEvent: boolean, user?: AuthenticatedUser) {
+    const block = await this.prisma.inventoryBlock.findUnique({
+      where: { id },
+      include: { roomCategory: { select: { name: true } } },
+    });
+    if (!block) throw new NotFoundException('Inventory block not found');
+    assertCanAccessProperty(user, block.propertyId);
+
+    let googleEventResult: Awaited<ReturnType<GoogleCalendarService['deleteBusyBlockEvent']>> | null = null;
+    if (deleteGoogleEvent) {
+      googleEventResult = await this.googleCalendarService.deleteBusyBlockEvent({
+        propertyId: block.propertyId,
+        calendarId: block.googleCalendarId,
+        eventId: block.googleCalendarEventId,
+        fromDate: block.fromDate.toISOString().slice(0, 10),
+        toDate: block.toDate.toISOString().slice(0, 10),
+        summary: 'Blocked',
+      }, user);
+      const alreadyRemoved = googleEventResult.reason?.toLowerCase().includes('already removed') ?? false;
+      if (block.googleCalendarEventId && !googleEventResult.deleted && !alreadyRemoved) {
+        throw new ConflictException(googleEventResult.reason || 'Google busy event could not be deleted. Reconnect Google Calendar and try again.');
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.inventoryBlock.delete({ where: { id } });
+      await this.rebuildCalendarRange({
+        propertyId: block.propertyId,
+        roomCategoryIds: [block.roomCategoryId],
+        from: block.fromDate,
+        to: block.toDate,
+      }, tx);
+    });
+
+    await this.auditLogService.record({
+      action: AuditAction.DELETE,
+      entityType: 'inventory_block',
+      entityId: id,
+      propertyId: block.propertyId,
+      summary: `Deleted inventory block for ${block.roomCategory.name}`,
+      metadata: {
+        room_category_id: block.roomCategoryId,
+        from_date: block.fromDate.toISOString().slice(0, 10),
+        to_date: block.toDate.toISOString().slice(0, 10),
+        blocked_rooms: block.blockedRooms,
+        reason: block.reason,
+        source: block.source,
+        google_calendar_id: block.googleCalendarId,
+        google_calendar_event_id: block.googleCalendarEventId,
+        google_event: googleEventResult,
+      },
+      user,
+    });
+
+    return { deleted: true, google_event: googleEventResult };
   }
 
   async setInventoryRestrictions(dto: SetInventoryRestrictionsDto, user?: AuthenticatedUser) {
@@ -635,6 +737,9 @@ export class InventoryService {
     blockedRooms: number;
     reason: string;
     source: string;
+    googleCalendarId?: string | null;
+    googleCalendarEventId?: string | null;
+    googleCalendarHtmlLink?: string | null;
     createdByUserId: string | null;
     createdAt: Date;
     updatedAt: Date;
@@ -648,6 +753,9 @@ export class InventoryService {
       blocked_rooms: block.blockedRooms,
       reason: block.reason,
       source: block.source,
+      google_calendar_id: block.googleCalendarId ?? null,
+      google_calendar_event_id: block.googleCalendarEventId ?? null,
+      google_calendar_html_link: block.googleCalendarHtmlLink ?? null,
       created_by_user_id: block.createdByUserId,
       created_at: block.createdAt,
       updated_at: block.updatedAt,

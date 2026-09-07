@@ -178,26 +178,37 @@ function getGroupStayWindow(group: ReservationGroup) {
     departure: group.departure_date ?? departures[departures.length - 1] ?? null,
   };
 }
-
-function datePart(value: string | null | undefined) {
-  return value ? value.slice(0, 10) : null;
+function directReservationFormFromGroup(group: ReservationGroup, fallbackDate = getTodayDate()): DirectReservationFormState {
+  const firstRoom = group.rooms[0];
+  const idProof = group.primary_guest?.id_proof ?? '';
+  const [idProofType = '', ...idProofRest] = idProof.split(':');
+  return {
+    property_id: group.property_id,
+    room_category_id: firstRoom?.room_category.id ?? '',
+    rate_plan_id: firstRoom?.rate_plan.id ?? '',
+    check_in_date: group.arrival_date ?? firstRoom?.arrival_date ?? fallbackDate,
+    check_out_date: group.departure_date ?? firstRoom?.departure_date ?? addDays(fallbackDate, 1),
+    check_in_time: '12:00',
+    check_out_time: '11:00',
+    room_count: String(group.rooms.length || 1),
+    adults: String(firstRoom?.adults ?? 1),
+    children: String(firstRoom?.children ?? 0),
+    guest_name: group.primary_guest?.name ?? firstRoom?.guest_name ?? '',
+    guest_phone: group.primary_guest?.phone ?? '',
+    guest_email: group.primary_guest?.email ?? '',
+    guest_id_proof_type: idProofType.trim(),
+    guest_id_proof_number: idProofRest.join(':').trim(),
+    guest_address: group.primary_guest?.address ?? '',
+    advance_amount: '',
+    advance_payment_provider: 'CASH',
+    advance_payment_reference: '',
+    remarks: group.remarks ?? '',
+  };
 }
 
 function getTimelineStayWindow(room: ReservationGroup['rooms'][number]) {
-  const checkedInDate = datePart(room.checked_in_at);
-  const checkedOutDate = datePart(room.checked_out_at);
-  const shouldUseActualCheckIn =
-    Boolean(checkedInDate) &&
-    ['CHECKED_IN', 'CHECKED_OUT'].includes(room.reservation_status) &&
-    checkedInDate! > room.arrival_date;
-  const start = shouldUseActualCheckIn ? checkedInDate! : room.arrival_date;
-  const endCandidates = [
-    room.departure_date,
-    checkedOutDate ? addDays(checkedOutDate, 1) : null,
-    addDays(start, 1),
-  ].filter((value): value is string => Boolean(value));
-  const sortedEndCandidates = endCandidates.sort();
-  const end = sortedEndCandidates[sortedEndCandidates.length - 1] ?? addDays(start, 1);
+  const start = room.arrival_date;
+  const end = room.departure_date > start ? room.departure_date : addDays(start, 1);
   return { start, end };
 }
 
@@ -481,6 +492,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [reminderPendingId, setReminderPendingId] = useState<string | null>(null);
   const [showDirectReservationModal, setShowDirectReservationModal] = useState(false);
+  const [editingDirectReservationId, setEditingDirectReservationId] = useState<string | null>(null);
   const [directReservationSubmitting, setDirectReservationSubmitting] = useState(false);
   const [directReservationError, setDirectReservationError] = useState<string | null>(null);
   const [directReservationFieldErrors, setDirectReservationFieldErrors] = useState<DirectReservationFieldErrors>({});
@@ -637,7 +649,17 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
     }
     catch (e) { setActionError(getApiErrorMessage(e)); } finally { setReminderPendingId(null); }
   }
-  async function createDirectReservation(event: FormEvent) {
+  function openEditDirectReservation(group: ReservationGroup) {
+    if (!group.is_editable) return;
+    setActionError(null);
+    setDirectReservationError(null);
+    setDirectReservationFieldErrors({});
+    setEditingDirectReservationId(group.id);
+    setDirectReservationForm(directReservationFormFromGroup(group, today));
+    setShowDirectReservationModal(true);
+  }
+
+  async function saveDirectReservation(event: FormEvent) {
     event.preventDefault();
     if (previewDataEnabled) {
       setDirectReservationError('Sample preview records are read-only. Turn off sample data to create a live reservation.');
@@ -680,7 +702,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
       if (!Number.isInteger(roomCount) || roomCount < 1 || roomCount > 20) {
         nextFieldErrors.room_count = 'Select a valid room count.';
       }
-      if (directReservationMaxRooms != null && roomCount > directReservationMaxRooms) {
+      if (!editingDirectReservationId && directReservationMaxRooms != null && roomCount > directReservationMaxRooms) {
         nextFieldErrors.room_count = `Only ${directReservationMaxRooms} room${directReservationMaxRooms === 1 ? '' : 's'} available.`;
       }
       if (!isValidTime(directReservationForm.check_in_time) || !isValidTime(directReservationForm.check_out_time)) {
@@ -721,7 +743,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
         return;
       }
 
-      const { data } = await api.post<ReservationGroup>('/reservations/direct', {
+      const payload = {
         property_id: directReservationForm.property_id,
         room_category_id: directReservationForm.room_category_id,
         rate_plan_id: directReservationForm.rate_plan_id,
@@ -747,7 +769,10 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
           id_proof: formatIdProof(guestIdProofType, guestIdProofNumber),
           address: directReservationForm.guest_address.trim(),
         },
-      });
+      };
+      const { data } = editingDirectReservationId
+        ? await api.put<ReservationGroup>(`/reservations/direct/${editingDirectReservationId}`, payload)
+        : await api.post<ReservationGroup>('/reservations/direct', payload);
 
       _allGroupsCache = null;
       setFeedPage(1);
@@ -755,9 +780,10 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
       setSelectedGroupId(data.id);
       setReloadKey((value) => value + 1);
       setShowDirectReservationModal(false);
+      setEditingDirectReservationId(null);
       setOpenDirectReservationDatePicker(null);
       setDirectReservationForm(createDirectReservationForm(today, reservationProperties.length === 1 ? reservationProperties[0] : null));
-      setActionStatus('Walk-in reservation created. Inventory sync has been queued for active OTA connections.');
+      setActionStatus(editingDirectReservationId ? 'Walk-in reservation updated.' : 'Walk-in reservation created. Inventory sync has been queued for active OTA connections.');
     } catch (e) {
       setDirectReservationError(getApiErrorMessage(e));
     } finally {
@@ -794,7 +820,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
     propertiesState.loading || categoriesState.loading || ratePlansState.loading;
 
   useEffect(() => {
-    if (!directReservationForm.room_category_id || directReservationMaxRooms == null) return;
+    if (editingDirectReservationId || !directReservationForm.room_category_id || directReservationMaxRooms == null) return;
     const currentRoomCount = Number(directReservationForm.room_count);
     if (directReservationMaxRooms <= 0 && directReservationForm.room_count) {
       setDirectReservationForm((current) => ({ ...current, room_count: '' }));
@@ -803,7 +829,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
     if (directReservationMaxRooms > 0 && directReservationForm.room_count && currentRoomCount > directReservationMaxRooms) {
       setDirectReservationForm((current) => ({ ...current, room_count: String(directReservationMaxRooms) }));
     }
-  }, [directReservationForm.room_category_id, directReservationForm.room_count, directReservationMaxRooms]);
+  }, [directReservationForm.room_category_id, directReservationForm.room_count, directReservationMaxRooms, editingDirectReservationId]);
 
   const days = Array.from({ length: WINDOW_DAYS }, (_, i) => addDays(windowStart, i));
   const windowEnd = addDays(windowStart, WINDOW_DAYS);
@@ -868,6 +894,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
             onClick={() => {
               setDirectReservationError(null);
               setDirectReservationFieldErrors({});
+              setEditingDirectReservationId(null);
               setDirectReservationForm(createDirectReservationForm(today, reservationProperties.length === 1 ? reservationProperties[0] : null));
               setShowDirectReservationModal(true);
             }}
@@ -1212,7 +1239,23 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
                         <span className="text-xs text-slate-400">{group.rooms.map(r => r.room_category.name).filter((v, i, a) => a.indexOf(v) === i).join(', ')}</span>
                       </Td>
                       <Td>{group.total_amount == null ? '—' : formatCurrency(group.total_amount)}</Td>
-                      <Td><StatusBadge label={group.import_blocked ? 'IMPORT_BLOCKED' : group.reservation_status} tone={group.import_blocked ? 'rose' : undefined} /></Td>
+                      <Td>
+                        <div className="flex flex-col items-start gap-2">
+                          <StatusBadge label={group.import_blocked ? 'IMPORT_BLOCKED' : group.reservation_status} tone={group.import_blocked ? 'rose' : undefined} />
+                          {group.is_editable && (
+                            <button
+                              type="button"
+                              className="text-[11px] font-bold text-emerald-700 hover:text-emerald-900"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openEditDirectReservation(group);
+                              }}
+                            >
+                              Edit
+                            </button>
+                          )}
+                        </div>
+                      </Td>
                     </tr>
                     {selectedGroupId === group.id && (
                       <tr>
@@ -1293,6 +1336,15 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
                   <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-1 text-[10.5px] font-semibold text-slate-100 ring-1 ring-inset ring-white/10">
                     {timelineDrawerGroup.rooms.length} room{timelineDrawerGroup.rooms.length === 1 ? '' : 's'}
                   </span>
+                  {timelineDrawerGroup.is_editable && (
+                    <button
+                      type="button"
+                      onClick={() => openEditDirectReservation(timelineDrawerGroup)}
+                      className="inline-flex items-center rounded-full bg-white px-2.5 py-1 text-[10.5px] font-bold text-slate-900"
+                    >
+                      Edit
+                    </button>
+                  )}
                 </div>
 
                 <div className="mt-4 grid grid-cols-2 gap-2.5">
@@ -1403,12 +1455,13 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
         open={showDirectReservationModal}
         onClose={() => {
           setShowDirectReservationModal(false);
+          setEditingDirectReservationId(null);
           setDirectReservationError(null);
           setDirectReservationFieldErrors({});
           setOpenDirectReservationDatePicker(null);
           setDirectReservationForm(createDirectReservationForm(today, reservationProperties.length === 1 ? reservationProperties[0] : null));
         }}
-        onSubmit={createDirectReservation}
+        onSubmit={saveDirectReservation}
         onChange={(value) => {
           setDirectReservationFieldErrors({});
           setDirectReservationError(null);
@@ -1427,6 +1480,7 @@ export function BookingsPage({ previewDataEnabled = false }: { previewDataEnable
         fieldErrors={directReservationFieldErrors}
         openDatePicker={openDirectReservationDatePicker}
         setOpenDatePicker={setOpenDirectReservationDatePicker}
+        editing={Boolean(editingDirectReservationId)}
       />
     </div>
   );
@@ -1450,6 +1504,7 @@ function DirectReservationModal({
   fieldErrors,
   openDatePicker,
   setOpenDatePicker,
+  editing,
 }: {
   open: boolean;
   onClose: () => void;
@@ -1468,6 +1523,7 @@ function DirectReservationModal({
   fieldErrors: DirectReservationFieldErrors;
   openDatePicker: 'checkin' | 'checkout' | null;
   setOpenDatePicker: Dispatch<SetStateAction<'checkin' | 'checkout' | null>>;
+  editing: boolean;
 }) {
   if (!open) return null;
   const selectedProperty = properties.find((property) => property.id === form.property_id) ?? null;
@@ -1502,7 +1558,7 @@ function DirectReservationModal({
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-600">Walk-in reservation</p>
-            <h2 className="mt-1 text-xl font-bold text-slate-900">Create a direct booking</h2>
+            <h2 className="mt-1 text-xl font-bold text-slate-900">{editing ? 'Edit direct booking' : 'Create a direct booking'}</h2>
             <p className="mt-1 text-sm text-slate-500">
               This reserves HMS inventory now and queues OTA availability sync for active channel connections.
             </p>
@@ -1528,6 +1584,7 @@ function DirectReservationModal({
                 <CustomSelect
                   invalid={Boolean(fieldErrors.property_id)}
                   lockWhenSingleOption
+                  disabled={editing}
                   options={properties.map((property) => ({ label: property.name, value: property.id }))}
                   placeholder={loading ? 'Loading properties…' : 'Select property'}
                   value={form.property_id}
@@ -1572,7 +1629,7 @@ function DirectReservationModal({
                     <span>Room count</span>
                     <input
                       className={inputClass('room_count', '[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none')}
-                      disabled={roomCountDisabled}
+                      disabled={editing || roomCountDisabled}
                       inputMode="numeric"
                       max={maxAvailableRooms ?? 20}
                       min={1}
@@ -1585,7 +1642,7 @@ function DirectReservationModal({
                       }))}
                     />
                     <span className={`text-[11px] font-medium ${availabilityError || maxAvailableRooms === 0 ? 'text-rose-500' : 'text-slate-400'}`}>
-                      {fieldErrors.room_count ?? roomCountHint}
+                      {fieldErrors.room_count ?? (editing ? 'Room count is fixed after creation.' : roomCountHint)}
                     </span>
                   </label>
 
@@ -1853,7 +1910,7 @@ function DirectReservationModal({
                 Cancel
               </button>
               <button type="submit" className={primaryBtn} disabled={submitting || loading}>
-                {submitting ? 'Creating…' : 'Create reservation'}
+                {submitting ? (editing ? 'Saving...' : 'Creating...') : (editing ? 'Save changes' : 'Create reservation')}
               </button>
             </div>
           </div>

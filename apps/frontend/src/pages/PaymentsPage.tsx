@@ -29,6 +29,7 @@ const STATUS_CFG: Record<string, { badge: string; label: string }> = {
 
 const defaultPayForm = { amount: '', provider: 'CASH' as PaymentProvider, provider_reference: '' };
 const defaultGroupPayForm = { amount: '', provider: 'CASH' as PaymentProvider, provider_reference: '' };
+const defaultExtraChargeForm = { billing_id: '', description: '', amount: '' };
 const FOLIOS_PER_PAGE = 8;
 
 type FinanceOverview = {
@@ -58,6 +59,41 @@ function paymentReferenceLabel(payment: { provider: PaymentProvider; provider_re
   return payment.provider === 'CASH' ? '—' : payment.provider_reference ?? '—';
 }
 
+function paymentMetadata(payment: { metadata?: unknown }) {
+  return payment.metadata && typeof payment.metadata === 'object' && !Array.isArray(payment.metadata)
+    ? payment.metadata as Record<string, unknown>
+    : null;
+}
+
+function numericMetadataValue(metadata: Record<string, unknown> | null, key: string) {
+  const value = metadata?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function airbnbPayoutPaymentDetails(payment: { metadata?: unknown; amount: number }) {
+  const metadata = paymentMetadata(payment);
+  if (metadata?.source !== 'airbnb_payout_email') return null;
+  const netReceived = numericMetadataValue(metadata, 'net_received') ?? numericMetadataValue(metadata, 'payout_amount') ?? payment.amount;
+  const taxWithholding = numericMetadataValue(metadata, 'tax_withholding');
+  const youEarn = numericMetadataValue(metadata, 'airbnb_payout_before_tax') ?? (
+    netReceived != null && taxWithholding != null ? netReceived + taxWithholding : null
+  );
+  return {
+    youEarn,
+    taxWithholding,
+    netReceived,
+  };
+}
+
+function escapeHtml(value: string | number | null | undefined) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 function fmtDate(d: string) {
   return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 }
@@ -80,60 +116,158 @@ function matchesPaymentStatus(paymentStatus: string, filter: string) {
   return paymentStatus === filter;
 }
 
+function otaPaymentRows(billing: Billing) {
+  const breakdown = billing.ota_payment_breakdown;
+  if (!breakdown) return [];
+  return [
+    { label: 'Room fee', value: breakdown.room_fee },
+    { label: 'Occupancy taxes', value: breakdown.occupancy_taxes },
+    { label: 'Guest service fee', value: breakdown.guest_service_fee == null ? null : Math.abs(breakdown.guest_service_fee) },
+    { label: 'Host service fee', value: breakdown.host_service_fee == null ? null : Math.abs(breakdown.host_service_fee) },
+  ].filter((row): row is { label: string; value: number } => row.value != null);
+}
+
 // ── Print invoice (browser-print, no backend needed) ──────────────────────
 function printInvoice(billing: Billing) {
   const r = billing.reservation_room;
   const n = nights(r.check_in_date, r.check_out_date);
   const paid = billing.paid_total - billing.refunded_total;
-  const lines = [
-    { desc: `Room charge — ${r.room_category.name} (${n} night${n !== 1 ? 's' : ''})`, amount: billing.amount },
-    ...billing.extra_charges.map(ec => ({ desc: ec.description, amount: ec.amount })),
-    { desc: 'Tax (12%)', amount: billing.tax },
-  ];
+  const otaRows = otaPaymentRows(billing);
+  const lines = otaRows.length > 0
+    ? otaRows.map(row => ({ desc: row.label, amount: row.value }))
+    : [
+        { desc: `Room charge - ${r.room_category.name} (${n} night${n !== 1 ? 's' : ''})`, amount: billing.amount },
+        ...billing.extra_charges.map(ec => ({ desc: ec.description, amount: ec.amount })),
+        { desc: 'Hotel tax', amount: billing.tax },
+      ];
   const guestName = formatGuestName(r.guest.name);
+  const generatedAt = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  const statusLabel = STATUS_CFG[billing.payment_status]?.label ?? billing.payment_status;
+  const invoiceNo = billing.id.slice(0, 8).toUpperCase();
+  const checkIn = new Date(r.check_in_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  const checkOut = new Date(r.check_out_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  const paymentRows = billing.payments.map(payment => {
+    const payoutDetails = airbnbPayoutPaymentDetails(payment);
+    const provider = payoutDetails ? 'Airbnb payout' : payment.provider;
+    const amount = payoutDetails
+      ? [
+          payoutDetails.youEarn != null ? `<div><span>You earn</span><strong>${formatCurrency(payoutDetails.youEarn)}</strong></div>` : '',
+          payoutDetails.taxWithholding != null ? `<div><span>GST</span><strong>${formatCurrency(payoutDetails.taxWithholding)}</strong></div>` : '',
+          `<div class="net"><span>Net received</span><strong>${formatCurrency(payoutDetails.netReceived)}</strong></div>`,
+        ].filter(Boolean).join('')
+      : formatCurrency(payment.amount);
+    return `<tr>
+      <td>${new Date(payment.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+      <td>${escapeHtml(provider)}</td>
+      <td class="mono">${escapeHtml(paymentReferenceLabel(payment))}</td>
+      <td>${amount}</td>
+      <td><span class="status">${escapeHtml(payment.status)}</span></td>
+    </tr>`;
+  }).join('');
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Invoice — ${guestName}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family: -apple-system, 'Inter', sans-serif; color: #1e293b; padding: 48px; max-width: 680px; margin: 0 auto; }
-  h1 { font-size: 28px; font-weight: 900; margin-bottom: 4px; }
-  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 32px; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 32px; }
-  .block p { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #94a3b8; margin-bottom: 4px; }
-  .block strong { font-size: 14px; font-weight: 700; color: #1e293b; display: block; }
-  .block span { font-size: 13px; color: #64748b; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
-  th { text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #94a3b8; padding: 8px 0; border-bottom: 2px solid #f1f5f9; }
-  td { padding: 10px 0; font-size: 13px; border-bottom: 1px solid #f8fafc; }
-  td:last-child, th:last-child { text-align: right; }
-  .total-row td { font-weight: 900; font-size: 15px; border-top: 2px solid #1e293b; border-bottom: none; padding-top: 14px; }
-  .paid-row td { font-size: 13px; color: #16a34a; font-weight: 700; border-bottom: none; }
-  .balance-row td { font-size: 15px; font-weight: 900; color: ${billing.balance_due > 0 ? '#dc2626' : '#16a34a'}; border-bottom: none; }
-  .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #94a3b8; }
-  @media print { body { padding: 24px; } }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif; color: #172033; background: #fff; padding: 42px; max-width: 820px; margin: 0 auto; }
+  .top { display:flex; justify-content:space-between; gap:32px; align-items:flex-start; padding-bottom:24px; border-bottom:2px solid #172033; }
+  h1 { font-size: 30px; font-weight: 900; letter-spacing:0; color:#0f172a; }
+  .muted { color:#64748b; font-size:12px; line-height:1.55; }
+  .invoice-meta { text-align:right; }
+  .invoice-meta strong { display:block; font-size:22px; color:#0f172a; margin-bottom:6px; }
+  .badge { display:inline-block; margin-top:10px; padding:5px 10px; border-radius:999px; background:${billing.balance_due > 0 ? '#fff1f2' : '#ecfdf5'}; color:${billing.balance_due > 0 ? '#be123c' : '#047857'}; font-size:11px; font-weight:800; text-transform:uppercase; }
+  .section { margin-top:26px; }
+  .section-title { font-size:11px; font-weight:900; text-transform:uppercase; color:#94a3b8; margin-bottom:10px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .box { border:1px solid #e2e8f0; border-radius:10px; padding:14px 16px; min-height:96px; }
+  .box p { font-size:10px; font-weight:800; text-transform:uppercase; color:#94a3b8; margin-bottom:5px; }
+  .box strong { display:block; font-size:14px; color:#0f172a; margin-bottom:4px; }
+  .box span { display:block; font-size:12px; color:#64748b; line-height:1.5; }
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:left; font-size:10px; font-weight:900; text-transform:uppercase; color:#94a3b8; padding:10px 0; border-bottom:1px solid #e2e8f0; }
+  th:last-child, td:last-child { text-align:right; }
+  td { padding:12px 0; font-size:12.5px; border-bottom:1px solid #f1f5f9; vertical-align:top; }
+  .amount { font-weight:800; color:#0f172a; }
+  .mono { font-family:'SFMono-Regular', Consolas, monospace; font-size:10.5px; color:#64748b; }
+  .totals { width:320px; margin-left:auto; margin-top:16px; }
+  .totals div { display:flex; justify-content:space-between; padding:8px 0; font-size:13px; color:#475569; }
+  .totals strong { color:#0f172a; }
+  .grand { border-top:2px solid #172033; margin-top:4px; padding-top:12px !important; font-size:16px !important; font-weight:900; color:#0f172a !important; }
+  .paid { color:#047857 !important; font-weight:800; }
+  .balance { color:${billing.balance_due > 0 ? '#be123c' : '#047857'} !important; font-weight:900; }
+  .status { display:inline-block; padding:4px 8px; border-radius:999px; background:#ecfdf5; color:#047857; font-size:10px; font-weight:800; }
+  .net { border-top:1px solid #e2e8f0; margin-top:4px; padding-top:4px; }
+  td div { display:flex; justify-content:space-between; gap:12px; min-width:170px; }
+  td div span { color:#64748b; }
+  td div strong { color:#0f172a; }
+  .footer { margin-top:34px; padding-top:16px; border-top:1px solid #e2e8f0; display:flex; justify-content:space-between; gap:20px; font-size:11px; color:#94a3b8; }
+  @media print { body { padding: 28px; } .no-break { break-inside: avoid; } }
 </style></head><body>
-<h1>${r.property.name}</h1>
-<p class="sub">Tax Invoice · Generated ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
-<div class="grid2">
-  <div class="block"><p>Guest</p><strong>${guestName}</strong>${r.guest.phone ? `<span>${r.guest.phone}</span>` : ''}${r.guest.email ? `<span>${r.guest.email}</span>` : ''}</div>
-  <div class="block"><p>Stay details</p><strong>Room ${r.room.room_number ?? 'TBD'} — ${r.room_category.name}</strong><span>${fmtDate(r.check_in_date)} → ${fmtDate(r.check_out_date)} · ${n} night${n !== 1 ? 's' : ''}</span><span>${r.rate_plan.name}</span></div>
-  <div class="block"><p>Reservation</p><strong>${r.external_reservation_id}</strong><span>Room line: ${r.external_room_reservation_id}</span></div>
-  <div class="block"><p>Invoice ID</p><strong>${billing.id.slice(0, 8).toUpperCase()}</strong></div>
+<div class="top">
+  <div>
+    <h1>${escapeHtml(r.property.name)}</h1>
+    <p class="muted">${escapeHtml(r.property.code)}<br/>Professional stay invoice generated from HMS</p>
+  </div>
+  <div class="invoice-meta">
+    <strong>Invoice ${escapeHtml(invoiceNo)}</strong>
+    <p class="muted">Generated ${escapeHtml(generatedAt)}<br/>Reservation ${escapeHtml(r.external_reservation_id)}</p>
+    <span class="badge">${escapeHtml(statusLabel)}</span>
+  </div>
 </div>
+
+<div class="section grid no-break">
+  <div class="box">
+    <p>Bill to</p>
+    <strong>${escapeHtml(guestName)}</strong>
+    ${r.guest.phone ? `<span>${escapeHtml(r.guest.phone)}</span>` : ''}
+    ${r.guest.email ? `<span>${escapeHtml(r.guest.email)}</span>` : ''}
+  </div>
+  <div class="box">
+    <p>Stay details</p>
+    <strong>${escapeHtml(r.room_category.name)}${r.room.room_number ? ` - Room ${escapeHtml(r.room.room_number)}` : ''}</strong>
+    <span>${escapeHtml(checkIn)} to ${escapeHtml(checkOut)}</span>
+    <span>${n} night${n !== 1 ? 's' : ''} - ${escapeHtml(r.rate_plan.name)}</span>
+  </div>
+  <div class="box">
+    <p>Reservation details</p>
+    <strong>${escapeHtml(r.external_reservation_id)}</strong>
+    <span>Room reservation ${escapeHtml(r.external_room_reservation_id)}</span>
+    <span>Status: ${escapeHtml(r.reservation_status)}</span>
+  </div>
+  <div class="box">
+    <p>Invoice summary</p>
+    <strong>${escapeHtml(statusLabel)}</strong>
+    <span>Paid: ${formatCurrency(paid)}</span>
+    <span>Balance: ${formatCurrency(billing.balance_due)}</span>
+  </div>
+</div>
+
+<div class="section no-break">
+<p class="section-title">Charges</p>
 <table>
   <thead><tr><th>Description</th><th>Amount</th></tr></thead>
   <tbody>
-    ${lines.map(l => `<tr><td>${l.desc}</td><td>${formatCurrency(l.amount)}</td></tr>`).join('')}
-    <tr class="total-row"><td>Total</td><td>${formatCurrency(billing.total)}</td></tr>
-    <tr class="paid-row"><td>Paid</td><td>${formatCurrency(paid)}</td></tr>
-    <tr class="balance-row"><td>Balance due</td><td>${formatCurrency(billing.balance_due)}</td></tr>
+    ${lines.map(l => `<tr><td>${escapeHtml(l.desc)}</td><td class="amount">${formatCurrency(l.amount)}</td></tr>`).join('')}
   </tbody>
 </table>
+</div>
+
+<div class="totals no-break">
+  <div><span>Total</span><strong>${formatCurrency(billing.total)}</strong></div>
+  <div><span>Paid</span><strong class="paid">${formatCurrency(paid)}</strong></div>
+  <div class="grand"><span>Balance due</span><strong class="balance">${formatCurrency(billing.balance_due)}</strong></div>
+</div>
+
 ${billing.payments.length > 0 ? `
+<div class="section no-break">
+<p class="section-title">Payment history</p>
 <table>
-  <thead><tr><th>Payment history</th><th>Provider</th><th>Reference</th><th>Amount</th></tr></thead>
-  <tbody>${billing.payments.map(p => `<tr><td>${new Date(p.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td><td>${p.provider}</td><td>${paymentReferenceLabel(p)}</td><td>${formatCurrency(p.amount)}</td></tr>`).join('')}</tbody>
-</table>` : ''}
-<div class="footer">${r.property.name} · Thank you for your stay.</div>
+  <thead><tr><th>Date</th><th>Provider</th><th>Reference</th><th>Amount</th><th>Status</th></tr></thead>
+  <tbody>${paymentRows}</tbody>
+</table>
+</div>` : ''}
+<div class="footer">
+  <span>${escapeHtml(r.property.name)}</span>
+  <span>Thank you for your stay.</span>
+</div>
 </body></html>`;
   const w = window.open('', '_blank');
   if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
@@ -162,6 +296,9 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   const [lastGroupCollection, setLastGroupCollection] = useState<ReservationGroupPaymentCollection | null>(null);
   const [invoicingRoomId, setInvoicingRoomId] = useState<string | null>(null);
   const [generatingFolioId, setGeneratingFolioId] = useState<string | null>(null);
+  const [extraChargeForm, setExtraChargeForm] = useState(defaultExtraChargeForm);
+  const [addingExtraCharge, setAddingExtraCharge] = useState(false);
+  const [deletingExtraChargeId, setDeletingExtraChargeId] = useState<string | null>(null);
   const [folioPage, setFolioPage] = useState(1);
   const folioRequestIdRef = useRef(0);
 
@@ -344,6 +481,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
     setFolioLoadingGroupId(null);
     setFolioError(null);
     setLastGroupCollection(null);
+    setExtraChargeForm(defaultExtraChargeForm);
   }
 
   // ── Generate missing folio invoices ───────────────────────────────────
@@ -376,6 +514,58 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
       setReloadKey(v => v + 1); flash('Group payment recorded.');
     } catch (err) { setActionError(getApiErrorMessage(err)); }
     finally { setCollectingGroup(false); }
+  }
+
+  // ── Add extra charge to an invoice inside the opened folio ────────────
+  async function submitFolioExtraCharge(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedFolioGroupId || !selectedFolio) return;
+    const billingId = extraChargeForm.billing_id || selectedFolio.invoices[0]?.id;
+    if (!billingId) {
+      setActionError('Generate an invoice before adding extra charges.');
+      return;
+    }
+    if (isPreviewId(selectedFolioGroupId) || isPreviewId(billingId)) {
+      setActionError('Sample preview records are read-only. Turn off sample data to add extra charges.');
+      return;
+    }
+
+    setActionError(null);
+    setAddingExtraCharge(true);
+    try {
+      await api.post(`/billings/${billingId}/extra-charges`, {
+        description: extraChargeForm.description.trim(),
+        amount: extraChargeForm.amount,
+      });
+      setExtraChargeForm(defaultExtraChargeForm);
+      await openFolio(selectedFolioGroupId, true);
+      setReloadKey(v => v + 1);
+      flash('Extra charge added to folio.');
+    } catch (err) {
+      setActionError(getApiErrorMessage(err));
+    } finally {
+      setAddingExtraCharge(false);
+    }
+  }
+
+  async function deleteExtraCharge(billingId: string, chargeId: string) {
+    if (isPreviewId(billingId) || isPreviewId(chargeId)) {
+      setActionError('Sample preview records are read-only. Turn off sample data to remove extra charges.');
+      return;
+    }
+
+    setActionError(null);
+    setDeletingExtraChargeId(chargeId);
+    try {
+      await api.delete(`/billings/${billingId}/extra-charges/${chargeId}`);
+      if (selectedFolioGroupId) await openFolio(selectedFolioGroupId, true);
+      setReloadKey(v => v + 1);
+      flash('Extra charge removed from folio.');
+    } catch (err) {
+      setActionError(getApiErrorMessage(err));
+    } finally {
+      setDeletingExtraChargeId(null);
+    }
   }
 
   const loading = !previewData && financeState.loading;
@@ -494,6 +684,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
             const n = nights(r.check_in_date, r.check_out_date);
             const paid = selectedBilling.paid_total - selectedBilling.refunded_total;
             const cfg = STATUS_CFG[selectedBilling.payment_status] ?? STATUS_CFG['UNPAID'];
+            const otaRows = otaPaymentRows(selectedBilling);
             return (
               <div className="bg-white border border-black/[0.06] rounded-2xl overflow-hidden">
                 {/* Guest header */}
@@ -535,35 +726,54 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                           </tr>
                         </thead>
                         <tbody>
-                          <tr className="border-b border-slate-50">
-                            <td className="px-4 py-3">
-                              <div className="flex items-center gap-2">
-                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-700">Room</span>
-                                <span className="text-[12.5px] text-slate-800">{r.room_category.name} · {n} night{n !== 1 ? 's' : ''}</span>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3 text-right text-[12.5px] font-bold text-slate-900">{formatCurrency(selectedBilling.amount)}</td>
-                          </tr>
-                          {selectedBilling.extra_charges.map(ec => (
-                            <tr key={ec.id} className="border-b border-slate-50">
-                              <td className="px-4 py-3">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">Extra</span>
-                                  <span className="text-[12.5px] text-slate-800">{ec.description}</span>
-                                </div>
-                              </td>
-                              <td className="px-4 py-3 text-right text-[12.5px] font-bold text-slate-900">{formatCurrency(ec.amount)}</td>
-                            </tr>
-                          ))}
-                          <tr className="border-b border-slate-50">
-                            <td className="px-4 py-3">
-                              <div className="flex items-center gap-2">
-                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-500">Tax</span>
-                                <span className="text-[12.5px] text-slate-500">Hotel tax</span>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3 text-right text-[12.5px] text-slate-600">{formatCurrency(selectedBilling.tax)}</td>
-                          </tr>
+                          {otaRows.length > 0 ? (
+                            otaRows.map(row => (
+                              <tr key={row.label} className="border-b border-slate-50">
+                                <td className="px-4 py-3 text-[12.5px] text-slate-700">{row.label}</td>
+                                <td className="px-4 py-3 text-right text-[12.5px] font-bold text-slate-900">{formatCurrency(row.value)}</td>
+                              </tr>
+                            ))
+                          ) : (
+                            <>
+                              <tr className="border-b border-slate-50">
+                                <td className="px-4 py-3">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-700">Room</span>
+                                    <span className="text-[12.5px] text-slate-800">{r.room_category.name} · {n} night{n !== 1 ? 's' : ''}</span>
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3 text-right text-[12.5px] font-bold text-slate-900">{formatCurrency(selectedBilling.amount)}</td>
+                              </tr>
+                              {selectedBilling.extra_charges.map(ec => (
+                                <tr key={ec.id} className="border-b border-slate-50">
+                                  <td className="px-4 py-3">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">Extra</span>
+                                      <span className="text-[12.5px] text-slate-800">{ec.description}</span>
+                                      <button
+                                        type="button"
+                                        disabled={deletingExtraChargeId === ec.id}
+                                        onClick={() => void deleteExtraCharge(selectedBilling.id, ec.id)}
+                                        className="ml-auto rounded-md px-2 py-1 text-[10.5px] font-bold uppercase tracking-wide text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
+                                      >
+                                        {deletingExtraChargeId === ec.id ? 'Removing' : 'Remove'}
+                                      </button>
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-3 text-right text-[12.5px] font-bold text-slate-900">{formatCurrency(ec.amount)}</td>
+                                </tr>
+                              ))}
+                              <tr className="border-b border-slate-50">
+                                <td className="px-4 py-3">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-500">Tax</span>
+                                    <span className="text-[12.5px] text-slate-500">Hotel tax</span>
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3 text-right text-[12.5px] text-slate-600">{formatCurrency(selectedBilling.tax)}</td>
+                              </tr>
+                            </>
+                          )}
                           <tr className="bg-slate-50/60">
                             <td className="px-4 py-3 text-[13px] font-black text-slate-900">Total</td>
                             <td className="px-4 py-3 text-right text-[14px] font-black text-slate-900">{formatCurrency(selectedBilling.total)}</td>
@@ -589,18 +799,46 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                             </tr>
                           </thead>
                           <tbody>
-                            {selectedBilling.payments.map(p => (
-                              <tr key={p.id} className="border-b border-slate-50 last:border-0">
-                                <td className="px-4 py-3 text-[12px] font-semibold text-slate-800">{p.provider}</td>
-                                <td className="px-4 py-3 text-[11px] font-mono text-slate-400">{paymentReferenceLabel(p)}</td>
-                                <td className="px-4 py-3 text-[12.5px] font-bold text-slate-900">{formatCurrency(p.amount)}</td>
-                                <td className="px-4 py-3">
-                                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.status === 'SUCCEEDED' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-50 text-rose-700 border-rose-200'}`}>
-                                    {p.status}
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
+                            {selectedBilling.payments.map(p => {
+                              const payoutDetails = airbnbPayoutPaymentDetails(p);
+                              return (
+                                <tr key={p.id} className="border-b border-slate-50 last:border-0">
+                                  <td className="px-4 py-3 text-[12px] font-semibold text-slate-800">
+                                    {payoutDetails ? 'Airbnb payout' : p.provider}
+                                  </td>
+                                  <td className="px-4 py-3 text-[11px] font-mono text-slate-400">{paymentReferenceLabel(p)}</td>
+                                  <td className="px-4 py-3">
+                                    {payoutDetails ? (
+                                      <div className="min-w-[150px] space-y-1 text-[11.5px]">
+                                        {payoutDetails.youEarn != null && (
+                                          <div className="flex items-center justify-between gap-3 text-slate-600">
+                                            <span>You earn</span>
+                                            <span className="font-bold text-slate-900">{formatCurrency(payoutDetails.youEarn)}</span>
+                                          </div>
+                                        )}
+                                        {payoutDetails.taxWithholding != null && (
+                                          <div className="flex items-center justify-between gap-3 text-slate-600">
+                                            <span>Tax withholding</span>
+                                            <span className="font-bold text-slate-900">{formatCurrency(payoutDetails.taxWithholding)}</span>
+                                          </div>
+                                        )}
+                                        <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-1 text-slate-900">
+                                          <span className="font-semibold">Net received</span>
+                                          <span className="font-black">{formatCurrency(payoutDetails.netReceived)}</span>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <span className="text-[12.5px] font-bold text-slate-900">{formatCurrency(p.amount)}</span>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${p.status === 'SUCCEEDED' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-50 text-rose-700 border-rose-200'}`}>
+                                      {p.status}
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -813,12 +1051,13 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                       <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/60">
                         <p className="text-[12px] font-bold text-slate-900">{selectedFolio.invoices.length} invoices</p>
                       </div>
-                      <table className="w-full min-w-[400px]">
-                        <thead><tr className="border-b border-slate-100">{['Guest','Total','Paid','Balance','Status'].map(h => <th key={h} className="px-4 py-2.5 text-left text-[10px] font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+                      <table className="w-full min-w-[520px]">
+                        <thead><tr className="border-b border-slate-100">{['Guest','Extras','Total','Paid','Balance','Status'].map(h => <th key={h} className="px-4 py-2.5 text-left text-[10px] font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
                         <tbody>
                           {selectedFolio.invoices.map(inv => (
                             <tr key={inv.id} className="border-b border-slate-50 last:border-0">
                               <td className="px-4 py-3 text-[12.5px] font-semibold text-slate-900">{formatGuestName(inv.reservation_room.guest.name)}</td>
+                              <td className="px-4 py-3 text-[12px] text-slate-600">{formatCurrency(inv.extra_charges_total)}</td>
                               <td className="px-4 py-3 text-[12.5px] font-bold text-slate-900">{formatCurrency(inv.total)}</td>
                               <td className="px-4 py-3 text-[12px] text-emerald-600 font-semibold">{formatCurrency(inv.paid_total - inv.refunded_total)}</td>
                               <td className={`px-4 py-3 text-[12.5px] font-bold ${inv.balance_due > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{formatCurrency(inv.balance_due)}</td>
@@ -836,6 +1075,62 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
 
                   {/* Group payment form */}
                   <div className="space-y-4">
+                    <div className="bg-white border border-slate-200 rounded-xl p-5">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Other charges</p>
+                      <p className="text-[14px] font-bold text-slate-900 mb-4">Add food or expenses</p>
+                      {selectedFolio.invoices.length === 0 ? (
+                        <p className="text-[12px] text-slate-500 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                          Generate an invoice before adding extra charges.
+                        </p>
+                      ) : (
+                        <form onSubmit={submitFolioExtraCharge} className="space-y-3">
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Apply to invoice</label>
+                            <select
+                              value={extraChargeForm.billing_id || selectedFolio.invoices[0]?.id || ''}
+                              onChange={e => setExtraChargeForm(f => ({ ...f, billing_id: e.target.value }))}
+                              className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[12.5px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/30"
+                            >
+                              {selectedFolio.invoices.map(inv => (
+                                <option key={inv.id} value={inv.id}>
+                                  {formatGuestName(inv.reservation_room.guest.name)} · {inv.reservation_room.room_category.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Description</label>
+                            <input
+                              required
+                              maxLength={180}
+                              placeholder="Food, minibar, laundry"
+                              value={extraChargeForm.description}
+                              onChange={e => setExtraChargeForm(f => ({ ...f, description: e.target.value }))}
+                              className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[12.5px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/30"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Amount</label>
+                            <input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              required
+                              value={extraChargeForm.amount}
+                              onChange={e => setExtraChargeForm(f => ({ ...f, amount: e.target.value }))}
+                              className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[13px] text-slate-900 font-bold bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/30"
+                            />
+                          </div>
+                          <button
+                            type="submit"
+                            disabled={addingExtraCharge}
+                            className="w-full h-10 rounded-xl text-[12.5px] font-bold bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                          >
+                            {addingExtraCharge ? 'Adding…' : 'Add charge to bill'}
+                          </button>
+                        </form>
+                      )}
+                    </div>
                     <div className="bg-slate-50 border border-slate-200 rounded-xl p-5">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Group collection</p>
                       <p className="text-[14px] font-bold text-slate-900 mb-4">Collect against folio</p>

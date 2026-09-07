@@ -145,6 +145,121 @@ enum AuditAction {
   CHANNEL_SYNC
 }
 
+enum WhatsAppConnectionStatus {
+  NOT_CONNECTED
+  CONNECTING
+  QR_REQUIRED
+  CONNECTED
+  RECONNECTING
+  DISCONNECTED
+  LOGGED_OUT
+  ERROR
+}
+
+enum WhatsAppMessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum WhatsAppMessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  LOCATION
+  CONTACT
+  STICKER
+  REACTION
+  SYSTEM
+  UNSUPPORTED
+}
+
+enum WhatsAppMessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum EmailProviderType {
+  GMAIL
+  MICROSOFT
+  IMAP
+  MANUAL
+}
+
+enum EmailConnectionStatus {
+  CONNECTING
+  CONNECTED
+  REAUTH_REQUIRED
+  RECONNECTING
+  ERROR
+  DISCONNECTED
+}
+
+enum GoogleCalendarConnectionStatus {
+  CONNECTED
+  ERROR
+  REAUTH_REQUIRED
+  DISCONNECTED
+}
+
+enum IncomingEmailStatus {
+  RECEIVED
+  QUEUED
+  PROCESSING
+  PROCESSED
+  NEEDS_REVIEW
+  IGNORED
+  FAILED
+}
+
+enum EmailCategory {
+  BOOKING_CONFIRMATION
+  BOOKING_MODIFICATION
+  BOOKING_CANCELLATION
+  BOOKING_ENQUIRY
+  PAYMENT_NOTIFICATION
+  OTA_MESSAGE
+  GUEST_MESSAGE
+  OFFER
+  PROMOTION
+  GENERAL
+  UNKNOWN
+}
+
+enum EmailSource {
+  BOOKING_COM
+  AIRBNB
+  EXPEDIA
+  MAKEMYTRIP
+  GOIBIBO
+  AGODA
+  WEBSITE
+  DIRECT_GUEST
+  OTHER
+  UNKNOWN
+}
+
+enum ParserType {
+  DETERMINISTIC
+  AI
+  MANUAL
+}
+
+enum AutomationDecision {
+  CREATE_RESERVATION
+  UPDATE_RESERVATION
+  CANCEL_RESERVATION
+  CREATE_ENQUIRY
+  ATTACH_TO_RESERVATION
+  REVIEW
+  IGNORE
+  NO_ACTION
+}
+
 model Guest {
   id        String    @id @default(uuid()) @db.Uuid
   propertyId String   @map("property_id") @db.Uuid
@@ -155,6 +270,7 @@ model Guest {
   address   String    @db.Text
   property  Property  @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   reservationGroups ReservationGroup[] @relation("PrimaryGuestReservationGroups")
+  whatsappConversations WhatsAppConversation[]
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
@@ -207,6 +323,14 @@ model Property {
   webhookEvents  WebhookEvent[]
   backgroundJobs BackgroundJob[]
   providerReservationIntakeRecords ProviderReservationIntakeRecord[]
+  whatsappConnections WhatsAppConnection[]
+  whatsappConversations WhatsAppConversation[]
+  whatsappMessages WhatsAppMessage[]
+  emailConnections EmailConnection[]
+  googleCalendarConnections GoogleCalendarConnection[]
+  incomingEmails IncomingEmail[]
+  bookingEnquiries BookingEnquiry[]
+  expenses       Expense[]
   images         PropertyImage[]
   createdAt      DateTime       @default(now()) @map("created_at")
   updatedAt      DateTime       @updatedAt @map("updated_at")
@@ -214,6 +338,110 @@ model Property {
   @@index([organizationId])
   @@index([isActive])
   @@map("properties")
+}
+
+model WhatsAppConnection {
+  id                 String                  @id @default(uuid()) @db.Uuid
+  propertyId         String                  @map("property_id") @db.Uuid
+  organizationId     String?                 @map("organization_id") @db.Uuid
+  status             WhatsAppConnectionStatus @default(NOT_CONNECTED)
+  phoneNumber        String?                 @map("phone_number") @db.VarChar(40)
+  phoneE164          String?                 @map("phone_e164") @db.VarChar(40)
+  whatsappJid        String?                 @map("whatsapp_jid") @db.VarChar(120)
+  displayName        String?                 @map("display_name") @db.VarChar(160)
+  sessionGeneration  Int                     @default(1) @map("session_generation")
+  lastConnectedAt    DateTime?               @map("last_connected_at")
+  lastDisconnectedAt DateTime?               @map("last_disconnected_at")
+  lastErrorCode      String?                 @map("last_error_code") @db.VarChar(80)
+  lastErrorMessage   String?                 @map("last_error_message") @db.Text
+  property           Property                @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  authRecords        WhatsAppAuthRecord[]
+  conversations      WhatsAppConversation[]
+  createdAt          DateTime                @default(now()) @map("created_at")
+  updatedAt          DateTime                @updatedAt @map("updated_at")
+
+  @@unique([propertyId])
+  @@index([organizationId, status])
+  @@index([propertyId, status])
+  @@map("whatsapp_connections")
+}
+
+model WhatsAppAuthRecord {
+  id                String             @id @default(uuid()) @db.Uuid
+  connectionId      String             @map("connection_id") @db.Uuid
+  authKey           String             @map("auth_key") @db.VarChar(240)
+  encryptedValue    Bytes              @map("encrypted_value")
+  encryptionVersion Int                @default(1) @map("encryption_version")
+  connection        WhatsAppConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+
+  @@unique([connectionId, authKey])
+  @@index([connectionId])
+  @@map("whatsapp_auth_records")
+}
+
+model WhatsAppConversation {
+  id                 String              @id @default(uuid()) @db.Uuid
+  propertyId         String              @map("property_id") @db.Uuid
+  organizationId     String?             @map("organization_id") @db.Uuid
+  connectionId       String              @map("connection_id") @db.Uuid
+  remoteJid          String              @map("remote_jid") @db.VarChar(160)
+  phoneE164          String?             @map("phone_e164") @db.VarChar(40)
+  displayName        String?             @map("display_name") @db.VarChar(160)
+  profilePhotoUrl    String?             @map("profile_photo_url") @db.Text
+  guestId            String?             @map("guest_id") @db.Uuid
+  reservationGroupId String?             @map("reservation_group_id") @db.Uuid
+  isGroup            Boolean             @default(false) @map("is_group")
+  unreadCount        Int                 @default(0) @map("unread_count")
+  lastMessageId      String?             @map("last_message_id") @db.Uuid
+  lastMessagePreview String?             @map("last_message_preview") @db.VarChar(500)
+  lastMessageAt      DateTime?           @map("last_message_at")
+  archived           Boolean             @default(false)
+  property           Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  connection         WhatsAppConnection  @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  guest              Guest?              @relation(fields: [guestId], references: [id], onDelete: SetNull)
+  reservationGroup   ReservationGroup?   @relation(fields: [reservationGroupId], references: [id], onDelete: SetNull)
+  messages           WhatsAppMessage[]
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+
+  @@unique([connectionId, remoteJid])
+  @@index([propertyId, lastMessageAt])
+  @@index([organizationId, propertyId])
+  @@index([guestId])
+  @@index([reservationGroupId])
+  @@map("whatsapp_conversations")
+}
+
+model WhatsAppMessage {
+  id                String                   @id @default(uuid()) @db.Uuid
+  propertyId        String                   @map("property_id") @db.Uuid
+  organizationId    String?                  @map("organization_id") @db.Uuid
+  conversationId    String                   @map("conversation_id") @db.Uuid
+  whatsappMessageId String                   @map("whatsapp_message_id") @db.VarChar(180)
+  remoteJid         String                   @map("remote_jid") @db.VarChar(160)
+  direction         WhatsAppMessageDirection
+  type              WhatsAppMessageType
+  status            WhatsAppMessageStatus
+  body              String?                  @db.Text
+  quotedWhatsappId  String?                  @map("quoted_whatsapp_id") @db.VarChar(180)
+  fromMe            Boolean                  @map("from_me")
+  whatsappTimestamp DateTime                 @map("whatsapp_timestamp")
+  receivedAt        DateTime                 @default(now()) @map("received_at")
+  deliveredAt       DateTime?                @map("delivered_at")
+  readAt            DateTime?                @map("read_at")
+  rawType           String?                  @map("raw_type") @db.VarChar(80)
+  property          Property                 @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  conversation      WhatsAppConversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+
+  @@unique([conversationId, whatsappMessageId])
+  @@index([propertyId, whatsappTimestamp])
+  @@index([organizationId, propertyId])
+  @@index([conversationId, whatsappTimestamp])
+  @@map("whatsapp_messages")
 }
 
 model User {
@@ -436,6 +664,7 @@ model ReservationGroup {
   primaryGuest              Guest?            @relation("PrimaryGuestReservationGroups", fields: [primaryGuestId], references: [id], onDelete: SetNull)
   channelConnection         ChannelConnection? @relation(fields: [channelConnectionId], references: [id], onDelete: SetNull)
   rooms                     ReservationRoom[]
+  whatsappConversations     WhatsAppConversation[]
   createdAt                 DateTime          @default(now()) @map("created_at")
   updatedAt                 DateTime          @updatedAt @map("updated_at")
 
@@ -482,6 +711,9 @@ model InventoryBlock {
   blockedRooms    Int          @default(1) @map("blocked_rooms")
   reason          String       @db.VarChar(180)
   source          String       @default("MANUAL") @db.VarChar(40)
+  googleCalendarId String?      @map("google_calendar_id") @db.VarChar(255)
+  googleCalendarEventId String? @map("google_calendar_event_id") @db.VarChar(255)
+  googleCalendarHtmlLink String? @map("google_calendar_html_link") @db.Text
   createdByUserId String?      @map("created_by_user_id") @db.Uuid
   property        Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   roomCategory    RoomCategory @relation(fields: [roomCategoryId], references: [id], onDelete: Cascade)
@@ -580,6 +812,27 @@ model BillingExtraCharge {
 
   @@index([billingId])
   @@map("billing_extra_charges")
+}
+
+model Expense {
+  id              String   @id @default(uuid()) @db.Uuid
+  propertyId      String   @map("property_id") @db.Uuid
+  expenseDate     DateTime @map("expense_date") @db.Date
+  category        String   @db.VarChar(80)
+  vendor          String?  @db.VarChar(160)
+  vendorContact   String?  @map("vendor_contact") @db.VarChar(80)
+  description     String   @db.VarChar(300)
+  amount          Decimal  @db.Decimal(10, 2)
+  currency        String   @default("INR") @db.VarChar(8)
+  paymentMode     String?  @map("payment_mode") @db.VarChar(40)
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  property        Property @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, expenseDate])
+  @@index([category])
+  @@map("expenses")
 }
 
 model HousekeepingTask {
@@ -767,6 +1020,177 @@ model ProviderReservationIntakeRecord {
   @@index([propertyId, status])
   @@index([externalReservationId])
   @@map("provider_reservation_intake_records")
+}
+
+model EmailConnection {
+  id                    String                @id @default(uuid()) @db.Uuid
+  tenantId              String?               @map("tenant_id") @db.Uuid
+  propertyId            String                @map("property_id") @db.Uuid
+  provider              EmailProviderType
+  status                EmailConnectionStatus @default(CONNECTED)
+  emailAddress          String                @map("email_address") @db.VarChar(160)
+  providerAccountId     String?               @map("provider_account_id") @db.VarChar(190)
+  encryptedCredential   Bytes?                @map("encrypted_credential")
+  credentialVersion     Int                   @default(1) @map("credential_version")
+  grantedScopes         String?               @map("granted_scopes") @db.Text
+  trustedFromEmail      String?               @map("trusted_from_email") @db.VarChar(160)
+  trustedSubject        String?               @map("trusted_subject") @db.VarChar(300)
+  providerCursor        String?               @map("provider_cursor") @db.Text
+  subscriptionId        String?               @map("subscription_id") @db.VarChar(190)
+  subscriptionExpiresAt DateTime?             @map("subscription_expires_at")
+  lastSyncAt            DateTime?             @map("last_sync_at")
+  lastSuccessAt         DateTime?             @map("last_success_at")
+  lastErrorCode         String?               @map("last_error_code") @db.VarChar(80)
+  lastErrorMessage      String?               @map("last_error_message") @db.Text
+  property              Property              @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  emails                IncomingEmail[]
+  createdAt             DateTime              @default(now()) @map("created_at")
+  updatedAt             DateTime              @updatedAt @map("updated_at")
+
+  @@unique([propertyId, emailAddress])
+  @@index([tenantId, propertyId])
+  @@index([status])
+  @@map("email_connections")
+}
+
+model GoogleCalendarConnection {
+  id                  String                         @id @default(uuid()) @db.Uuid
+  tenantId            String?                        @map("tenant_id") @db.Uuid
+  propertyId          String                         @map("property_id") @db.Uuid
+  status              GoogleCalendarConnectionStatus @default(CONNECTED)
+  emailAddress        String                         @map("email_address") @db.VarChar(160)
+  providerAccountId   String?                        @map("provider_account_id") @db.VarChar(190)
+  calendarId          String                         @map("calendar_id") @db.VarChar(256)
+  calendarSummary     String?                        @map("calendar_summary") @db.VarChar(190)
+  encryptedCredential Bytes                          @map("encrypted_credential")
+  credentialVersion   Int                            @default(1) @map("credential_version")
+  grantedScopes       String?                        @map("granted_scopes") @db.Text
+  lastSyncAt          DateTime?                      @map("last_sync_at")
+  lastSuccessAt       DateTime?                      @map("last_success_at")
+  lastErrorCode       String?                        @map("last_error_code") @db.VarChar(80)
+  lastErrorMessage    String?                        @map("last_error_message") @db.Text
+  property            Property                       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt           DateTime                       @default(now()) @map("created_at")
+  updatedAt           DateTime                       @updatedAt @map("updated_at")
+
+  @@unique([propertyId, calendarId])
+  @@index([tenantId, propertyId])
+  @@index([status])
+  @@map("google_calendar_connections")
+}
+
+model IncomingEmail {
+  id                       String              @id @default(uuid()) @db.Uuid
+  tenantId                 String?             @map("tenant_id") @db.Uuid
+  propertyId               String              @map("property_id") @db.Uuid
+  connectionId             String              @map("connection_id") @db.Uuid
+  providerMessageId        String              @map("provider_message_id") @db.VarChar(190)
+  providerThreadId         String?             @map("provider_thread_id") @db.VarChar(190)
+  internetMessageId        String?             @map("internet_message_id") @db.VarChar(190)
+  fromEmail                String              @map("from_email") @db.VarChar(160)
+  fromName                 String?             @map("from_name") @db.VarChar(160)
+  subject                  String              @db.VarChar(300)
+  receivedAt               DateTime            @map("received_at")
+  sentAt                   DateTime?           @map("sent_at")
+  plainText                String?             @map("plain_text") @db.Text
+  htmlStorageKey           String?             @map("html_storage_key") @db.Text
+  status                   IncomingEmailStatus @default(RECEIVED)
+  detectedSource           EmailSource?        @map("detected_source")
+  detectedCategory         EmailCategory?      @map("detected_category")
+  classificationConfidence Float?              @map("classification_confidence")
+  parserType               ParserType?         @map("parser_type")
+  parserVersion            String?             @map("parser_version") @db.VarChar(120)
+  automationDecision       AutomationDecision? @map("automation_decision")
+  reservationId            String?             @map("reservation_id") @db.Uuid
+  enquiryId                String?             @map("enquiry_id") @db.Uuid
+  processingAttempts       Int                 @default(0) @map("processing_attempts")
+  lastErrorCode            String?             @map("last_error_code") @db.VarChar(80)
+  lastErrorMessage         String?             @map("last_error_message") @db.Text
+  property                 Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  connection               EmailConnection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  extraction               EmailExtraction?
+  attachments              EmailAttachment[]
+  enquiry                  BookingEnquiry?
+  createdAt                DateTime            @default(now()) @map("created_at")
+  updatedAt                DateTime            @updatedAt @map("updated_at")
+
+  @@unique([connectionId, providerMessageId])
+  @@index([tenantId, propertyId, receivedAt])
+  @@index([status, receivedAt])
+  @@index([reservationId])
+  @@map("incoming_emails")
+}
+
+model EmailExtraction {
+  id                    String        @id @default(uuid()) @db.Uuid
+  emailId               String        @unique @map("email_id") @db.Uuid
+  source                EmailSource
+  category              EmailCategory
+  confidence            Float
+  externalReservationId String?       @map("external_reservation_id") @db.VarChar(160)
+  guestName             String?       @map("guest_name") @db.VarChar(160)
+  guestEmail            String?       @map("guest_email") @db.VarChar(160)
+  guestPhoneRaw         String?       @map("guest_phone_raw") @db.VarChar(60)
+  guestPhoneE164        String?       @map("guest_phone_e164") @db.VarChar(30)
+  checkIn               DateTime?     @map("check_in") @db.Date
+  checkOut              DateTime?     @map("check_out") @db.Date
+  adults                Int?
+  children              Int?
+  infants               Int?
+  externalRoomName      String?       @map("external_room_name") @db.VarChar(180)
+  externalRatePlanName  String?       @map("external_rate_plan_name") @db.VarChar(180)
+  currency              String?       @db.VarChar(8)
+  totalAmount           Decimal?      @map("total_amount") @db.Decimal(10, 2)
+  taxAmount             Decimal?      @map("tax_amount") @db.Decimal(10, 2)
+  cancellationReason    String?       @map("cancellation_reason") @db.Text
+  rawStructuredJson     Json?         @map("raw_structured_json")
+  email                 IncomingEmail @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
+
+  @@map("email_extractions")
+}
+
+model EmailAttachment {
+  id                   String        @id @default(uuid()) @db.Uuid
+  emailId              String        @map("email_id") @db.Uuid
+  providerAttachmentId String?       @map("provider_attachment_id") @db.VarChar(190)
+  fileName             String?       @map("file_name") @db.VarChar(240)
+  mimeType             String?       @map("mime_type") @db.VarChar(120)
+  sizeBytes            Int?          @map("size_bytes")
+  storageKey           String?       @map("storage_key") @db.Text
+  sha256               String?       @db.VarChar(128)
+  processingStatus     String?       @map("processing_status") @db.VarChar(80)
+  email                IncomingEmail @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  createdAt            DateTime      @default(now()) @map("created_at")
+
+  @@index([emailId])
+  @@map("email_attachments")
+}
+
+model BookingEnquiry {
+  id              String         @id @default(uuid()) @db.Uuid
+  tenantId        String?        @map("tenant_id") @db.Uuid
+  propertyId      String         @map("property_id") @db.Uuid
+  source          String         @default("EMAIL") @db.VarChar(60)
+  guestName       String?        @map("guest_name") @db.VarChar(160)
+  guestEmail      String?        @map("guest_email") @db.VarChar(160)
+  guestPhoneE164  String?        @map("guest_phone_e164") @db.VarChar(30)
+  checkIn         DateTime?      @map("check_in") @db.Date
+  checkOut        DateTime?      @map("check_out") @db.Date
+  adults          Int?
+  children        Int?
+  requestedRoomTypeId String?    @map("requested_room_type_id") @db.Uuid
+  status          String         @default("NEW") @db.VarChar(40)
+  incomingEmailId String?        @unique @map("incoming_email_id") @db.Uuid
+  property        Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  incomingEmail   IncomingEmail? @relation(fields: [incomingEmailId], references: [id], onDelete: SetNull)
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  @@index([tenantId, propertyId, status])
+  @@index([propertyId, createdAt])
+  @@map("booking_enquiries")
 }
 
 model WebhookEvent {

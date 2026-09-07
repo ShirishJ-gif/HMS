@@ -1,5 +1,8 @@
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
+import { fetchAllPages } from '../api/pagination';
+import { Property, RoomCategory } from '../api/types';
+import { useAsync } from '../hooks/useAsync';
 import { ActionBtn, ErrorMsg, Panel, SectionHeading, StatCard, inputCls } from './ui';
 
 type CalendarFeed = {
@@ -31,6 +34,39 @@ type FetchICalCalendarResponse = {
   content: string;
 };
 
+type GoogleCalendarConnection = {
+  id: string;
+  status: 'CONNECTED' | 'ERROR' | 'REAUTH_REQUIRED' | 'DISCONNECTED';
+  email_address: string;
+  calendar_id: string;
+  calendar_summary: string | null;
+  last_error_message: string | null;
+};
+
+type GoogleWritableCalendar = {
+  id: string;
+  summary: string;
+  primary: boolean;
+  access_role: string | null;
+  selected: boolean;
+};
+
+type InventoryBlock = {
+  id: string;
+  property_id: string;
+  room_category_id: string;
+  room_category_name?: string;
+  room_category_code?: string;
+  from_date: string;
+  to_date: string;
+  blocked_rooms: number;
+  reason: string;
+  source: string;
+  google_calendar_id: string | null;
+  google_calendar_event_id: string | null;
+  google_calendar_html_link: string | null;
+};
+
 type FeedColor = 'emerald' | 'sky' | 'amber' | 'rose' | 'indigo' | 'slate';
 
 const ICAL_STATE_KEY = 'hms_ical_calendar_feeds';
@@ -46,24 +82,117 @@ const feedSwatches: Record<FeedColor, string> = {
   slate: 'bg-slate-100 text-slate-700 border-slate-200',
 };
 
-export function ICalCalendarPage() {
+export function ICalCalendarPage({
+  activePropertyId = '',
+  onPropertyChange,
+  properties = [],
+  propertiesLoaded = false,
+}: {
+  activePropertyId?: string;
+  onPropertyChange?: (propertyId: string) => void;
+  properties?: Property[];
+  propertiesLoaded?: boolean;
+}) {
   const restoredFeeds = useMemo(() => readPersistedFeeds(), []);
   const [feeds, setFeeds] = useState<CalendarFeed[]>(restoredFeeds);
+  const [localPropertyId, setLocalPropertyId] = useState(activePropertyId);
   const [feedName, setFeedName] = useState('');
   const [icalUrl, setIcalUrl] = useState('');
   const [icalText, setIcalText] = useState('');
   const [availabilityWindowDays, setAvailabilityWindowDays] = useState('90');
+  const [blockForm, setBlockForm] = useState({
+    room_category_id: '',
+    from_date: dateKey(new Date()),
+    to_date: dateKey(new Date()),
+    reason: 'Blocked from iCal calendar',
+    create_google_event: true,
+  });
   const [manualPasteOpen, setManualPasteOpen] = useState(false);
   const [showWindowClosedBlocks, setShowWindowClosedBlocks] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null);
+  const [blockingDates, setBlockingDates] = useState(false);
+  const [inventoryBlocks, setInventoryBlocks] = useState<InventoryBlock[]>([]);
+  const [inventoryBlocksLoading, setInventoryBlocksLoading] = useState(false);
+  const [hmsReservationEvents, setHmsReservationEvents] = useState<ICalEvent[]>([]);
+  const [unblockingBlockId, setUnblockingBlockId] = useState<string | null>(null);
+  const [connectingGoogle, setConnectingGoogle] = useState(false);
+  const [googleConnections, setGoogleConnections] = useState<GoogleCalendarConnection[]>([]);
+  const [googleCalendars, setGoogleCalendars] = useState<GoogleWritableCalendar[]>([]);
+  const [googleConnectionsLoading, setGoogleConnectionsLoading] = useState(false);
+  const [googleCalendarsLoading, setGoogleCalendarsLoading] = useState(false);
+  const [selectingGoogleCalendar, setSelectingGoogleCalendar] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState(() => dateKey(new Date()));
   const [monthCursor, setMonthCursor] = useState(() => startOfMonth(new Date()));
+  const categoriesState = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), []);
+  const propertyId = activePropertyId || localPropertyId;
 
-  const events = useMemo(
+  const setPropertyId = (nextPropertyId: string) => {
+    setLocalPropertyId(nextPropertyId);
+    onPropertyChange?.(nextPropertyId);
+  };
+
+  useEffect(() => {
+    if (activePropertyId && activePropertyId !== localPropertyId) {
+      setLocalPropertyId(activePropertyId);
+    }
+  }, [activePropertyId, localPropertyId]);
+
+  useEffect(() => {
+    if (!propertiesLoaded || propertyId || properties.length === 0) return;
+    setPropertyId(properties[0].id);
+  }, [properties, propertiesLoaded, propertyId]);
+
+  const roomCategories = useMemo(
+    () => (categoriesState.data ?? []).filter((category) => !propertyId || category.property_id === propertyId),
+    [categoriesState.data, propertyId],
+  );
+
+  useEffect(() => {
+    if (blockForm.room_category_id && roomCategories.some((category) => category.id === blockForm.room_category_id)) {
+      return;
+    }
+    setBlockForm((current) => ({ ...current, room_category_id: roomCategories[0]?.id ?? '' }));
+  }, [blockForm.room_category_id, roomCategories]);
+
+  const selectedProperty = properties.find((property) => property.id === propertyId) ?? null;
+  const shareLink = propertyId ? buildPropertyICalLink(propertyId) : '';
+  const activeGoogleConnection = googleConnections.find((connection) => connection.status === 'CONNECTED') ?? null;
+
+  useEffect(() => {
+    if (!propertyId) {
+      setGoogleConnections([]);
+      setGoogleCalendars([]);
+      setInventoryBlocks([]);
+      setHmsReservationEvents([]);
+      return;
+    }
+    void loadGoogleConnections(propertyId);
+    void loadInventoryBlocks(propertyId);
+    void loadHmsReservationEvents(propertyId);
+  }, [propertyId]);
+
+  useEffect(() => {
+    if (!propertyId || !activeGoogleConnection) {
+      setGoogleCalendars([]);
+      return;
+    }
+    void loadGoogleCalendars(activeGoogleConnection.id, propertyId);
+  }, [activeGoogleConnection?.id, propertyId]);
+
+  const importedEvents = useMemo(
     () => feeds.flatMap((feed) => parseICalEvents(feed.text, feed)),
     [feeds],
+  );
+  const hmsBlockEvents = useMemo(
+    () => inventoryBlocks.map(inventoryBlockToEvent),
+    [inventoryBlocks],
+  );
+  const events = useMemo(
+    () => [...hmsBlockEvents, ...hmsReservationEvents, ...importedEvents],
+    [hmsBlockEvents, hmsReservationEvents, importedEvents],
   );
   const displayEvents = useMemo(
     () => showWindowClosedBlocks ? events : events.filter((event) => !event.availabilityWindowClosed),
@@ -211,6 +340,212 @@ export function ICalCalendarPage() {
     updateFeeds([]);
   }
 
+  async function createDateBlock(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setNotice(null);
+    if (!propertyId) {
+      setError('Select a property before blocking dates.');
+      return;
+    }
+    if (!blockForm.room_category_id) {
+      setError('No room type is configured for this property.');
+      return;
+    }
+
+    setBlockingDates(true);
+    try {
+      const blockResponse = await api.post<InventoryBlock>('/inventory/block', {
+        property_id: propertyId,
+        room_category_id: blockForm.room_category_id,
+        from_date: blockForm.from_date,
+        to_date: blockForm.to_date,
+        blocked_rooms: 1,
+        reason: blockForm.reason.trim() || 'Blocked from iCal calendar',
+        source: 'ICAL_MANUAL',
+      });
+
+      if (!blockForm.create_google_event) {
+        await loadInventoryBlocks(propertyId);
+        await loadHmsReservationEvents(propertyId);
+        setNotice('Dates blocked in HMS inventory. Google, Airbnb, or MakeMyTrip calendars subscribed to the HMS block link will show the block after their next refresh.');
+        return;
+      }
+      if (!activeGoogleConnection) {
+        await loadInventoryBlocks(propertyId);
+        await loadHmsReservationEvents(propertyId);
+        setNotice('Dates blocked in HMS inventory, but Google Calendar is not connected for this property.');
+        return;
+      }
+
+      try {
+        const googleResponse = await api.post<{
+          calendar_id: string | null;
+          event_id: string | null;
+          html_link: string | null;
+        }>('/google-calendar/blocks', {
+          property_id: propertyId,
+          room_category_id: blockForm.room_category_id,
+          from_date: blockForm.from_date,
+          to_date: blockForm.to_date,
+          summary: 'Blocked',
+          description: blockForm.reason.trim() || 'Blocked from HMS',
+        });
+        await api.patch(`/inventory/blocks/${blockResponse.data.id}/google-event`, {
+          calendar_id: googleResponse.data.calendar_id,
+          event_id: googleResponse.data.event_id,
+          html_link: googleResponse.data.html_link,
+        });
+        await loadInventoryBlocks(propertyId);
+        await loadHmsReservationEvents(propertyId);
+        setNotice('Dates blocked in HMS and created as a busy all-day event in Google Calendar. Airbnb/MakeMyTrip will update after they refresh the Google iCal feed.');
+      } catch (googleError) {
+        await loadInventoryBlocks(propertyId);
+        await loadHmsReservationEvents(propertyId);
+        setNotice('Dates blocked in HMS inventory, but the Google Calendar event was not created.');
+        setError(getApiErrorMessage(googleError));
+      }
+    } catch (blockError) {
+      setError(getApiErrorMessage(blockError));
+    } finally {
+      setBlockingDates(false);
+    }
+  }
+
+  async function loadInventoryBlocks(nextPropertyId = propertyId) {
+    if (!nextPropertyId) return;
+    setInventoryBlocksLoading(true);
+    try {
+      const response = await api.get<InventoryBlock[]>('/inventory/blocks', {
+        params: { property_id: nextPropertyId, source: 'ICAL_MANUAL' },
+      });
+      setInventoryBlocks(response.data);
+    } catch (loadError) {
+      setError(getApiErrorMessage(loadError));
+    } finally {
+      setInventoryBlocksLoading(false);
+    }
+  }
+
+  async function loadHmsReservationEvents(nextPropertyId = propertyId) {
+    if (!nextPropertyId) return;
+    try {
+      const response = await api.get<string>(`/ical-calendar/properties/${nextPropertyId}.ics`, { responseType: 'text' });
+      const reservationEvents = parseICalEvents(response.data, {
+        id: 'hms-reservation-feed',
+        name: 'HMS Reservations',
+        color: 'rose',
+        availabilityWindowDays: null,
+      }).filter((event) => event.uid.startsWith('hms-reservation-room-'));
+      setHmsReservationEvents(reservationEvents);
+    } catch (loadError) {
+      setHmsReservationEvents([]);
+      setError(getApiErrorMessage(loadError));
+    }
+  }
+
+  async function unblockInventoryBlock(block: InventoryBlock) {
+    setError(null);
+    setNotice(null);
+    setUnblockingBlockId(block.id);
+    try {
+      const response = await api.delete<{ google_event?: { deleted?: boolean; reason?: string } | null }>(
+        `/inventory/blocks/${block.id}`,
+        { params: { delete_google_event: true } },
+      );
+      await loadInventoryBlocks(block.property_id);
+      await loadHmsReservationEvents(block.property_id);
+      const googleEvent = response.data.google_event;
+      const calendarLabel = formatBlockCalendarLabel(block, googleConnections);
+      if (googleEvent?.deleted) {
+        setNotice(`Dates unblocked in HMS and deleted from ${calendarLabel}.`);
+      } else if (googleEvent?.reason) {
+        setNotice(`Dates unblocked in HMS from ${calendarLabel}. ${googleEvent.reason}`);
+      } else {
+        setNotice(`Dates unblocked in HMS from ${calendarLabel}.`);
+      }
+    } catch (unblockError) {
+      setError(getApiErrorMessage(unblockError));
+    } finally {
+      setUnblockingBlockId(null);
+    }
+  }
+
+  async function copyShareLink() {
+    if (!shareLink) return;
+    try {
+      await navigator.clipboard.writeText(shareLink);
+      setNotice('Calendar link copied.');
+    } catch {
+      setError('Copy failed. Select and copy the link manually.');
+    }
+  }
+
+  function selectDateForBlock(date: string) {
+    setSelectedDate(date);
+    setBlockForm((current) => ({ ...current, from_date: date, to_date: date }));
+  }
+
+  async function loadGoogleConnections(nextPropertyId = propertyId) {
+    if (!nextPropertyId) return;
+    setGoogleConnectionsLoading(true);
+    try {
+      const response = await api.get<GoogleCalendarConnection[]>(`/google-calendar/properties/${nextPropertyId}/connections`);
+      setGoogleConnections(response.data);
+    } catch (loadError) {
+      setError(getApiErrorMessage(loadError));
+    } finally {
+      setGoogleConnectionsLoading(false);
+    }
+  }
+
+  async function loadGoogleCalendars(connectionId: string, nextPropertyId = propertyId) {
+    if (!nextPropertyId || !connectionId) return;
+    setGoogleCalendarsLoading(true);
+    try {
+      const response = await api.get<GoogleWritableCalendar[]>(`/google-calendar/properties/${nextPropertyId}/connections/${connectionId}/calendars`);
+      setGoogleCalendars(response.data);
+    } catch (loadError) {
+      setError(getApiErrorMessage(loadError));
+    } finally {
+      setGoogleCalendarsLoading(false);
+    }
+  }
+
+  async function selectGoogleCalendar(calendarId: string) {
+    if (!propertyId || !activeGoogleConnection || !calendarId) return;
+    setError(null);
+    setSelectingGoogleCalendar(true);
+    try {
+      await api.put(`/google-calendar/properties/${propertyId}/connections/${activeGoogleConnection.id}/calendar`, {
+        calendar_id: calendarId,
+      });
+      await loadGoogleConnections(propertyId);
+      await loadGoogleCalendars(activeGoogleConnection.id, propertyId);
+      setNotice('Google Calendar target updated.');
+    } catch (selectError) {
+      setError(getApiErrorMessage(selectError));
+    } finally {
+      setSelectingGoogleCalendar(false);
+    }
+  }
+
+  async function connectGoogleCalendar() {
+    if (!propertyId) {
+      setError('Select a property before connecting Google Calendar.');
+      return;
+    }
+    setError(null);
+    setConnectingGoogle(true);
+    try {
+      const response = await api.post<{ auth_url: string }>(`/google-calendar/properties/${propertyId}/connect/start`);
+      window.location.href = response.data.auth_url;
+    } catch (connectError) {
+      setError(getApiErrorMessage(connectError));
+      setConnectingGoogle(false);
+    }
+  }
+
   function updateFeeds(nextFeeds: CalendarFeed[]) {
     setFeeds(nextFeeds);
     persistFeeds(nextFeeds);
@@ -301,6 +636,11 @@ export function ICalCalendarPage() {
           </Panel>
 
           {error && <ErrorMsg>{error}</ErrorMsg>}
+          {notice && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs font-semibold leading-relaxed text-emerald-800">
+              {notice}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <StatCard label="Feeds" value={feeds.length} />
@@ -323,6 +663,206 @@ export function ICalCalendarPage() {
                 className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
               />
             </label>
+          </Panel>
+
+          <Panel className="p-4">
+            <SectionHeading title="Block dates" eyebrow="HMS inventory" />
+            <form className="space-y-2.5" onSubmit={createDateBlock}>
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold text-slate-600">Property</span>
+                <select
+                  value={propertyId}
+                  onChange={(event) => setPropertyId(event.target.value)}
+                  className={inputCls}
+                  disabled={properties.length === 0}
+                >
+                  <option value="">{propertiesLoaded ? 'Select property' : 'Loading properties...'}</option>
+                  {properties.map((property) => (
+                    <option key={property.id} value={property.id}>{property.name}</option>
+                  ))}
+                </select>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold text-slate-600">From</span>
+                  <input
+                    type="date"
+                    value={blockForm.from_date}
+                    onChange={(event) => setBlockForm((current) => ({ ...current, from_date: event.target.value }))}
+                    className={inputCls}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold text-slate-600">To</span>
+                  <input
+                    type="date"
+                    value={blockForm.to_date}
+                    onChange={(event) => setBlockForm((current) => ({ ...current, to_date: event.target.value }))}
+                    className={inputCls}
+                  />
+                </label>
+              </div>
+              <p className="text-xs font-semibold text-slate-500">
+                Selected date: {formatDateLabel(selectedDate)}
+              </p>
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold text-slate-600">Reason</span>
+                <input
+                  value={blockForm.reason}
+                  maxLength={180}
+                  onChange={(event) => setBlockForm((current) => ({ ...current, reason: event.target.value }))}
+                  className={inputCls}
+                />
+              </label>
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2.5">
+                <span>
+                  <span className="block text-sm font-bold text-slate-800">Create Google busy event</span>
+                  <span className="block text-xs font-medium text-slate-500">
+                    Uses the configured Google block calendar so Airbnb/MakeMyTrip can import that calendar.
+                  </span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={blockForm.create_google_event}
+                  onChange={(event) => setBlockForm((current) => ({ ...current, create_google_event: event.target.checked }))}
+                  disabled={!activeGoogleConnection}
+                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                />
+              </label>
+              <ActionBtn type="submit" variant="primary" disabled={blockingDates || !propertyId || !blockForm.room_category_id}>
+                {blockingDates ? 'Blocking...' : 'Block dates'}
+              </ActionBtn>
+            </form>
+          </Panel>
+
+          <Panel className="p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <SectionHeading title="Unblock dates" eyebrow="HMS inventory" />
+              <ActionBtn size="sm" onClick={() => loadInventoryBlocks()} disabled={!propertyId || inventoryBlocksLoading}>
+                {inventoryBlocksLoading ? 'Refreshing' : 'Refresh'}
+              </ActionBtn>
+            </div>
+            {inventoryBlocksLoading && (
+              <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-500">
+                Loading blocks...
+              </p>
+            )}
+            {!inventoryBlocksLoading && inventoryBlocks.length === 0 && (
+              <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-center text-xs font-medium leading-relaxed text-slate-500">
+                No iCal blocks for this property.
+              </p>
+            )}
+            {!inventoryBlocksLoading && inventoryBlocks.length > 0 && (
+              <div className="space-y-2">
+                {inventoryBlocks.map((block) => (
+                  <div key={block.id} className="rounded-lg border border-slate-100 bg-slate-50/60 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-900">
+                          {formatDateLabel(block.from_date)} - {formatDateLabel(block.to_date)}
+                        </p>
+                        <p className="mt-1 truncate text-[11px] font-semibold text-slate-500">
+                          {block.room_category_name ?? 'Room type'} · {block.blocked_rooms} room{block.blocked_rooms === 1 ? '' : 's'}
+                        </p>
+                        <p className="mt-0.5 truncate text-[11px] text-slate-400">{block.reason}</p>
+                        <p className="mt-1 truncate text-[10.5px] font-semibold text-slate-500">
+                          Source: {formatBlockCalendarLabel(block, googleConnections)}
+                        </p>
+                        {block.google_calendar_event_id && (
+                          <p className="mt-1 text-[10.5px] font-semibold text-emerald-700">Google busy event linked</p>
+                        )}
+                      </div>
+                      <ActionBtn
+                        size="sm"
+                        variant="danger"
+                        onClick={() => unblockInventoryBlock(block)}
+                        disabled={unblockingBlockId === block.id}
+                      >
+                        {unblockingBlockId === block.id ? 'Unblocking' : 'Unblock'}
+                      </ActionBtn>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
+          <Panel className="p-4">
+            <SectionHeading title="Google Calendar" eyebrow="Busy event sync" />
+            {activeGoogleConnection ? (
+              <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2.5">
+                <p className="text-xs font-semibold text-emerald-700">{activeGoogleConnection.email_address}</p>
+                <label className="mt-2 block">
+                  <span className="mb-1 block text-xs font-semibold text-emerald-900">Write busy events to</span>
+                  <select
+                    value={activeGoogleConnection.calendar_id}
+                    onChange={(event) => selectGoogleCalendar(event.target.value)}
+                    disabled={googleCalendarsLoading || selectingGoogleCalendar || googleCalendars.length === 0}
+                    className="w-full rounded-md border border-emerald-200 bg-white px-2.5 py-2 text-xs font-semibold text-emerald-950 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15"
+                  >
+                    {googleCalendars.length === 0 && (
+                      <option value={activeGoogleConnection.calendar_id}>
+                        {activeGoogleConnection.calendar_summary ?? activeGoogleConnection.calendar_id}
+                      </option>
+                    )}
+                    {googleCalendars.map((calendar) => (
+                      <option key={calendar.id} value={calendar.id}>
+                        {calendar.summary}{calendar.primary ? ' (Primary)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {googleCalendarsLoading && (
+                  <p className="mt-1 text-[11px] font-semibold text-emerald-700">Loading writable calendars...</p>
+                )}
+              </div>
+            ) : (
+              <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-center text-xs font-medium leading-relaxed text-slate-500">
+                Connect Google Calendar to create real busy all-day events from HMS blocks.
+              </p>
+            )}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ActionBtn size="sm" onClick={connectGoogleCalendar} disabled={!propertyId || connectingGoogle}>
+                {connectingGoogle ? 'Connecting...' : activeGoogleConnection ? 'Reconnect' : 'Connect Google'}
+              </ActionBtn>
+              <ActionBtn size="sm" onClick={() => loadGoogleConnections()} disabled={!propertyId || googleConnectionsLoading}>
+                {googleConnectionsLoading ? 'Refreshing' : 'Refresh'}
+              </ActionBtn>
+            </div>
+            {googleConnections.some((connection) => connection.last_error_message) && (
+              <p className="mt-2 text-[11px] font-semibold text-rose-600">
+                {googleConnections.find((connection) => connection.last_error_message)?.last_error_message}
+              </p>
+            )}
+          </Panel>
+
+          <Panel className="p-4">
+            <SectionHeading title="Publish blocks" eyebrow="HMS iCal link" />
+            <p className="mb-2 text-xs font-medium leading-relaxed text-slate-500">
+              Add this URL in Google Calendar with "From URL", or in Airbnb/MakeMyTrip calendar import if that account supports iCal import. Existing OTA iCal links are read-only, so this publishes a separate block feed.
+            </p>
+            <input
+              readOnly
+              value={shareLink || 'Select a property to generate the iCal link'}
+              className={`${inputCls} font-mono text-xs`}
+              onFocus={(event) => event.currentTarget.select()}
+            />
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ActionBtn size="sm" onClick={copyShareLink} disabled={!shareLink}>Copy link</ActionBtn>
+              {shareLink && (
+                <a
+                  href={shareLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50"
+                >
+                  Open .ics
+                </a>
+              )}
+            </div>
+            {selectedProperty && (
+              <p className="mt-2 text-[11px] font-semibold text-slate-400">Sharing {selectedProperty.name}</p>
+            )}
           </Panel>
 
           <Panel className="p-4">
@@ -406,7 +946,7 @@ export function ICalCalendarPage() {
                   <button
                     key={key}
                     type="button"
-                    onClick={() => setSelectedDate(key)}
+                    onClick={() => selectDateForBlock(key)}
                     className={[
                       'relative min-h-[5.75rem] border-b border-r border-slate-100 p-0 text-left transition',
                       active ? 'bg-emerald-50 ring-1 ring-inset ring-emerald-200' : 'bg-white hover:bg-slate-50',
@@ -721,6 +1261,28 @@ function formatAvailabilityWindow(days: number | null) {
   return days == null ? 'No window limit' : `${days}-day window`;
 }
 
+function buildPropertyICalLink(propertyId: string) {
+  const baseUrl = String(api.defaults.baseURL ?? '').replace(/\/$/, '');
+  return `${baseUrl}/ical-calendar/properties/${propertyId}.ics`;
+}
+
+function inventoryBlockToEvent(block: InventoryBlock): ICalEvent {
+  const title = `Blocked${block.room_category_name ? ` - ${block.room_category_name}` : ''}`;
+  return {
+    uid: `hms-block-${block.id}`,
+    title,
+    start: parseDateKey(block.from_date),
+    end: addDays(parseDateKey(block.to_date), 1),
+    allDay: true,
+    location: '',
+    description: block.reason,
+    feedId: 'hms-inventory-blocks',
+    feedName: 'HMS Blocks',
+    color: 'indigo',
+    availabilityWindowClosed: false,
+  };
+}
+
 function getEventTitle(event: ICalEvent) {
   if (event.availabilityWindowClosed) return 'Availability closed';
   if (isGenericUnavailableTitle(event.title, event.description)) return 'Not available';
@@ -814,6 +1376,11 @@ function dateKey(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function parseDateKey(key: string) {
+  const [year, month, day] = key.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
 function formatMonth(date: Date) {
   return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 }
@@ -821,6 +1388,24 @@ function formatMonth(date: Date) {
 function formatDateLabel(key: string) {
   const [year, month, day] = key.split('-').map(Number);
   return new Date(year, month - 1, day).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatBlockCalendarLabel(block: InventoryBlock, googleConnections: GoogleCalendarConnection[]) {
+  if (block.google_calendar_id) {
+    const matchingConnection = googleConnections.find((connection) => connection.calendar_id === block.google_calendar_id);
+    const summary = matchingConnection?.calendar_summary?.trim();
+    return summary ? `Google Calendar: ${summary}` : `Google Calendar: ${block.google_calendar_id}`;
+  }
+  return sourceLabel(block.source);
+}
+
+function sourceLabel(source: string) {
+  const labels: Record<string, string> = {
+    ICAL_MANUAL: 'HMS iCal manual block',
+    MANUAL: 'HMS manual block',
+    GOOGLE_CALENDAR: 'Google Calendar',
+  };
+  return labels[source] ?? source.replace(/_/g, ' ');
 }
 
 function formatEventTime(event: ICalEvent) {

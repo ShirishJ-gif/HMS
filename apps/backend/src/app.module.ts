@@ -9,8 +9,11 @@ import { BackgroundJobModule } from './modules/background-job/background-job.mod
 import { BookingModule } from './modules/booking/booking.module';
 import { ChannelModule } from './modules/channel/channel.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { EmailAutomationModule } from './modules/email-automation/email-automation.module';
+import { ExpenseModule } from './modules/expense/expense.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { GuestModule } from './modules/guest/guest.module';
+import { GoogleCalendarModule } from './modules/google-calendar/google-calendar.module';
 import { HealthModule } from './modules/health/health.module';
 import { HousekeepingModule } from './modules/housekeeping/housekeeping.module';
 import { ICalCalendarModule } from './modules/ical-calendar/ical-calendar.module';
@@ -25,6 +28,7 @@ import { PropertyModule } from './modules/property/property.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { RoomModule } from './modules/room/room.module';
 import { WebhookModule } from './modules/webhook/webhook.module';
+import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
@@ -40,8 +44,11 @@ import { PrismaModule } from './prisma/prisma.module';
     ChannelModule,
     BillingModule,
     DashboardModule,
+    EmailAutomationModule,
+    ExpenseModule,
     FinanceModule,
     InventoryModule,
+    GoogleCalendarModule,
     PropertyModule,
     AuthModule,
     HealthModule,
@@ -55,6 +62,7 @@ import { PrismaModule } from './prisma/prisma.module';
     PricingModule,
     ReportsModule,
     WebhookModule,
+    WhatsAppModule,
   ],
   providers: [IdempotencyService],
   exports: [IdempotencyService],
