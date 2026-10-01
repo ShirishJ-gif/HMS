@@ -30,8 +30,6 @@ type OperationsBoardState = { data: OperationsBoardData | null; error: string | 
 
 let operationsBoardCache: OperationsBoardData | null = null;
 let operationsBoardCacheKey = '';
-let operationsBoardCacheUpdatedAt = 0;
-const operationsBoardCacheTtlMs = 60_000;
 
 function getLocalDate() {
   const now = new Date();
@@ -54,9 +52,6 @@ function fmtPolicyTime(value?: string | null) {
 }
 function daysUntil(dep: string, today: string) {
   return Math.max(0, Math.round((new Date(dep + 'T00:00:00').getTime() - new Date(today + 'T00:00:00').getTime()) / 86_400_000));
-}
-function dayDiff(from: string, to: string) {
-  return Math.round((new Date(to + 'T00:00:00').getTime() - new Date(from + 'T00:00:00').getTime()) / 86_400_000);
 }
 function formatGuestCount(adults?: number | null, children?: number | null) {
   if (adults == null && children == null) return 'Guest count not set';
@@ -122,8 +117,15 @@ function catTone(name: string) {
 }
 
 /* ── Room badge — soft indigo ── */
+function roomLabel(num: string | null) {
+  if (!num) return 'TBD';
+  if (num === 'HMS_WHOLE_VILLA') return 'Room 1';
+  const villaRoom = /^HMS_VILLA_ROOM_(\d+)$/.exec(num);
+  return villaRoom ? `Room ${Number(villaRoom[1])}` : num;
+}
+
 function RoomBadge({ categoryName, num, size = 'md' }: { categoryName?: string; num: string | null; size?: 'sm' | 'md' | 'lg' }) {
-  const dim = size === 'sm' ? 'w-8 h-8 text-[10px]' : size === 'lg' ? 'w-11 h-11 text-[13px]' : 'w-[38px] h-[38px] text-[11px]';
+  const dim = size === 'sm' ? 'min-w-8 h-8 text-[10px]' : size === 'lg' ? 'min-w-11 h-11 text-[11px]' : 'min-w-[38px] h-[38px] text-[11px]';
   if (!num) return (
     <span className={`flex-shrink-0 ${dim} rounded-xl flex items-center justify-center font-extrabold bg-slate-50 text-slate-400 border border-slate-200`}>
       TBD
@@ -131,8 +133,8 @@ function RoomBadge({ categoryName, num, size = 'md' }: { categoryName?: string; 
   );
   const tone = categoryName ? catTone(categoryName) : { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700' };
   return (
-    <span className={`flex-shrink-0 ${dim} rounded-xl flex items-center justify-center font-extrabold border ${tone.bg} ${tone.border} ${tone.text}`}>
-      {num}
+    <span title={roomLabel(num)} className={`max-w-24 flex-shrink-0 px-2 ${dim} rounded-xl flex items-center justify-center font-extrabold border ${tone.bg} ${tone.border} ${tone.text}`}>
+      <span className="min-w-0 truncate">{roomLabel(num)}</span>
     </span>
   );
 }
@@ -275,23 +277,17 @@ function RoomTile({ row, balanceDue, hkOpen, today, onOpen }: {
   const shortName = capitalizeFirstLetter(parts.length >= 2 ? `${parts[0]} ${parts[parts.length - 1]}` : guest);
 
   return (
-    <button type="button" onClick={onOpen} className={`relative w-full text-left bg-white rounded-xl border p-2.5 cursor-pointer hover:-translate-y-0.5 focus:ring-2 focus:ring-indigo-200 transition-all ${
+    <button type="button" onClick={onOpen} className={`relative w-full min-w-0 text-left bg-white rounded-xl border p-2.5 cursor-pointer hover:-translate-y-0.5 focus:ring-2 focus:ring-indigo-200 transition-all ${
       hasAlert ? 'border-sky-200 bg-sky-50/20' : 'border-black/[0.06] hover:border-black/[0.12]'
     }`}>
-      {/* Alert badges */}
+      <div className="mb-2 flex min-w-0 flex-wrap items-start justify-between gap-2">
+      <RoomBadge categoryName={row.room.room_category.name} num={roomNum} size="sm" />
       {(hkOpen || balanceDue > 0) && (
-        <div className="absolute top-1.5 right-1.5 flex gap-0.5">
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
           {hkOpen      && <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-sky-100 text-sky-700">HK</span>}
           {balanceDue > 0 && <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-rose-100 text-rose-600">BAL</span>}
         </div>
       )}
-      {/* Room badge */}
-      <div className={`text-[11px] font-extrabold w-10 h-7 rounded-lg flex items-center justify-center mb-2 border ${
-        !roomNum
-          ? 'bg-slate-100 text-slate-400 border-slate-200'
-          : `${catTone(row.room.room_category.name).bg} ${catTone(row.room.room_category.name).text} ${catTone(row.room.room_category.name).border}`
-      }`}>
-        {roomNum ?? 'TBD'}
       </div>
       {/* Name */}
       <p className="text-[11px] font-semibold text-slate-800 leading-tight truncate mb-0.5">{shortName}</p>
@@ -304,7 +300,7 @@ function RoomTile({ row, balanceDue, hkOpen, today, onOpen }: {
       <div className="h-1 rounded-full bg-slate-100 overflow-hidden mb-1.5">
         <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${barPct}%` }} />
       </div>
-      <div className="flex items-center justify-between text-[9.5px]">
+      <div className="flex flex-wrap items-center justify-between gap-1 text-[9.5px]">
         <span className={days <= 0 ? 'text-amber-500 font-bold' : 'text-slate-400'}>
           {barPct}% used
         </span>
@@ -378,13 +374,11 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
   useEffect(() => {
     let active = true;
     const cacheKey = `${propertyFilter}:${today}`;
-    const hasFreshCache = operationsBoardCache && operationsBoardCacheKey === cacheKey && reloadKey === 0 && Date.now() - operationsBoardCacheUpdatedAt < operationsBoardCacheTtlMs;
-    if (hasFreshCache) { setBoardState({ data: operationsBoardCache, error: null, loading: false }); return () => { active = false; }; }
     setBoardState(cur => ({ ...cur, error: null, loading: !cur.data }));
     api.get<OperationsBoardData>('/operations-board', { params: { property_id: propertyFilter, date: today } }).then((res) => {
       if (!active) return;
       const next = res.data;
-      operationsBoardCache = next; operationsBoardCacheKey = cacheKey; operationsBoardCacheUpdatedAt = Date.now();
+      operationsBoardCache = next; operationsBoardCacheKey = cacheKey;
       setBoardState({ data: next, error: null, loading: false });
     }).catch((err: unknown) => {
       if (!active) return;
@@ -447,6 +441,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
       external_reservation_id: g.external_reservation_id,
       property: propertyById.get(g.property.id) ?? {
         ...g.property,
+        property_type: 'HOTEL' as const,
         phone: null,
         email: null,
         address: '',
@@ -464,7 +459,6 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
     ? allRows.filter(row => [row.room.guest_name, row.primary_guest_name, row.property.name, row.external_reservation_id, row.room.room.room_number, row.room.room_category.name, row.room.rate_plan.name].filter(Boolean).join(' ').toLowerCase().includes(normalizedQ))
     : allRows;
 
-  const lateArrivalCutoffDays = 2;
   const arrivals     = filteredRows.filter(r => r.room.arrival_date === today && r.room.reservation_status === 'BOOKED');
   const inHouse      = filteredRows.filter(r => r.room.reservation_status === 'CHECKED_IN').sort((a, b) => a.room.departure_date.localeCompare(b.room.departure_date));
   const departures   = filteredRows
@@ -477,8 +471,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
     });
   const lateArrivals = filteredRows.filter(r =>
     r.room.arrival_date < today &&
-    r.room.reservation_status === 'BOOKED' &&
-    dayDiff(r.room.arrival_date, today) <= lateArrivalCutoffDays
+    r.room.reservation_status === 'BOOKED'
   );
   const checkedInToday = filteredRows.filter(r => r.room.arrival_date === today && r.room.reservation_status === 'CHECKED_IN').length;
   const checkInQueue = [...lateArrivals, ...arrivals].sort((a, b) => {
@@ -572,9 +565,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
             value={searchQuery}
             onChange={setSearchQuery}
             placeholder="Guest, room, reservation…"
-            className="relative"
-            iconClassName="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
-            inputClassName="h-10 w-72 rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-3 text-[12px] text-slate-700 outline-none placeholder-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+            className="w-72 max-w-full"
           />
 
           {/* Property toggle pills */}
@@ -723,7 +714,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
                     </span>
                   </div>
                 ) : (
-                  <div className="p-4 grid grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2.5">
+                  <div className="p-4 grid grid-cols-[repeat(auto-fill,minmax(min(100%,144px),1fr))] gap-2.5">
                     {inHouse.map(row => (
                       <RoomTile
                         key={row.room.id}
@@ -923,19 +914,17 @@ function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending,
       <button aria-label="Close arrival verification" className="fixed inset-0 z-40 bg-slate-900/20" onClick={onClose} type="button" />
       <section aria-label="Arrival verification details" className="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-3rem)] w-[calc(100vw_-_2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-3.5">
-          <div>
+          <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Arrival verification</p>
             <h3 className="mt-1 text-[17px] font-black text-slate-900">{guestName}</h3>
             <p className="mt-0.5 text-[12px] text-slate-400">{row.property.name}</p>
           </div>
-          <button aria-label="Close arrival verification" className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onClick={onClose} type="button">×</button>
+          <button aria-label="Close arrival verification" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onClick={onClose} type="button">×</button>
         </div>
         <div className="min-h-0 space-y-3 overflow-y-auto p-4">
           <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-            <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-[13px] font-extrabold text-slate-700">
-              {selectedRoom?.room_number ?? row.room.room.room_number ?? 'TBD'}
-            </span>
-            <div className="min-w-0">
+            <RoomBadge categoryName={row.room.room_category.name} num={selectedRoom?.room_number ?? row.room.room.room_number ?? null} size="lg" />
+            <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
               <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Room type</p>
               <p className="text-[13px] font-bold text-slate-800">{row.room.room_category.name}</p>
               <p className="text-[11px] text-slate-500">{row.room.rate_plan.name}</p>
@@ -951,7 +940,7 @@ function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending,
             </div>
             <CustomSelect
               options={assignableRooms.map((room) => ({
-                label: `Room ${room.room_number}`,
+                label: /^HMS_(?:WHOLE_VILLA|VILLA_ROOM_\d+)$/.test(room.room_number) ? roomLabel(room.room_number) : `Room ${room.room_number}`,
                 value: room.id,
               }))}
               placeholder={assignableRooms.length === 0 ? 'No room available for this stay' : 'Select room to assign'}
@@ -967,7 +956,7 @@ function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending,
           </div>
           <div>
             <p className="mb-2.5 text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Guest details</p>
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-1 min-[400px]:grid-cols-2 gap-2.5">
               <ArrivalGuestField label="Phone" value={guestPhone} />
               <ArrivalGuestField label="Email" value={guestEmail} />
               <ArrivalGuestField label="ID proof" value={guestIdProof} mono />
@@ -985,8 +974,8 @@ function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending,
                 ['Stay total', row.room.total_amount == null ? '—' : formatCurrency(row.room.total_amount)],
               ].map(([label, value]) => (
                 <div className="flex items-start justify-between gap-3 py-2.5" key={label}>
-                  <dt className="text-[11px] font-semibold text-slate-400">{label}</dt>
-                  <dd className="text-right text-[12px] font-bold text-slate-700">{value}</dd>
+                  <dt className="shrink-0 text-[11px] font-semibold text-slate-400">{label}</dt>
+                  <dd className="min-w-0 [overflow-wrap:anywhere] text-right text-[12px] font-bold text-slate-700">{value}</dd>
                 </div>
               ))}
             </dl>
@@ -1006,10 +995,10 @@ function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending,
             </div>
           </div> */}
         </div>
-        <div className="flex items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/80 px-5 py-3.5">
+        <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center border-t border-slate-100 bg-slate-50/80 px-5 py-3.5">
           <p className="text-[11px] text-slate-500">Review guest and room details before completing check-in.</p>
           <button
-            className="h-9 rounded-lg border border-emerald-100 bg-emerald-50 px-4 text-[12px] font-semibold text-emerald-600 shadow-sm shadow-emerald-900/5 transition-all hover:border-emerald-500 hover:bg-emerald-500 hover:text-white hover:shadow-md hover:shadow-emerald-900/10 disabled:opacity-50 disabled:hover:border-emerald-100 disabled:hover:bg-emerald-50 disabled:hover:text-emerald-600 disabled:hover:shadow-sm"
+            className="h-9 shrink-0 whitespace-nowrap rounded-lg border border-emerald-100 bg-emerald-50 px-4 text-[12px] font-semibold text-emerald-600 shadow-sm shadow-emerald-900/5 transition-all hover:border-emerald-500 hover:bg-emerald-500 hover:text-white hover:shadow-md hover:shadow-emerald-900/10 disabled:opacity-50 disabled:hover:border-emerald-100 disabled:hover:bg-emerald-50 disabled:hover:text-emerald-600 disabled:hover:shadow-sm"
             disabled={checkInPending || !selectedRoomId}
             onClick={() => onConfirm(selectedRoomId)}
             type="button"
@@ -1024,9 +1013,9 @@ function ArrivalVerificationModal({ assignableRooms, balanceDue, checkInPending,
 
 function ArrivalGuestField({ label, mono = false, value }: { label: string; mono?: boolean; value: string }) {
   return (
-    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+    <div className="min-w-0 rounded-xl border border-slate-100 bg-slate-50 p-3">
       <p className="mb-1.5 text-[9.5px] font-bold uppercase tracking-wider text-slate-400">{label}</p>
-      <p className={`text-[12.5px] font-semibold text-slate-700 leading-snug ${mono ? 'font-mono text-[11.5px]' : ''}`}>{value}</p>
+      <p className={`text-[12.5px] font-semibold text-slate-700 leading-snug [overflow-wrap:anywhere] ${mono ? 'font-mono text-[11.5px]' : ''}`}>{value}</p>
     </div>
   );
 }
@@ -1050,17 +1039,17 @@ function InHouseStayModal({ balanceDue, checkOutPending, hkOpen, onClose, onChec
       <button aria-label="Close stay details" className="fixed inset-0 z-40 bg-slate-900/20" onClick={onClose} type="button" />
       <section aria-label="In-house stay details" className="fixed left-1/2 top-12 z-50 max-h-[calc(100vh-4rem)] w-[calc(100vw_-_2rem)] max-w-lg -translate-x-1/2 overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl sm:top-14">
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4">
-          <div>
+          <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
             <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-500">In-house stay</p>
             <h3 className="mt-1 text-[18px] font-black text-slate-900">{guestName}</h3>
             <p className="mt-0.5 text-[12px] text-slate-400">{row.property.name}</p>
           </div>
-          <button aria-label="Close stay details" className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onClick={onClose} type="button">×</button>
+          <button aria-label="Close stay details" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" onClick={onClose} type="button">×</button>
         </div>
         <div className="space-y-4 p-5">
           <div className="flex items-center gap-3 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
             <RoomBadge categoryName={row.room.room_category.name} num={row.room.room.room_number ?? null} size="lg" />
-            <div>
+            <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
               <p className="text-[13px] font-bold text-slate-800">{row.room.room_category.name}</p>
               <p className="text-[11px] text-slate-500">{row.room.rate_plan.name}</p>
             </div>
@@ -1075,8 +1064,8 @@ function InHouseStayModal({ balanceDue, checkOutPending, hkOpen, onClose, onChec
               ['Stay total', row.room.total_amount == null ? '—' : formatCurrency(row.room.total_amount)],
             ].map(([label, value]) => (
               <div className="flex items-start justify-between gap-3 py-3" key={label}>
-                <dt className="text-[11px] font-semibold text-slate-400">{label}</dt>
-                <dd className="text-right text-[12px] font-bold text-slate-700">{value}</dd>
+                <dt className="shrink-0 text-[11px] font-semibold text-slate-400">{label}</dt>
+                <dd className="min-w-0 [overflow-wrap:anywhere] text-right text-[12px] font-bold text-slate-700">{value}</dd>
               </div>
             ))}
           </dl>
@@ -1092,10 +1081,10 @@ function InHouseStayModal({ balanceDue, checkOutPending, hkOpen, onClose, onChec
             </div>
           </div>
         </div>
-        <div className="flex items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/80 px-5 py-4">
+        <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center border-t border-slate-100 bg-slate-50/80 px-5 py-4">
           <p className="text-[11px] text-slate-500">Use checkout when the guest is leaving and the room should return to available status.</p>
           <button
-            className="h-9 min-w-[8.5rem] rounded-lg bg-slate-700 px-5 text-[12px] font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
+            className="h-9 shrink-0 min-w-[8.5rem] rounded-lg bg-slate-700 px-5 text-[12px] font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
             disabled={checkOutPending}
             onClick={onCheckOut}
             type="button"

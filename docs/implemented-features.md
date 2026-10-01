@@ -286,14 +286,14 @@ This document lists the features currently implemented in the Hotel Management S
 
 ## Notifications
 
-- WhatsApp notification service with `mock` and WhatsApp Cloud API modes.
+- Reservation notification service with `mock` and Telegram modes.
 - Imported reservation intake sends a mock booking confirmation.
 - Imported reservation intake sends a hotel-owner notification to the property phone when configured.
 - Owner booking notifications include quick-reply options for viewing the booking and calling the guest.
 - Check-in reminder endpoint sends a mock reminder.
 - Booking confirmations, owner notifications, and check-in reminders now enqueue `NOTIFICATION_SEND` background jobs with retry and dead-letter handling instead of sending inline from the request path.
-- Notification logic is isolated behind `WhatsAppNotificationService`.
-- WhatsApp Cloud API mode is enabled with `WHATSAPP_PROVIDER=cloud_api`, `WABA_ACCESS_TOKEN`, and `WABA_PHONE_NUMBER_ID`.
+- Notification logic is isolated behind `ReservationNotificationService`.
+- Telegram delivery uses `NOTIFICATION_PROVIDER=telegram`, `TELEGRAM_BOT_TOKEN`, and configured Telegram chat IDs.
 
 ## Dashboard
 

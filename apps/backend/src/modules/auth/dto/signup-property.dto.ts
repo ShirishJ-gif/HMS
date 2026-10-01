@@ -1,6 +1,11 @@
-import { IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { PropertyType } from '@prisma/client';
+import { IsEmail, IsEnum, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class SignupPropertyDto {
+  @IsOptional()
+  @IsEnum(PropertyType)
+  property_type?: PropertyType;
+
   @IsString()
   @MaxLength(160)
   property_name: string;

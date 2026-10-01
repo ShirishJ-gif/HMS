@@ -28,7 +28,6 @@ import { PropertyModule } from './modules/property/property.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { RoomModule } from './modules/room/room.module';
 import { WebhookModule } from './modules/webhook/webhook.module';
-import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
@@ -62,7 +61,6 @@ import { PrismaModule } from './prisma/prisma.module';
     PricingModule,
     ReportsModule,
     WebhookModule,
-    WhatsAppModule,
   ],
   providers: [IdempotencyService],
   exports: [IdempotencyService],

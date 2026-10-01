@@ -47,19 +47,11 @@ These are needed to run the app locally or in production today.
 
 ## 2. Optional But Already Supported
 
-These are only needed if you want real WhatsApp delivery instead of mock logging.
+Optional Telegram delivery instead of mock notification logging:
 
-- `WHATSAPP_PROVIDER`
-  - `mock` or `cloud_api`
-
-- `WABA_ACCESS_TOKEN`
-  - WhatsApp Cloud API access token
-
-- `WABA_PHONE_NUMBER_ID`
-  - WhatsApp Business phone number ID
-
-- `WABA_API_VERSION`
-  - Example: `v20.0`
+- `NOTIFICATION_PROVIDER=telegram`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_DEFAULT_CHAT_ID`, or separate owner and guest chat IDs
 
 ## 3. Not Needed Yet, But Will Be Needed For Live Channel Manager Integration
 
@@ -121,12 +113,11 @@ These are not required for the current admin HMS.
 - `CHANNEL_WEBHOOK_SECRET`
 - `VITE_API_BASE_URL`
 
-### Needed only for real WhatsApp
+### Needed only for Telegram notifications
 
-- `WHATSAPP_PROVIDER=cloud_api`
-- `WABA_ACCESS_TOKEN`
-- `WABA_PHONE_NUMBER_ID`
-- `WABA_API_VERSION`
+- `NOTIFICATION_PROVIDER=telegram`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_DEFAULT_CHAT_ID`
 
 ### Needed later for live integrations
 
@@ -144,6 +135,6 @@ Current live-capable tokens already reflected in env examples:
 
 - backend database/auth config
 - webhook verification secrets
-- WhatsApp Cloud API config
+- Telegram notification config
 
 Channel-manager and payment-provider credentials are not yet represented as first-class env vars because those integrations are still placeholders.

@@ -1,3 +1,5 @@
+import { billingTotal, billingPaymentState, isOtaMetadataCharge, recalculateBilling, lockBilling } from './billing-calculations';
+import { recordBillingAudit } from './billing-audit';
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PaymentStatus, Prisma } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -264,6 +266,7 @@ export class BillingService {
 
   async addExtraCharge(id: string, addExtraChargeDto: AddExtraChargeDto, user?: AuthenticatedUser) {
     const billing = await this.prisma.$transaction(async (tx) => {
+      await lockBilling(tx, id);
       const existingBilling = await tx.billing.findUnique({
         where: { id },
         include: this.includeRelations(),
@@ -275,7 +278,7 @@ export class BillingService {
 
       assertCanAccessProperty(user, this.subjectPropertyId(existingBilling));
 
-      await tx.billingExtraCharge.create({
+      const charge = await tx.billingExtraCharge.create({
         data: {
           billingId: id,
           description: addExtraChargeDto.description,
@@ -283,14 +286,25 @@ export class BillingService {
         },
       });
 
-      const extraChargesTotal = existingBilling.extraCharges
-        .reduce((total, charge) => total.add(charge.amount), new Prisma.Decimal(0))
-        .add(new Prisma.Decimal(addExtraChargeDto.amount));
+      const total = billingTotal(existingBilling.amount, existingBilling.tax, [
+        ...existingBilling.extraCharges,
+        { description: addExtraChargeDto.description, amount: new Prisma.Decimal(addExtraChargeDto.amount) },
+      ]);
+      const { paymentStatus } = billingPaymentState(total, existingBilling.payments, existingBilling.amount.add(existingBilling.tax));
+
+      await recordBillingAudit(tx, {
+        billing: existingBilling,
+        after: recalculateBilling({ ...existingBilling, extraCharges: [...existingBilling.extraCharges, charge] }),
+        action: 'CREATE', operation: 'charge_added',
+        summary: `Added "${charge.description}" (${charge.amount.toFixed(2)})`,
+        detail: { charge_id: charge.id, description: charge.description, amount: charge.amount.toFixed(2) }, user,
+      });
 
       return tx.billing.update({
         where: { id },
         data: {
-          total: existingBilling.amount.add(existingBilling.tax).add(extraChargesTotal),
+          total,
+          paymentStatus,
         },
         include: this.includeRelations(),
       });
@@ -301,6 +315,7 @@ export class BillingService {
 
   async deleteExtraCharge(id: string, chargeId: string, user?: AuthenticatedUser) {
     const billing = await this.prisma.$transaction(async (tx) => {
+      await lockBilling(tx, id);
       const existingBilling = await tx.billing.findUnique({
         where: { id },
         include: this.includeRelations(),
@@ -319,14 +334,23 @@ export class BillingService {
 
       await tx.billingExtraCharge.delete({ where: { id: chargeId } });
 
-      const extraChargesTotal = existingBilling.extraCharges
-        .filter((extraCharge) => extraCharge.id !== chargeId)
-        .reduce((total, extraCharge) => total.add(extraCharge.amount), new Prisma.Decimal(0));
+      const total = billingTotal(existingBilling.amount, existingBilling.tax,
+        existingBilling.extraCharges.filter(extraCharge => extraCharge.id !== chargeId));
+      const { paymentStatus } = billingPaymentState(total, existingBilling.payments, existingBilling.amount.add(existingBilling.tax));
+
+      await recordBillingAudit(tx, {
+        billing: existingBilling,
+        after: recalculateBilling({ ...existingBilling, extraCharges: existingBilling.extraCharges.filter(item => item.id !== chargeId) }),
+        action: 'DELETE', operation: 'charge_removed',
+        summary: `Removed "${charge.description}" (${charge.amount.toFixed(2)})`,
+        detail: { charge_id: charge.id, description: charge.description, amount: charge.amount.toFixed(2) }, user,
+      });
 
       return tx.billing.update({
         where: { id },
         data: {
-          total: existingBilling.amount.add(existingBilling.tax).add(extraChargesTotal),
+          total,
+          paymentStatus,
         },
         include: this.includeRelations(),
       });
@@ -336,30 +360,18 @@ export class BillingService {
   }
 
   async updatePaymentStatus(id: string, updatePaymentStatusDto: UpdatePaymentStatusDto, user?: AuthenticatedUser) {
-    try {
-      if (user) {
-        const existingBilling = await this.prisma.billing.findUnique({
-          where: { id },
-          include: this.includeRelations(),
-        });
-        if (!existingBilling) {
-          throw new NotFoundException('Invoice not found');
-        }
-        assertCanAccessProperty(user, this.subjectPropertyId(existingBilling));
+    const billing = await this.prisma.$transaction(async tx => {
+      await lockBilling(tx, id);
+      const existing = await tx.billing.findUnique({ where: { id }, include: this.includeRelations() });
+      if (!existing) throw new NotFoundException('Invoice not found');
+      assertCanAccessProperty(user, this.subjectPropertyId(existing));
+      const { total, paymentStatus } = recalculateBilling(existing);
+      if (updatePaymentStatusDto.payment_status !== paymentStatus) {
+        throw new ConflictException('Payment status must match the charges, payments, refunds and OTA settlement. Record a payment or refund instead.');
       }
-
-      const billing = await this.prisma.billing.update({
-        where: { id },
-        data: {
-          paymentStatus: updatePaymentStatusDto.payment_status,
-        },
-        include: this.includeRelations(),
-      });
-
-      return this.toBillingResponse(billing);
-    } catch (error) {
-      this.handlePrismaError(error);
-    }
+      return tx.billing.update({ where: { id }, data: { total, paymentStatus }, include: this.includeRelations() });
+    });
+    return this.toBillingResponse(billing);
   }
 
   private includeRelations() {
@@ -414,7 +426,7 @@ export class BillingService {
   }
 
   private toBillingResponse(billing: BillingWithRelations) {
-    const billableExtraCharges = billing.extraCharges.filter((charge) => !this.isOtaMetadataCharge(charge.description));
+    const billableExtraCharges = billing.extraCharges.filter((charge) => !isOtaMetadataCharge(charge.description));
     const billableExtraChargesTotal = billableExtraCharges.reduce((total, charge) => total.add(charge.amount), new Prisma.Decimal(0));
     const visibleTotal = billing.amount.add(billing.tax).add(billableExtraChargesTotal);
     const paidTotal = billing.payments
@@ -423,9 +435,7 @@ export class BillingService {
     const refundedTotal = billing.payments
       .filter((payment) => payment.status === 'REFUNDED')
       .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0));
-    const balanceDue = billing.paymentStatus === PaymentStatus.PAID
-      ? new Prisma.Decimal(0)
-      : visibleTotal.sub(paidTotal).add(refundedTotal);
+    const { balance: balanceDue, paymentStatus } = recalculateBilling(billing);
     const subject = billing.reservationRoom
       ? {
           reservation_room_id: billing.reservationRoomId,
@@ -482,7 +492,7 @@ export class BillingService {
       refunded_total: refundedTotal.toNumber(),
       balance_due: balanceDue.toNumber(),
       total: visibleTotal.toNumber(),
-      payment_status: billing.paymentStatus,
+      payment_status: paymentStatus,
       reservation_room: subject.reservation_room,
       ota_payment_breakdown: this.extractOtaPaymentBreakdown(billing),
       extra_charges: billableExtraCharges.map((charge) => ({
@@ -537,8 +547,4 @@ export class BillingService {
     return typeof value === 'string' ? value : null;
   }
 
-  private isOtaMetadataCharge(description: string) {
-    const normalized = description.trim().toUpperCase();
-    return normalized.startsWith('OTA ') || normalized.includes('TAX WITHHOLDING');
-  }
 }

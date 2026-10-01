@@ -991,7 +991,7 @@ function OtaConnectionSetup({
   onCancel?: () => void;
 }) {
   const selectedOtaLabel =
-    workspace.zodomusOtaOptions.find(option => option.key === workspace.zodomusOtaKey)?.label ?? 'OTA';
+    workspace.providerOtaOptions.find(option => option.key === workspace.providerOtaKey)?.label ?? 'OTA';
 
   return (
     <form
@@ -1024,27 +1024,27 @@ function OtaConnectionSetup({
         <label className={labelCls}>
           <span>OTA</span>
           <CustomSelect
-            onChange={value => workspace.setZodomusOtaKey(value as typeof workspace.zodomusOtaKey)}
-            options={workspace.zodomusOtaOptions.map(option => ({ label: option.label, value: option.key }))}
-            value={workspace.zodomusOtaKey}
+            onChange={value => workspace.setProviderOtaKey(value as typeof workspace.providerOtaKey)}
+            options={workspace.providerOtaOptions.map(option => ({ label: option.label, value: option.key }))}
+            value={workspace.providerOtaKey}
           />
         </label>
         <label className={labelCls}>
           <span>Price model</span>
           <CustomSelect
-            onChange={workspace.setZodomusPriceModelId}
+            onChange={workspace.setProviderPriceModelId}
             options={workspace.priceModelOptions.map(model => ({ label: `${model.id} - ${model.model}`, value: String(model.id) }))}
-            value={workspace.zodomusPriceModelId}
+            value={workspace.providerPriceModelId}
           />
         </label>
         <label className={labelCls}>
-          <span>Zodomus property ID</span>
+          <span>Provider property ID</span>
           <input
             className={inputCls}
-            onChange={event => workspace.setZodomusPropertyId(event.target.value)}
+            onChange={event => workspace.setProviderPropertyId(event.target.value)}
             placeholder="999999"
             required
-            value={workspace.zodomusPropertyId}
+            value={workspace.providerPropertyId}
           />
         </label>
       </div>
@@ -1057,7 +1057,7 @@ function OtaConnectionSetup({
         >
           {workspace.pendingAction === 'create-connection' ? 'Saving...' : 'Save connection'}
         </button>
-        <span className="text-[12px] text-slate-400">Use the Zodomus property ID for this OTA. Booking.com and Airbnb IDs are not interchangeable.</span>
+        <span className="text-[12px] text-slate-400">Use the provider property ID for this OTA. Booking.com and Airbnb IDs are not interchangeable.</span>
       </div>
     </form>
   );
@@ -1212,7 +1212,7 @@ function InlinePanel({
 }) {
   const [tab, setTab] = useState<PanelTab>('mappings');
 
-  const conn = workspace.zodomusConnections.find(c => c.id === connectionId);
+  const conn = workspace.channelManagerConnections.find(c => c.id === connectionId);
   const isSelected = workspace.selectedConnection?.id === connectionId;
 
   useEffect(() => {
@@ -1465,7 +1465,7 @@ export function OtaMappingPage({
 }) {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(() => readPersistedExpandedOtaCardId());
-  const [setupOtaKey, setSetupOtaKey] = useState<ChannelWorkspace['zodomusOtaKey'] | null>(null);
+  const [setupOtaKey, setSetupOtaKey] = useState<ChannelWorkspace['providerOtaKey'] | null>(null);
   const [eventConfirm, setEventConfirm] = useState(false);
   const [backfillConfirm, setBackfillConfirm] = useState(false);
   const [roomsCancelConfirm, setRoomsCancelConfirm] = useState(false);
@@ -1494,13 +1494,13 @@ export function OtaMappingPage({
       : !automationSaved ? 'Apply automation first before webhook testing.'
         : 'Ready for reservation testing.';
 
-  const totalRooms = workspace.zodomusConnections.reduce((t, c) => t + c.room_mappings.length, 0);
-  const totalRates = workspace.zodomusConnections.reduce((t, c) => t + c.rate_mappings.length, 0);
+  const totalRooms = workspace.channelManagerConnections.reduce((t, c) => t + c.room_mappings.length, 0);
+  const totalRates = workspace.channelManagerConnections.reduce((t, c) => t + c.rate_mappings.length, 0);
 
   /* ── Build card list ── */
   const matchedIds = new Set<string>();
-  const channelCards = workspace.zodomusOtaOptions.map(option => {
-    const connection = workspace.zodomusConnections.find(c => {
+  const channelCards = workspace.providerOtaOptions.map(option => {
+    const connection = workspace.channelManagerConnections.find(c => {
       if (matchedIds.has(c.id)) return false;
       const otaName = c.provider_config_summary?.ota_name ?? (c as unknown as { name?: string }).name ?? c.provider;
       return matchesOtaOption(otaName, option.label);
@@ -1508,11 +1508,11 @@ export function OtaMappingPage({
     if (connection) matchedIds.add(connection.id);
     return { key: option.key, label: option.label, connection };
   });
-  const extraCards = workspace.zodomusConnections
+  const extraCards = workspace.channelManagerConnections
     .filter(c => !matchedIds.has(c.id))
     .map(c => ({ key: c.id, label: c.provider_config_summary?.ota_name ?? c.provider, connection: c }));
   const allCards = [...channelCards, ...extraCards];
-  const removeTarget = workspace.zodomusConnections.find(c => c.id === removeTargetId) ?? null;
+  const removeTarget = workspace.channelManagerConnections.find(c => c.id === removeTargetId) ?? null;
   const mappedExternalRoomIds = Array.from(new Set(conn?.room_mappings.map(mapping => mapping.external_room_id).filter(Boolean) ?? []));
   const overlayOpen = backfillConfirm || roomsCancelConfirm || propertySetupDrawerOpen || removeChoiceIds.length > 0 || Boolean(removeTarget);
 
@@ -1532,14 +1532,14 @@ export function OtaMappingPage({
   }, [setupOtaKey, workspace.selectedConnection]);
 
   useEffect(() => {
-    if (!expandedId || !workspace.zodomusConnections.some(connection => connection.id === expandedId)) return;
+    if (!expandedId || !workspace.channelManagerConnections.some(connection => connection.id === expandedId)) return;
     if (workspace.selectedConnection?.id === expandedId) return;
 
     workspace.selectConnection(expandedId);
-  }, [expandedId, workspace.selectedConnection?.id, workspace.zodomusConnections.length]);
+  }, [expandedId, workspace.selectedConnection?.id, workspace.channelManagerConnections.length]);
 
-  const openConnectionSetup = (otaKey: ChannelWorkspace['zodomusOtaKey']) => {
-    workspace.setZodomusOtaKey(otaKey);
+  const openConnectionSetup = (otaKey: ChannelWorkspace['providerOtaKey']) => {
+    workspace.setProviderOtaKey(otaKey);
     workspace.selectConnection('');
     setExpandedId(null);
     persistExpandedOtaCardId(null);
@@ -1556,12 +1556,12 @@ export function OtaMappingPage({
   };
 
   const getConnectionOtaKey = (
-    connection: (typeof workspace.zodomusConnections)[number] | null | undefined,
-  ): ChannelWorkspace['zodomusOtaKey'] => {
-    if (!connection) return workspace.zodomusOtaKey;
+    connection: (typeof workspace.channelManagerConnections)[number] | null | undefined,
+  ): ChannelWorkspace['providerOtaKey'] => {
+    if (!connection) return workspace.providerOtaKey;
 
     const otaName = connection.provider_config_summary?.ota_name ?? (connection as unknown as { name?: string }).name ?? connection.provider;
-    return workspace.zodomusOtaOptions.find(option => matchesOtaOption(otaName, option.label))?.key ?? workspace.zodomusOtaKey;
+    return workspace.providerOtaOptions.find(option => matchesOtaOption(otaName, option.label))?.key ?? workspace.providerOtaKey;
   };
 
   const handleCardClick = (connectionId: string) => {
@@ -1571,8 +1571,8 @@ export function OtaMappingPage({
       persistExpandedOtaCardId(null);
       return;
     }
-    const connection = workspace.zodomusConnections.find(c => c.id === connectionId);
-    workspace.setZodomusOtaKey(getConnectionOtaKey(connection));
+    const connection = workspace.channelManagerConnections.find(c => c.id === connectionId);
+    workspace.setProviderOtaKey(getConnectionOtaKey(connection));
     workspace.selectConnection(connectionId);
     setExpandedId(connectionId);
     persistExpandedOtaCardId(connectionId);
@@ -1581,7 +1581,7 @@ export function OtaMappingPage({
   const getCardConnections = (card: (typeof allCards)[number]) => {
     if (!card.connection) return [];
     const cardOtaName = card.connection.provider_config_summary?.ota_name ?? card.label;
-    return workspace.zodomusConnections.filter(connection => {
+    return workspace.channelManagerConnections.filter(connection => {
       const connectionOtaName = connection.provider_config_summary?.ota_name ?? connection.provider;
       return matchesOtaOption(connectionOtaName, card.label) || matchesOtaOption(connectionOtaName, cardOtaName);
     });
@@ -1782,11 +1782,11 @@ export function OtaMappingPage({
               </div>
 
               {/* Connection switcher */}
-              {workspace.zodomusConnections.length > 1 && (
+              {workspace.channelManagerConnections.length > 1 && (
                 <div>
                   <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-2">Switch connection</p>
                   <div className="space-y-0.5">
-                    {workspace.zodomusConnections.map(c => {
+                    {workspace.channelManagerConnections.map(c => {
                       const cb = otaBrand(c.provider_config_summary?.ota_name ?? undefined);
                       const active = c.id === conn.id;
                       return (
@@ -1863,10 +1863,10 @@ export function OtaMappingPage({
                   </div>
 
                   {/* <div className="space-y-2 xl:w-[30rem]">
-                    {workspace.zodomusConnections.length > 1 && (
+                    {workspace.channelManagerConnections.length > 1 && (
                       <div className="flex flex-wrap items-center justify-end gap-1.5">
                         <span className="mr-1 text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Switch connection</span>
-                        {workspace.zodomusConnections.map(connection => {
+                        {workspace.channelManagerConnections.map(connection => {
                           const connectionBrand = otaBrand(connection.provider_config_summary?.ota_name ?? undefined);
                           const active = connection.id === conn.id;
                           return (
@@ -2133,10 +2133,10 @@ export function OtaMappingPage({
           <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/25 px-4 py-6" role="dialog" aria-modal="true" aria-label="Cancel mapped room associations">
             <div className="w-full max-w-lg bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden">
               <div className="p-5 border-b border-slate-100">
-                <p className="text-[9.5px] font-bold uppercase tracking-wider text-rose-500 mb-1">Zodomus room cancellation</p>
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-rose-500 mb-1">Provider room cancellation</p>
                 <h3 className="text-base font-bold text-slate-900">Cancel mapped room associations?</h3>
                 <p className="text-[13px] text-slate-500 mt-2 leading-relaxed">
-                  This will send {mappedExternalRoomIds.length} mapped Zodomus room ID{mappedExternalRoomIds.length === 1 ? '' : 's'} to {formatConnectionLabel(conn)}.
+                  This will send {mappedExternalRoomIds.length} mapped provider room ID{mappedExternalRoomIds.length === 1 ? '' : 's'} to {formatConnectionLabel(conn)}.
                 </p>
                 {mappedExternalRoomIds.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-1.5">
@@ -2168,11 +2168,11 @@ export function OtaMappingPage({
 
         {/* Backfill confirm modal */}
         {backfillConfirm && conn && createPortal(
-          <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/25 px-4 py-6" role="dialog" aria-modal="true" aria-label="Backfill future Zodomus reservations">
+          <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/25 px-4 py-6" role="dialog" aria-modal="true" aria-label="Backfill future provider reservations">
             <div className="w-full max-w-lg bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden">
               <div className="p-5 border-b border-slate-100">
                 <p className="text-[9.5px] font-bold uppercase tracking-wider text-indigo-500 mb-1">Go-live backfill</p>
-                <h3 className="text-base font-bold text-slate-900">Backfill future Zodomus reservations?</h3>
+                <h3 className="text-base font-bold text-slate-900">Backfill future provider reservations?</h3>
                 <p className="text-[13px] text-slate-500 mt-2 leading-relaxed">Queues a one-time import of future stays that pre-dated the HMS channel-manager connection.</p>
               </div>
               <div className="p-4 bg-slate-50 flex justify-end gap-2">
@@ -2201,10 +2201,10 @@ export function OtaMappingPage({
           <p className="text-[13px] text-slate-500 mt-0.5">Manage distribution channel connections and sync.</p>
         </div>
         <div className="flex w-full flex-col gap-2.5 sm:flex-row sm:items-center lg:w-auto lg:justify-end">
-          {workspace.zodomusConnections.length > 0 && (
+          {workspace.channelManagerConnections.length > 0 && (
             <div className="grid flex-1 grid-cols-3 overflow-hidden rounded-xl border border-black/[0.07] bg-white shadow-sm sm:flex-none">
               {([
-                ['Connections', workspace.zodomusConnections.length, 'bg-indigo-500'],
+                ['Connections', workspace.channelManagerConnections.length, 'bg-indigo-500'],
                 ['Mapped rooms', totalRooms, 'bg-emerald-500'],
                 ['Mapped rates', totalRates, 'bg-amber-500'],
               ] as [string, number, string][]).map(([label, value, dot], index) => (
@@ -2237,7 +2237,7 @@ export function OtaMappingPage({
             <span className="text-[16px] font-semibold leading-none text-slate-500">+</span>
             Add connection
           </button>
-          {workspace.zodomusConnections.length > 0 && (
+          {workspace.channelManagerConnections.length > 0 && (
             <button
               type="button"
               className={`inline-flex h-11 w-full items-center justify-center rounded-xl border px-4 text-[13px] font-semibold shadow-sm transition sm:w-auto ${
@@ -2262,7 +2262,7 @@ export function OtaMappingPage({
           onClose={closePropertySetupDrawer}
           onConfigureOta={() => {
             setPropertySetupDrawerOpen(false);
-            setSetupOtaKey(workspace.zodomusOtaKey);
+            setSetupOtaKey(workspace.providerOtaKey);
           }}
           onTabChange={setPropertySetupDrawerTab}
         />,
@@ -2331,7 +2331,7 @@ export function OtaMappingPage({
                       return;
                     }
                     if (c) handleCardClick(c.id);
-                    else openConnectionSetup(card.key as typeof workspace.zodomusOtaKey);
+                    else openConnectionSetup(card.key as typeof workspace.providerOtaKey);
                   }}
                   style={{
                     borderColor: brand.bg,
@@ -2429,7 +2429,7 @@ export function OtaMappingPage({
                   <p className="text-[13px] text-slate-500 mt-2 leading-relaxed">This OTA has more than one saved connection.</p>
                   <div className="mt-4 space-y-2">
                     {removeChoiceIds.map(id => {
-                      const choice = workspace.zodomusConnections.find(connection => connection.id === id);
+                      const choice = workspace.channelManagerConnections.find(connection => connection.id === id);
                       if (!choice) return null;
                       return (
                         <button
@@ -2465,7 +2465,7 @@ export function OtaMappingPage({
                   <p className="text-[9.5px] font-bold uppercase tracking-wider text-rose-500 mb-1">Remove connection</p>
                   <h3 className="text-base font-bold text-slate-900">Remove {formatConnectionLabel(removeTarget)}?</h3>
                   <p className="text-[13px] text-slate-500 mt-2 leading-relaxed">
-                    This removes the local OTA connection, mappings, sync logs, and imported test reservation data for this channel. It does not call Zodomus.
+                    This removes the local OTA connection, mappings, sync logs, and imported test reservation data for this channel. It does not call the provider.
                   </p>
                 </div>
                 <div className="p-4 bg-slate-50 flex justify-end gap-2">

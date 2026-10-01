@@ -1,9 +1,10 @@
+import { recordBillingAudit } from '../billing/billing-audit';
+import { recalculateBilling, lockBilling, lockFolioBillings } from '../billing/billing-calculations';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { AuditAction, PaymentProvider, PaymentStatus, PaymentTransactionStatus, Prisma } from '@prisma/client';
+import { PaymentProvider, PaymentTransactionStatus, Prisma } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 import { paginatedResponse, paginationParams } from '../../common/pagination/paginated-response';
-import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty, propertyIdFilter } from '../auth/property-scope';
 import { MetricsService } from '../metrics/metrics.service';
@@ -18,7 +19,6 @@ export class PaymentService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly paymentProviderService: PaymentProviderService,
-    private readonly auditLogService: AuditLogService,
     private readonly idempotencyService: IdempotencyService,
     private readonly metricsService: MetricsService,
   ) {}
@@ -84,10 +84,12 @@ export class PaymentService {
     }
 
     const paymentId = await this.prisma.$transaction(async (tx) => {
+      await lockBilling(tx, dto.billing_id);
       const billing = await tx.billing.findUnique({
         where: { id: dto.billing_id },
         include: {
           payments: true,
+          extraCharges: true,
           reservationRoom: {
             include: {
               reservationGroup: {
@@ -107,8 +109,7 @@ export class PaymentService {
 
       assertCanAccessProperty(user, this.subjectPropertyId(billing));
 
-      const paidTotal = this.sumPayments(billing.payments, PaymentTransactionStatus.SUCCEEDED);
-      const remaining = billing.total.sub(paidTotal);
+      const { balance: remaining } = recalculateBilling(billing);
 
       if (amount.gt(remaining)) {
         throw new BadRequestException('Payment amount exceeds invoice balance');
@@ -132,34 +133,27 @@ export class PaymentService {
         },
       });
 
-      const newPaidTotal = paidTotal.add(amount);
+      const { total, paymentStatus } = recalculateBilling({ ...billing, payments: [...billing.payments, createdPayment] });
       await tx.billing.update({
         where: { id: billing.id },
         data: {
-          paymentStatus: newPaidTotal.gte(billing.total) ? PaymentStatus.PAID : PaymentStatus.PARTIAL,
+          total,
+          paymentStatus,
         },
       });
 
+      await recordBillingAudit(tx, {
+        billing, after: recalculateBilling({ ...billing, payments: [...billing.payments, createdPayment] }),
+        action: 'PAYMENT_COLLECT', operation: 'payment_collected',
+        summary: `${createdPayment.status === 'SUCCEEDED' ? 'Collected' : 'Attempted payment of'} ${amount.toFixed(2)}`,
+        detail: { payment_id: createdPayment.id, amount: amount.toFixed(2), provider, provider_reference: createdPayment.providerReference, payment_result: createdPayment.status }, user,
+      });
       return createdPayment.id;
     });
 
     const payment = await this.prisma.paymentTransaction.findUniqueOrThrow({
       where: { id: paymentId },
       include: this.includeRelations(),
-    });
-
-    await this.auditLogService.record({
-      action: AuditAction.PAYMENT_COLLECT,
-      entityType: 'payment_transaction',
-      entityId: payment.id,
-      propertyId: this.subjectPropertyId(payment.billing),
-      summary: `Collected ${payment.amount.toString()} from ${this.subjectGuestName(payment.billing)}`,
-      metadata: {
-        billing_id: payment.billingId,
-        provider: payment.provider,
-        provider_reference: payment.providerReference,
-      },
-      user,
     });
 
     this.metricsService.recordPaymentCollect(payment.status, payment.provider);
@@ -180,6 +174,7 @@ export class PaymentService {
     const provider = dto.provider ?? PaymentProvider.MOCK;
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockFolioBillings(tx, dto.reservation_group_id);
       const reservationGroup = await tx.reservationGroup.findUnique({
         where: { id: dto.reservation_group_id },
         include: {
@@ -190,6 +185,7 @@ export class PaymentService {
               billings: {
                 include: {
                   payments: true,
+                  extraCharges: true,
                 },
               },
             },
@@ -209,9 +205,7 @@ export class PaymentService {
           .map((billing) => ({
             billing,
             roomId: room.id,
-            remaining: billing.total.sub(this.sumPayments(billing.payments, PaymentTransactionStatus.SUCCEEDED)).add(
-              this.sumPayments(billing.payments, PaymentTransactionStatus.REFUNDED),
-            ),
+            remaining: recalculateBilling(billing).balance,
           }))
           .filter((entry) => entry.remaining.gt(0)),
       );
@@ -262,14 +256,27 @@ export class PaymentService {
           },
         });
 
-        const paidTotal = this.sumPayments(entry.billing.payments, PaymentTransactionStatus.SUCCEEDED).add(allocation);
+        const { total, paymentStatus } = recalculateBilling({ ...entry.billing, payments: [...entry.billing.payments, payment] });
         await tx.billing.update({
           where: { id: entry.billing.id },
           data: {
-            paymentStatus: paidTotal.gte(entry.billing.total) ? PaymentStatus.PAID : PaymentStatus.PARTIAL,
+            total,
+            paymentStatus,
           },
         });
 
+        await recordBillingAudit(tx, {
+          billing: { ...entry.billing, reservationRoom: {
+            propertyId: reservationGroup.propertyId, reservationGroupId: reservationGroup.id,
+            guestName: reservationGroup.rooms.find(room => room.id === entry.roomId)?.guestName,
+            currency: reservationGroup.rooms.find(room => room.id === entry.roomId)?.currency,
+            reservationGroup,
+          } },
+          after: recalculateBilling({ ...entry.billing, payments: [...entry.billing.payments, payment] }),
+          action: 'PAYMENT_COLLECT', operation: 'payment_collected',
+          summary: `${payment.status === 'SUCCEEDED' ? 'Collected' : 'Attempted payment of'} ${allocation.toFixed(2)} against folio ${reservationGroup.externalReservationId}`,
+          detail: { payment_id: payment.id, amount: allocation.toFixed(2), provider, provider_reference: payment.providerReference, payment_result: payment.status }, user,
+        });
         allocatedPayments.push({
           paymentId: payment.id,
           billingId: entry.billing.id,
@@ -288,20 +295,6 @@ export class PaymentService {
         requestedAmount,
         remainingBalance: totalOutstanding.sub(requestedAmount),
       };
-    });
-
-    await this.auditLogService.record({
-      action: AuditAction.PAYMENT_COLLECT,
-      entityType: 'reservation_group_folio',
-      entityId: result.reservationGroupId,
-      propertyId: result.propertyId,
-      summary: `Collected ${result.requestedAmount.toString()} against folio ${result.externalReservationId}`,
-      metadata: {
-        reservation_group_id: result.reservationGroupId,
-        external_reservation_id: result.externalReservationId,
-        payment_count: result.allocatedPayments.length,
-      },
-      user,
     });
 
     this.metricsService.recordPaymentCollect(PaymentTransactionStatus.SUCCEEDED, provider);
@@ -335,12 +328,16 @@ export class PaymentService {
     }
 
     const refundId = await this.prisma.$transaction(async (tx) => {
+      const subject = await tx.paymentTransaction.findUnique({ where: { id }, select: { billingId: true } });
+      if (!subject) throw new NotFoundException('Successful payment not found');
+      await lockBilling(tx, subject.billingId);
       const originalPayment = await tx.paymentTransaction.findUnique({
         where: { id },
         include: {
           billing: {
             include: {
               payments: true,
+              extraCharges: true,
               reservationRoom: {
                 include: {
                   reservationGroup: {
@@ -392,25 +389,23 @@ export class PaymentService {
         },
       });
 
-      const billing = await tx.billing.findUniqueOrThrow({
-        where: { id: originalPayment.billingId },
-        include: { payments: true },
+      // The new refund is counted once. Re-reading then adding its amount again double-counted it.
+      const { total, paymentStatus } = recalculateBilling({
+        ...originalPayment.billing,
+        payments: [...originalPayment.billing.payments, refundPayment],
       });
-      const paidTotal = this.sumPayments(billing.payments, PaymentTransactionStatus.SUCCEEDED);
-      const refundedTotal = this.sumPayments(billing.payments, PaymentTransactionStatus.REFUNDED).add(refundAmount);
-      const netPaid = paidTotal.sub(refundedTotal);
-
       await tx.billing.update({
-        where: { id: billing.id },
-        data: {
-          paymentStatus: netPaid.lte(0)
-            ? PaymentStatus.REFUNDED
-            : netPaid.gte(billing.total)
-              ? PaymentStatus.PAID
-              : PaymentStatus.PARTIAL,
-        },
+        where: { id: originalPayment.billingId },
+        data: { total, paymentStatus },
       });
 
+      await recordBillingAudit(tx, {
+        billing: originalPayment.billing,
+        after: recalculateBilling({ ...originalPayment.billing, payments: [...originalPayment.billing.payments, refundPayment] }),
+        action: 'PAYMENT_REFUND', operation: 'payment_refunded', summary: `Refunded ${refundAmount.toFixed(2)}`,
+        detail: { payment_id: refundPayment.id, original_payment_id: id, amount: refundAmount.toFixed(2),
+          provider: originalPayment.provider, provider_reference: refundPayment.providerReference, reason: dto.reason ?? null }, user,
+      });
       return refundPayment.id;
     });
 
@@ -419,33 +414,9 @@ export class PaymentService {
       include: this.includeRelations(),
     });
 
-    await this.auditLogService.record({
-      action: AuditAction.PAYMENT_REFUND,
-      entityType: 'payment_transaction',
-      entityId: refund.id,
-      propertyId: this.subjectPropertyId(refund.billing),
-      summary: `Refunded ${refund.amount.toString()} for ${this.subjectGuestName(refund.billing)}`,
-      metadata: {
-        billing_id: refund.billingId,
-        provider: refund.provider,
-        provider_reference: refund.providerReference,
-        reason: dto.reason,
-      },
-      user,
-    });
-
     this.metricsService.recordPaymentRefund(refund.status, refund.provider);
 
     return this.toResponse(refund);
-  }
-
-  private sumPayments(
-    payments: Array<{ amount: Prisma.Decimal; status: PaymentTransactionStatus }>,
-    status: PaymentTransactionStatus,
-  ) {
-    return payments
-      .filter((payment) => payment.status === status)
-      .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0));
   }
 
   private includeRelations() {

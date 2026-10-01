@@ -18,6 +18,7 @@ import { Type } from 'class-transformer';
 import { PaymentProvider } from '@prisma/client';
 
 const directReservationEmailPattern = /^[^\s@]+@[^\s@]+\.(?!cpm$|con$|comm$|coom$|ocm$)[^\s@]{2,}$/i;
+export const DIRECT_GUEST_ID_PROOF_TYPES = ['Aadhaar Card', 'Driver License', 'Passport'];
 
 class DirectReservationGuestDto {
   @IsString()
@@ -37,8 +38,8 @@ class DirectReservationGuestDto {
   email?: string;
 
   @IsString()
-  @Matches(/^(Aadhaar Card|Driver License|Passport):\s*\S.+$/, {
-    message: 'id_proof must include Aadhaar Card, Driver License, or Passport and the ID number',
+  @IsEnum(DIRECT_GUEST_ID_PROOF_TYPES, {
+    message: 'Select Aadhaar Card, Driver License, or Passport only; do not include an ID number',
   })
   @MaxLength(120)
   id_proof: string;
@@ -62,11 +63,13 @@ export class CreateDirectReservationDto {
   @Type(() => DirectReservationGuestDto)
   guest?: DirectReservationGuestDto;
 
+  @IsOptional()
   @IsUUID()
-  room_category_id: string;
+  room_category_id?: string;
 
+  @IsOptional()
   @IsUUID()
-  rate_plan_id: string;
+  rate_plan_id?: string;
 
   @IsString()
   check_in_date: string;
@@ -95,6 +98,10 @@ export class CreateDirectReservationDto {
   @Min(1)
   @Max(20)
   room_count?: number;
+
+  @IsOptional()
+  @IsEnum(['WHOLE_VILLA', 'ROOM_COUNT'])
+  villa_booking_mode?: 'WHOLE_VILLA' | 'ROOM_COUNT';
 
   @IsOptional()
   @IsInt()

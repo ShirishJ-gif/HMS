@@ -5,6 +5,7 @@ import { InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { CustomSelect } from '../components/CustomSelect';
 import { formatCurrency } from '../utils/format';
 import { createPreviewData } from './previewData';
+import { VillaAvailabilityPage } from './VillaAvailabilityPage';
 
 const AVAILABILITY_STORAGE_KEY = 'hms_availability_state';
 const INVENTORY_CALENDAR_DAYS = 30;
@@ -26,7 +27,22 @@ type PersistedAvailabilityState = {
   inventoryCalendar: InventoryCalendarSummary;
 };
 
-export function AvailabilityPage({
+export function AvailabilityPage(props: {
+  activePropertyId?: string;
+  onPropertyChange?: (propertyId: string) => void;
+  previewDataEnabled?: boolean;
+  properties?: Property[];
+  propertiesLoaded?: boolean;
+}) {
+  const [localPropertyId, setLocalPropertyId] = useState(props.activePropertyId ?? '');
+  const property = props.properties?.find(item => item.id === (props.activePropertyId || localPropertyId)) ?? props.properties?.[0];
+  if (!props.previewDataEnabled && property?.property_type === 'RENTAL_VILLAS') {
+    return <VillaAvailabilityPage key={property.id} property={property} properties={props.properties ?? []} onPropertyChange={id => { setLocalPropertyId(id); props.onPropertyChange?.(id); }} />;
+  }
+  return <HotelAvailabilityPage {...props} activePropertyId={props.activePropertyId || localPropertyId} onPropertyChange={id => { setLocalPropertyId(id); props.onPropertyChange?.(id); }} />;
+}
+
+function HotelAvailabilityPage({
   activePropertyId = '',
   onPropertyChange,
   previewDataEnabled = false,
@@ -120,8 +136,10 @@ export function AvailabilityPage({
     lastLoadedQuery.from === from &&
     lastLoadedQuery.to === to;
   const currentQueryIsDefaultRange = from === defaultRange.from && to === defaultRange.to;
+  // Keep the last result on screen while a new date range is loading. This avoids
+  // the calendar disappearing and makes range/month changes feel continuous.
   const displayedAvailability = previewData?.availability ?? (
-    hasLoadedProperties && selectedPropertyExists && lastLoadedQuery?.propertyId === propertyId
+    hasLoadedProperties && selectedPropertyExists && availability?.property_id === propertyId
       ? availability
       : null
   );
@@ -274,7 +292,9 @@ export function AvailabilityPage({
     currentQueryIsDefaultRange &&
     !currentQueryHasLoaded &&
     !error;
-  const isLoading = !hasLoadedProperties || availabilityLoading || waitingForDefaultProperty || waitingForDefaultAvailability;
+  // A refresh should be quiet once a result is already on screen. Reserve the
+  // loading state for the initial request, when there is nothing to display yet.
+  const isLoading = !hasLoadedProperties || (availabilityLoading && !displayedAvailability) || waitingForDefaultProperty || waitingForDefaultAvailability;
 
   return (
     <div className="min-h-screen -mx-5 lg:-mx-8 -my-6 lg:-my-8 bg-[#f5f5f3] flex flex-col">
@@ -356,7 +376,7 @@ export function AvailabilityPage({
               disabled={availabilityLoading || !propertyId}
               type="submit"
             >
-              {availabilityLoading ? 'Loading...' : 'Check'}
+              {availabilityLoading && !displayedAvailability ? 'Loading...' : 'Check'}
             </button>
           </div>
         </div>

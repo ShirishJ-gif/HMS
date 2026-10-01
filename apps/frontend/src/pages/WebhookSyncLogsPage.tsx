@@ -9,7 +9,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
   const [syncLogPage, setSyncLogPage] = useState(1);
   const [selectedSyncLog, setSelectedSyncLog] = useState<ChannelSyncLog | null>(null);
   const selectedConnection = workspace.selectedConnection;
-  const hasSavedConnections = workspace.zodomusConnections.length > 0;
+  const hasSavedConnections = workspace.channelManagerConnections.length > 0;
   const providerSummary = selectedConnection?.provider_config_summary;
   const syncSummary = selectedConnection?.sync_summary ?? defaultSyncSummary;
   const connectionStatusTone = mapTone(selectedConnection?.status);
@@ -44,7 +44,7 @@ export function WebhookSyncLogsPage({ workspace }: { workspace: ChannelWorkspace
                 <span key={tag} className="inline-flex items-center px-2 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600">{tag}</span>
               ))}
             </div>
-          ) : <p className="text-xs text-slate-400">{hasSavedConnections ? 'Choose a saved Zodomus connection to inspect sync health and webhook intake.' : 'Add an OTA connection from OTA Mapping to start sync and webhook monitoring.'}</p>}
+          ) : <p className="text-xs text-slate-400">{hasSavedConnections ? 'Choose a saved channel-manager connection to inspect sync health and webhook intake.' : 'Add an OTA connection from OTA Mapping to start sync and webhook monitoring.'}</p>}
         </div>
       </PageHeader>
 

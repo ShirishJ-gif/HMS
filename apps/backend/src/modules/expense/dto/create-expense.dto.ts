@@ -1,6 +1,7 @@
-import { IsDecimal, IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsDecimal, IsIn, IsOptional, IsString, IsUUID, MaxLength, Matches } from 'class-validator';
 
-export const EXPENSE_CATEGORIES = ['PROPERTY_EXPENSE', 'BOOKING_EXPENSE'] as const;
+export const EXPENSE_CATEGORIES = ['PROPERTY_EXPENSE', 'BOOKING_EXPENSE', 'UTILITIES', 'HOUSEKEEPING', 'MAINTENANCE', 'SUPPLIES', 'SALARIES', 'COMMISSIONS', 'FOOD_BEVERAGE', 'TRANSPORT', 'OTHER'] as const;
+export const PAYMENT_MODES = ['CASH', 'UPI', 'CARD', 'BANK_TRANSFER', 'CHEQUE', 'OTHER'] as const;
 
 export class CreateExpenseDto {
   @IsUUID()
@@ -25,6 +26,7 @@ export class CreateExpenseDto {
   vendor_contact?: string;
 
   @IsString()
+  @Matches(/\S/, { message: 'description cannot be blank' })
   @MaxLength(300)
   description: string;
 
@@ -33,11 +35,25 @@ export class CreateExpenseDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(8)
+  @Matches(/^[A-Z]{3}$/, { message: 'currency must be a three-letter uppercase currency code' })
   currency?: string;
 
   @IsOptional()
   @IsString()
+  @IsIn(PAYMENT_MODES)
   @MaxLength(40)
   payment_mode?: string;
+
+  @IsOptional()
+  @IsDecimal({ decimal_digits: '0,2' })
+  amount_paid?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  invoice_number?: string;
+
+  @IsOptional()
+  @IsUUID()
+  reservation_group_id?: string | null;
 }

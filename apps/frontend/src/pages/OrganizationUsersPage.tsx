@@ -2,9 +2,10 @@ import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { Property, UserRole } from '../api/types';
+import { FormDialog } from '../components/FormDialog';
 import { CustomSelect } from '../components/CustomSelect';
 import { useAsync } from '../hooks/useAsync';
-import { ErrorMsg, FloatingSuccessToast, LoadingMsg, inputCls, labelCls, primaryBtn, secondaryBtn } from './ui';
+import { ErrorMsg, FloatingSuccessToast, LoadingMsg, inputCls, labelCls, primaryBtn } from './ui';
 
 type OrganizationUser = {
   id: string;
@@ -29,12 +30,6 @@ const defaultUserForm = {
 
 const roleOptions: Array<Extract<UserRole, 'SUPER_ADMIN' | 'ADMIN' | 'STAFF'>> = ['SUPER_ADMIN', 'ADMIN', 'STAFF'];
 
-const roleDescriptions: Record<Extract<UserRole, 'SUPER_ADMIN' | 'ADMIN' | 'STAFF'>, string> = {
-  SUPER_ADMIN: 'Property lead access',
-  ADMIN: 'Operations and setup access',
-  STAFF: 'Daily operations access',
-};
-
 export function OrganizationUsersPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [addingUser, setAddingUser] = useState(false);
@@ -49,17 +44,11 @@ export function OrganizationUsersPage() {
   const users = usersState.data ?? [];
   const properties = propertiesState.data ?? [];
   const propertyOptions = useMemo(() => properties.map((property) => ({
-    description: [property.code, property.address].filter(Boolean).join(' - '),
-    eyebrow: 'Property',
-    indentLevel: 1,
     label: property.name,
     value: property.id,
   })), [properties]);
   const propertyById = useMemo(() => new Map(properties.map((property) => [property.id, property])), [properties]);
-  const roleSelectOptions = useMemo(() => roleOptions.map((role, index) => ({
-    description: roleDescriptions[role],
-    eyebrow: index === 0 ? 'Highest' : index === 1 ? 'Manager' : 'Team',
-    indentLevel: index,
+  const roleSelectOptions = useMemo(() => roleOptions.map((role) => ({
     label: formatRole(role),
     value: role,
   })), []);
@@ -73,12 +62,35 @@ export function OrganizationUsersPage() {
     return () => window.clearTimeout(timeoutId);
   }, [actionStatus]);
 
+  const singlePropertyId = !propertiesState.loading && !propertiesState.error && properties.length === 1 ? properties[0].id : '';
+
+  useEffect(() => {
+    if (addingUser && singlePropertyId) {
+      setForm((current) => current.property_id ? current : { ...current, property_id: singlePropertyId });
+    }
+  }, [addingUser, singlePropertyId]);
+
+  function startAddingUser() {
+    setForm({ ...defaultUserForm, property_id: singlePropertyId });
+    setActionError(null);
+    setActionStatus(null);
+    setAddingUser(true);
+  }
+
+  function closeAddUser() {
+    if (pending) return;
+    setAddingUser(false);
+    setForm(defaultUserForm);
+    setActionError(null);
+  }
+
   function reload() {
     setReloadKey((key) => key + 1);
   }
 
   async function submitUser(event: FormEvent) {
     event.preventDefault();
+    if (pending || propertiesState.loading || propertiesState.error) return;
     setActionError(null);
     setActionStatus(null);
 
@@ -126,107 +138,67 @@ export function OrganizationUsersPage() {
         </div>
         <button
           type="button"
-          onClick={() => setAddingUser((value) => !value)}
-          className={addingUser ? secondaryBtn : primaryBtn}
+          onClick={startAddingUser}
+          className={primaryBtn}
         >
-          {addingUser ? 'Cancel' : 'Add user'}
+          Add user
         </button>
       </div>
 
       {loadError && <ErrorMsg>{loadError}</ErrorMsg>}
-      {actionError && <ErrorMsg>{actionError}</ErrorMsg>}
+      {actionError && !addingUser && <ErrorMsg>{actionError}</ErrorMsg>}
 
       {addingUser && (
-        <form onSubmit={submitUser} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-900/[0.02]">
-          <div className="mb-4">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">New user</p>
-            <p className="mt-1 text-[12px] text-slate-500">Each user must be assigned to one property.</p>
+        <FormDialog compact title="Add user" description="Create an account and assign access to a property."
+          busy={pending} error={actionError ?? propertiesState.error} onClose={closeAddUser} onSubmit={submitUser}
+          submitLabel="Create user" busyLabel="Creating…"
+          submitDisabled={passwordsMismatch || propertiesState.loading || Boolean(propertiesState.error) || !form.property_id}>
+          {propertiesState.loading && <p role="status" className="mb-4 text-xs text-slate-500">Loading properties…</p>}
+          {!propertiesState.loading && !propertiesState.error && properties.length === 0 && (
+            <p className="mb-4 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">Add a property in Property &amp; Room Setup before creating a user.</p>
+          )}
+          <div className="grid items-start gap-x-3 gap-y-2.5 sm:grid-cols-2">
+            <label className={labelCls}>
+              <span>Full name</span>
+              <input className={`${inputCls} h-11 font-normal`} autoComplete="name" required
+                value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })}
+                placeholder="e.g. Alex Sharma" />
+            </label>
+            <label className={labelCls}>
+              <span>Email address</span>
+              <input className={`${inputCls} h-11 font-normal`} autoComplete="email" required type="email"
+                value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })}
+                placeholder="alex@hotel.com" />
+            </label>
+            <label className={labelCls}>
+              <span>Property</span>
+              <CustomSelect tone="neutral" disabled={propertiesState.loading || properties.length === 0}
+                options={propertyOptions} placeholder="Select property" value={form.property_id}
+                onChange={(property_id) => setForm({ ...form, property_id })} />
+            </label>
+            <label className={labelCls}>
+              <span>Role</span>
+              <CustomSelect tone="neutral" options={roleSelectOptions} value={form.role}
+                onChange={(role) => setForm({ ...form, role: role as typeof form.role })} />
+            </label>
+            <label className={labelCls}>
+              <span>Password</span>
+              <input className={`${inputCls} h-11 font-normal`} required minLength={10} autoComplete="new-password" type="password"
+                aria-describedby="user-password-hint" value={form.password}
+                onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder="Create a password" />
+            </label>
+            <label className={labelCls}>
+              <span>Confirm password</span>
+              <input className={`${inputCls} h-11 font-normal ${passwordsMismatch ? 'border-rose-300 focus:border-rose-500 focus:ring-rose-500/10' : ''}`}
+                required minLength={10} autoComplete="new-password" type="password" aria-invalid={passwordsMismatch}
+                aria-describedby={passwordsMismatch ? 'user-password-error' : undefined}
+                value={form.confirm_password} onChange={(event) => setForm({ ...form, confirm_password: event.target.value })}
+                placeholder="Repeat password" />
+              {passwordsMismatch && <span id="user-password-error" className="text-[11px] font-normal text-rose-600">Passwords do not match.</span>}
+            </label>
           </div>
-          <div className="space-y-4">
-            <FormStep number="01" title="Assignment">
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className={labelCls}>
-                  <span>Property</span>
-                  <CustomSelect
-                    options={propertyOptions}
-                    placeholder="Select property"
-                    value={form.property_id}
-                    onChange={(property_id) => setForm({ ...form, property_id })}
-                  />
-                </label>
-                <label className={labelCls}>
-                  <span>Role</span>
-                  <CustomSelect
-                    options={roleSelectOptions}
-                    value={form.role}
-                    onChange={(role) => setForm({ ...form, role: role as typeof form.role })}
-                  />
-                </label>
-              </div>
-            </FormStep>
-
-            <FormStep number="02" title="Account">
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className={labelCls}>
-                  <span>Name</span>
-                  <input
-                    className={inputCls}
-                    required
-                    value={form.name}
-                    onChange={(event) => setForm({ ...form, name: event.target.value })}
-                    placeholder="User name"
-                  />
-                </label>
-                <label className={labelCls}>
-                  <span>Email</span>
-                  <input
-                    className={inputCls}
-                    required
-                    type="email"
-                    value={form.email}
-                    onChange={(event) => setForm({ ...form, email: event.target.value })}
-                    placeholder="user@hotel.com"
-                  />
-                </label>
-              </div>
-            </FormStep>
-
-            <FormStep number="03" title="Security">
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className={labelCls}>
-                  <span>Password</span>
-                  <input
-                    className={inputCls}
-                    required
-                    minLength={10}
-                    type="password"
-                    value={form.password}
-                    onChange={(event) => setForm({ ...form, password: event.target.value })}
-                    placeholder="Minimum 10 characters"
-                  />
-                </label>
-                <label className={labelCls}>
-                  <span>Confirm password</span>
-                  <input
-                    className={`${inputCls} ${passwordsMismatch ? 'border-rose-300 focus:border-rose-500 focus:ring-rose-500/10' : ''}`}
-                    required
-                    minLength={10}
-                    type="password"
-                    value={form.confirm_password}
-                    onChange={(event) => setForm({ ...form, confirm_password: event.target.value })}
-                    placeholder="Enter password again"
-                  />
-                  {passwordsMismatch && <span className="text-[12px] font-semibold text-rose-600">Passwords do not match.</span>}
-                </label>
-              </div>
-            </FormStep>
-          </div>
-          <div className="mt-5 flex items-center justify-end">
-            <button type="submit" disabled={pending || passwordsMismatch} className={primaryBtn}>
-              {pending ? 'Creating...' : 'Create user'}
-            </button>
-          </div>
-        </form>
+          <p id="user-password-hint" className="mt-2 text-[11px] leading-4 text-slate-400">Use at least 10 characters.</p>
+        </FormDialog>
       )}
 
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
@@ -468,20 +440,6 @@ function PanelField({ label, value }: { label: string; value: ReactNode }) {
       <dt className="text-[10.5px] font-bold uppercase tracking-[0.1em] text-slate-400">{label}</dt>
       <dd className="mt-1 text-[14px] font-medium text-slate-800">{value}</dd>
     </div>
-  );
-}
-
-function FormStep({ children, number, title }: { children: ReactNode; number: string; title: string }) {
-  return (
-    <section className="grid gap-3 rounded-lg border border-slate-100 bg-slate-50/50 p-3 sm:grid-cols-[7rem_1fr]">
-      <div className="flex items-center gap-2 sm:block">
-        <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-white text-[11px] font-bold text-slate-500 ring-1 ring-slate-200">
-          {number}
-        </span>
-        <p className="text-[12px] font-bold text-slate-700 sm:mt-2">{title}</p>
-      </div>
-      <div>{children}</div>
-    </section>
   );
 }
 

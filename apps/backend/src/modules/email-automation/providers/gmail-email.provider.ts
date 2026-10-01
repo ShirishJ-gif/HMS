@@ -60,21 +60,33 @@ export class GmailEmailProvider implements OAuthEmailProvider {
   }
 
   async listMessageIds(credential: StoredOAuthCredential, cursor?: string | null, options?: EmailProviderListOptions) {
+    const syncStartedAt = new Date();
     const after = cursor ? new Date(cursor) : new Date(Date.now() - this.initialBackfillHours() * 60 * 60_000);
     const scope = this.includeSpam() ? 'in:anywhere -in:trash' : 'in:inbox';
     const filters = [
       options?.fromEmail?.trim() ? `from:${this.quoteQuery(options.fromEmail.trim())}` : null,
       options?.subject?.trim() ? `subject:${this.quoteQuery(options.subject.trim())}` : null,
     ].filter(Boolean);
-    const q = [scope, `after:${this.gmailDate(after)}`, ...filters].join(' ');
+    // Use epoch seconds: Gmail interprets calendar dates in Pacific time.
+    // Keep a one-second overlap; stored message IDs prevent duplicate processing.
+    const q = [scope, `after:${Math.floor(after.getTime() / 1000) - 1}`, `before:${Math.ceil(syncStartedAt.getTime() / 1000)}`, ...filters].join(' ');
     const url = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
     url.searchParams.set('q', q);
     url.searchParams.set('maxResults', String(this.maxMessagesPerSync()));
-    const json = await this.request<{ messages?: Array<{ id: string }> }>(credential, url.toString());
-    return {
-      ids: (json.messages ?? []).map((message) => message.id),
-      nextCursor: new Date().toISOString(),
-    };
+    if (this.includeSpam()) url.searchParams.set('includeSpamTrash', 'true');
+    const ids = new Set<string>();
+    let pageToken: string | undefined;
+    const seenTokens = new Set<string>();
+    do {
+      if (pageToken) url.searchParams.set('pageToken', pageToken);
+      const json = await this.request<{ messages?: Array<{ id: string }>; nextPageToken?: string }>(credential, url.toString());
+      for (const message of json.messages ?? []) ids.add(message.id);
+      pageToken = json.nextPageToken;
+      if (pageToken && seenTokens.has(pageToken)) throw new BadRequestException('Gmail returned a repeated results page. Please retry sync.');
+      if (pageToken) seenTokens.add(pageToken);
+    } while (pageToken);
+    // Advance only after every page in this window has been fetched.
+    return { ids: [...ids], nextCursor: syncStartedAt.toISOString() };
   }
 
   async fetchMessage(credential: StoredOAuthCredential, providerMessageId: string): Promise<NormalizedProviderEmail> {
@@ -105,7 +117,7 @@ export class GmailEmailProvider implements OAuthEmailProvider {
     return {
       emailAddress: profile.emailAddress.toLowerCase(),
       providerAccountId: profile.emailAddress.toLowerCase(),
-      cursor: new Date().toISOString(),
+      // Start with the configured backfill window when connecting Gmail.
     };
   }
 
@@ -160,10 +172,6 @@ export class GmailEmailProvider implements OAuthEmailProvider {
     return value ? value.split(',').map((entry) => this.parseAddress(entry.trim())) : [];
   }
 
-  private gmailDate(date: Date) {
-    return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
-  }
-
   private redirectUri() {
     return `${this.backendBaseUrl()}/integrations/email/google/callback`;
   }
@@ -177,7 +185,8 @@ export class GmailEmailProvider implements OAuthEmailProvider {
   }
 
   private maxMessagesPerSync() {
-    return Number(process.env.EMAIL_PROVIDER_SYNC_MAX_MESSAGES ?? 20);
+    const configured = Number(process.env.EMAIL_PROVIDER_SYNC_MAX_MESSAGES ?? 20);
+    return Number.isFinite(configured) ? Math.min(500, Math.max(1, Math.floor(configured))) : 20;
   }
 
   private quoteQuery(value: string) {

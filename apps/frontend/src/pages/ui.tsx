@@ -84,6 +84,9 @@ export function StatCard({
 }
 
 // ── Search input ──────────────────────────────────────────────────────
+// Keep search borders neutral on focus, matching the Housekeeping search.
+export const searchInputCls = 'h-10 w-full rounded-lg bg-white border border-black/[0.07] text-[12px] font-normal text-slate-800 placeholder:text-slate-400 outline-none';
+
 export function SearchInput({
   value,
   onChange,
@@ -91,28 +94,30 @@ export function SearchInput({
   className = '',
   inputClassName = '',
   icon,
-  iconClassName = '',
+  iconClassName = 'absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none',
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   className?: string;
-  inputClassName: string;
+  inputClassName?: string;
   icon?: ReactNode | false;
   iconClassName?: string;
 }) {
   return (
-    <div className={className}>
+    <div className={`relative ${className}`}>
       {icon === false ? null : icon ?? (
-        <svg className={iconClassName} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
+        <svg aria-hidden="true" className={iconClassName} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
           <path d="m21 21-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z"/>
         </svg>
       )}
       <input
+        type="search"
+        aria-label={placeholder}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className={inputClassName}
+        className={`${searchInputCls} ${icon === false ? 'px-3' : 'pl-9 pr-3'} ${inputClassName}`}
       />
     </div>
   );

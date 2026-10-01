@@ -1,6 +1,12 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Prisma, RoomStatus } from '@prisma/client';
 import { RoomService } from './room.service';
+import { ensureVillaInventory } from '../property/villa-inventory';
+
+jest.mock('../property/villa-inventory', () => ({
+  VILLA_INVENTORY_CODE: 'HMS_WHOLE_VILLA',
+  ensureVillaInventory: jest.fn(),
+}));
 
 describe('RoomService', () => {
   const prisma = {
@@ -15,8 +21,12 @@ describe('RoomService', () => {
     },
     reservationRoom: {
       count: jest.fn(),
+      updateMany: jest.fn(),
     },
+    property: { findUniqueOrThrow: jest.fn() },
+    housekeepingTask: { updateMany: jest.fn() },
     roomOutOfServicePeriod: {
+      updateMany: jest.fn(),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
       create: jest.fn(),
@@ -53,6 +63,7 @@ describe('RoomService', () => {
       typeof input === 'function' ? input(prisma) : Promise.all(input),
     );
     prisma.reservationRoom.count.mockResolvedValue(0);
+    prisma.property.findUniqueOrThrow.mockResolvedValue({ propertyType: 'HOTEL' });
     service = new RoomService(
       prisma as never,
       auditLogService as never,
@@ -219,9 +230,32 @@ describe('RoomService', () => {
       }),
     );
 
-    await expect(service.remove('7f43ac6b-743c-4e21-b3a3-931025058655')).rejects.toBeInstanceOf(
-      ConflictException,
+    await expect(service.remove('7f43ac6b-743c-4e21-b3a3-931025058655')).rejects.toThrow(
+      'This room is linked to reservation or housekeeping history and cannot be deleted.',
     );
+  });
+
+  it('protects the internal whole-villa inventory unit from deletion', async () => {
+    prisma.room.findUnique.mockResolvedValue({ ...roomRecord(), roomNumber: 'HMS_WHOLE_VILLA' });
+
+    await expect(service.remove(roomRecord().id)).rejects.toThrow('The whole-villa inventory unit cannot be deleted.');
+    expect(prisma.room.delete).not.toHaveBeenCalled();
+    expect(backgroundJobService.queueInventorySyncsForProperty).not.toHaveBeenCalled();
+  });
+
+  it('transfers villa history and date blocks before deleting a legacy room', async () => {
+    prisma.room.findUnique.mockResolvedValue(roomRecord());
+    prisma.room.delete.mockResolvedValue(roomRecord());
+    prisma.property.findUniqueOrThrow.mockResolvedValue({ propertyType: 'RENTAL_VILLAS' });
+    jest.mocked(ensureVillaInventory).mockResolvedValue({ room: { id: 'villa-unit' } } as never);
+
+    await expect(service.remove(roomRecord().id)).resolves.toEqual({ id: roomRecord().id, deleted: true });
+    for (const model of [prisma.reservationRoom, prisma.housekeepingTask, prisma.roomOutOfServicePeriod]) {
+      expect(model.updateMany).toHaveBeenCalledWith({ where: { roomId: roomRecord().id }, data: { roomId: 'villa-unit' } });
+    }
+    expect(auditLogService.record).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: { room_number: '101', transferred_to_room_id: 'villa-unit' },
+    }));
   });
 
   it('creates dated out-of-service periods and queues inventory syncs', async () => {

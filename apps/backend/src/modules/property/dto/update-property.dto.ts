@@ -1,6 +1,11 @@
-import { IsEmail, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { PropertyType } from '@prisma/client';
+import { IsEmail, IsEnum, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 export class UpdatePropertyDto {
+  @IsOptional()
+  @IsEnum(PropertyType)
+  property_type?: PropertyType;
+
   @IsOptional()
   @IsString()
   @MaxLength(160)

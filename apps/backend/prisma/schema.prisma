@@ -145,44 +145,6 @@ enum AuditAction {
   CHANNEL_SYNC
 }
 
-enum WhatsAppConnectionStatus {
-  NOT_CONNECTED
-  CONNECTING
-  QR_REQUIRED
-  CONNECTED
-  RECONNECTING
-  DISCONNECTED
-  LOGGED_OUT
-  ERROR
-}
-
-enum WhatsAppMessageDirection {
-  INBOUND
-  OUTBOUND
-}
-
-enum WhatsAppMessageType {
-  TEXT
-  IMAGE
-  VIDEO
-  AUDIO
-  DOCUMENT
-  LOCATION
-  CONTACT
-  STICKER
-  REACTION
-  SYSTEM
-  UNSUPPORTED
-}
-
-enum WhatsAppMessageStatus {
-  PENDING
-  SENT
-  DELIVERED
-  READ
-  FAILED
-}
-
 enum EmailProviderType {
   GMAIL
   MICROSOFT
@@ -270,7 +232,6 @@ model Guest {
   address   String    @db.Text
   property  Property  @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   reservationGroups ReservationGroup[] @relation("PrimaryGuestReservationGroups")
-  whatsappConversations WhatsAppConversation[]
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
@@ -294,10 +255,21 @@ model Organization {
   @@map("organizations")
 }
 
+enum PropertyType {
+  HOTEL
+  RENTAL_VILLAS
+}
+
 model Property {
   id             String         @id @default(uuid()) @db.Uuid
   organizationId String?        @map("organization_id") @db.Uuid
   name           String         @db.VarChar(160)
+  propertyType   PropertyType   @default(HOTEL) @map("property_type")
+  villaWholeRate Decimal?       @map("villa_whole_rate") @db.Decimal(10, 2)
+  villaRoomRate  Decimal?       @map("villa_room_rate") @db.Decimal(10, 2)
+  villaTotalRooms Int           @default(1) @map("villa_total_rooms")
+  villaMinRooms   Int           @default(1) @map("villa_min_rooms")
+  villaMaxRooms   Int           @default(1) @map("villa_max_rooms")
   code           String         @unique @db.VarChar(40)
   phone          String?        @db.VarChar(30)
   email          String?        @db.VarChar(160)
@@ -323,9 +295,6 @@ model Property {
   webhookEvents  WebhookEvent[]
   backgroundJobs BackgroundJob[]
   providerReservationIntakeRecords ProviderReservationIntakeRecord[]
-  whatsappConnections WhatsAppConnection[]
-  whatsappConversations WhatsAppConversation[]
-  whatsappMessages WhatsAppMessage[]
   emailConnections EmailConnection[]
   googleCalendarConnections GoogleCalendarConnection[]
   incomingEmails IncomingEmail[]
@@ -338,110 +307,6 @@ model Property {
   @@index([organizationId])
   @@index([isActive])
   @@map("properties")
-}
-
-model WhatsAppConnection {
-  id                 String                  @id @default(uuid()) @db.Uuid
-  propertyId         String                  @map("property_id") @db.Uuid
-  organizationId     String?                 @map("organization_id") @db.Uuid
-  status             WhatsAppConnectionStatus @default(NOT_CONNECTED)
-  phoneNumber        String?                 @map("phone_number") @db.VarChar(40)
-  phoneE164          String?                 @map("phone_e164") @db.VarChar(40)
-  whatsappJid        String?                 @map("whatsapp_jid") @db.VarChar(120)
-  displayName        String?                 @map("display_name") @db.VarChar(160)
-  sessionGeneration  Int                     @default(1) @map("session_generation")
-  lastConnectedAt    DateTime?               @map("last_connected_at")
-  lastDisconnectedAt DateTime?               @map("last_disconnected_at")
-  lastErrorCode      String?                 @map("last_error_code") @db.VarChar(80)
-  lastErrorMessage   String?                 @map("last_error_message") @db.Text
-  property           Property                @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  authRecords        WhatsAppAuthRecord[]
-  conversations      WhatsAppConversation[]
-  createdAt          DateTime                @default(now()) @map("created_at")
-  updatedAt          DateTime                @updatedAt @map("updated_at")
-
-  @@unique([propertyId])
-  @@index([organizationId, status])
-  @@index([propertyId, status])
-  @@map("whatsapp_connections")
-}
-
-model WhatsAppAuthRecord {
-  id                String             @id @default(uuid()) @db.Uuid
-  connectionId      String             @map("connection_id") @db.Uuid
-  authKey           String             @map("auth_key") @db.VarChar(240)
-  encryptedValue    Bytes              @map("encrypted_value")
-  encryptionVersion Int                @default(1) @map("encryption_version")
-  connection        WhatsAppConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  createdAt         DateTime           @default(now()) @map("created_at")
-  updatedAt         DateTime           @updatedAt @map("updated_at")
-
-  @@unique([connectionId, authKey])
-  @@index([connectionId])
-  @@map("whatsapp_auth_records")
-}
-
-model WhatsAppConversation {
-  id                 String              @id @default(uuid()) @db.Uuid
-  propertyId         String              @map("property_id") @db.Uuid
-  organizationId     String?             @map("organization_id") @db.Uuid
-  connectionId       String              @map("connection_id") @db.Uuid
-  remoteJid          String              @map("remote_jid") @db.VarChar(160)
-  phoneE164          String?             @map("phone_e164") @db.VarChar(40)
-  displayName        String?             @map("display_name") @db.VarChar(160)
-  profilePhotoUrl    String?             @map("profile_photo_url") @db.Text
-  guestId            String?             @map("guest_id") @db.Uuid
-  reservationGroupId String?             @map("reservation_group_id") @db.Uuid
-  isGroup            Boolean             @default(false) @map("is_group")
-  unreadCount        Int                 @default(0) @map("unread_count")
-  lastMessageId      String?             @map("last_message_id") @db.Uuid
-  lastMessagePreview String?             @map("last_message_preview") @db.VarChar(500)
-  lastMessageAt      DateTime?           @map("last_message_at")
-  archived           Boolean             @default(false)
-  property           Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  connection         WhatsAppConnection  @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  guest              Guest?              @relation(fields: [guestId], references: [id], onDelete: SetNull)
-  reservationGroup   ReservationGroup?   @relation(fields: [reservationGroupId], references: [id], onDelete: SetNull)
-  messages           WhatsAppMessage[]
-  createdAt          DateTime            @default(now()) @map("created_at")
-  updatedAt          DateTime            @updatedAt @map("updated_at")
-
-  @@unique([connectionId, remoteJid])
-  @@index([propertyId, lastMessageAt])
-  @@index([organizationId, propertyId])
-  @@index([guestId])
-  @@index([reservationGroupId])
-  @@map("whatsapp_conversations")
-}
-
-model WhatsAppMessage {
-  id                String                   @id @default(uuid()) @db.Uuid
-  propertyId        String                   @map("property_id") @db.Uuid
-  organizationId    String?                  @map("organization_id") @db.Uuid
-  conversationId    String                   @map("conversation_id") @db.Uuid
-  whatsappMessageId String                   @map("whatsapp_message_id") @db.VarChar(180)
-  remoteJid         String                   @map("remote_jid") @db.VarChar(160)
-  direction         WhatsAppMessageDirection
-  type              WhatsAppMessageType
-  status            WhatsAppMessageStatus
-  body              String?                  @db.Text
-  quotedWhatsappId  String?                  @map("quoted_whatsapp_id") @db.VarChar(180)
-  fromMe            Boolean                  @map("from_me")
-  whatsappTimestamp DateTime                 @map("whatsapp_timestamp")
-  receivedAt        DateTime                 @default(now()) @map("received_at")
-  deliveredAt       DateTime?                @map("delivered_at")
-  readAt            DateTime?                @map("read_at")
-  rawType           String?                  @map("raw_type") @db.VarChar(80)
-  property          Property                 @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  conversation      WhatsAppConversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  createdAt         DateTime                 @default(now()) @map("created_at")
-  updatedAt         DateTime                 @updatedAt @map("updated_at")
-
-  @@unique([conversationId, whatsappMessageId])
-  @@index([propertyId, whatsappTimestamp])
-  @@index([organizationId, propertyId])
-  @@index([conversationId, whatsappTimestamp])
-  @@map("whatsapp_messages")
 }
 
 model User {
@@ -664,7 +529,7 @@ model ReservationGroup {
   primaryGuest              Guest?            @relation("PrimaryGuestReservationGroups", fields: [primaryGuestId], references: [id], onDelete: SetNull)
   channelConnection         ChannelConnection? @relation(fields: [channelConnectionId], references: [id], onDelete: SetNull)
   rooms                     ReservationRoom[]
-  whatsappConversations     WhatsAppConversation[]
+  expenses                  Expense[]
   createdAt                 DateTime          @default(now()) @map("created_at")
   updatedAt                 DateTime          @updatedAt @map("updated_at")
 
@@ -711,6 +576,7 @@ model InventoryBlock {
   blockedRooms    Int          @default(1) @map("blocked_rooms")
   reason          String       @db.VarChar(180)
   source          String       @default("MANUAL") @db.VarChar(40)
+  sourceName      String?      @map("source_name") @db.VarChar(120)
   googleCalendarId String?      @map("google_calendar_id") @db.VarChar(255)
   googleCalendarEventId String? @map("google_calendar_event_id") @db.VarChar(255)
   googleCalendarHtmlLink String? @map("google_calendar_html_link") @db.Text
@@ -825,6 +691,14 @@ model Expense {
   amount          Decimal  @db.Decimal(10, 2)
   currency        String   @default("INR") @db.VarChar(8)
   paymentMode     String?  @map("payment_mode") @db.VarChar(40)
+  amountPaid      Decimal? @map("amount_paid") @db.Decimal(10, 2)
+  invoiceNumber   String?  @map("invoice_number") @db.VarChar(100)
+  reservationGroupId String? @map("reservation_group_id") @db.Uuid
+  reservationGroup ReservationGroup? @relation(fields: [reservationGroupId], references: [id], onDelete: Restrict)
+  status          String @default("APPROVED") @db.VarChar(20)
+  version         Int @default(1)
+  voidReason      String? @map("void_reason") @db.VarChar(300)
+  receipts        ExpenseReceipt[]
   createdByUserId String?  @map("created_by_user_id") @db.Uuid
   property        Property @relation(fields: [propertyId], references: [id], onDelete: Restrict)
   createdAt       DateTime @default(now()) @map("created_at")
@@ -833,6 +707,19 @@ model Expense {
   @@index([propertyId, expenseDate])
   @@index([category])
   @@map("expenses")
+}
+
+model ExpenseReceipt {
+  id        String @id @default(uuid()) @db.Uuid
+  expenseId String @map("expense_id") @db.Uuid
+  expense   Expense @relation(fields: [expenseId], references: [id], onDelete: Restrict)
+  name      String @db.VarChar(180)
+  mimeType  String @map("mime_type") @db.VarChar(80)
+  content   Bytes
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([expenseId])
+  @@map("expense_receipts")
 }
 
 model HousekeepingTask {

@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ensureVillaInventory } from '../property/villa-inventory';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma, UserRole } from '@prisma/client';
 import { createHash, randomBytes } from 'node:crypto';
@@ -79,6 +80,7 @@ export class AuthService {
           data: {
             organizationId: organization.id,
             name: dto.property_name,
+            propertyType: dto.property_type,
             code: propertyCode,
             phone: dto.phone,
             email: dto.property_email ?? dto.admin_email.toLowerCase(),
@@ -86,6 +88,8 @@ export class AuthService {
             timezone: dto.timezone ?? 'Asia/Kolkata',
           },
         });
+
+        if (property.propertyType === 'RENTAL_VILLAS') await ensureVillaInventory(tx, property.id);
 
         return tx.user.create({
           data: {

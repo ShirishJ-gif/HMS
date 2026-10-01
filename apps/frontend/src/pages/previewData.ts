@@ -2,6 +2,7 @@ import {
   AvailabilitySummary,
   Billing,
   DashboardSummary,
+  DashboardStay,
   HousekeepingTask,
   InventoryCalendarSummary,
   PaymentTransaction,
@@ -49,6 +50,7 @@ const property: Property = {
   email: 'frontdesk@harbour-demo.local',
   address: 'Marine Drive, Mumbai',
   timezone: 'Asia/Kolkata',
+  property_type: 'HOTEL',
   default_check_in_time: '12:00',
   default_check_out_time: '11:00',
   is_active: true,
@@ -361,25 +363,55 @@ function buildInventory(today: string): { availability: AvailabilitySummary; inv
   };
 }
 
-export function createPreviewData() {
+export function createPreviewData(dashboardDate = localToday()) {
   const today = localToday();
   const reservationGroups = buildGroups(today);
   const housekeeping = buildHousekeeping(today, reservationGroups);
   const billings = buildBilling(reservationGroups);
   const { availability, inventoryCalendar } = buildInventory(today);
+  const schedule = (groups: ReservationGroup[], kind: 'arrival' | 'departure'): DashboardStay[] => groups.map(group => ({
+    id: group.id, reference: group.external_reservation_id, guest_name: group.primary_guest?.name ?? 'Guest',
+    property_id: property.id, property_name: property.name, arrival: group.rooms[0].arrival_date, departure: group.rooms[0].departure_date,
+    room_count: group.rooms.length, pending_rooms: group.rooms.filter(room => kind === 'arrival' ? room.reservation_status === 'BOOKED' : ['BOOKED', 'CHECKED_IN'].includes(room.reservation_status)).length,
+    unassigned_rooms: group.rooms.filter(room => !room.room).length, room_labels: group.rooms.map(room => room.room?.room_number ?? room.room_category.name).join(', '),
+  }));
+  const arrivals = schedule(reservationGroups.filter(group => group.rooms.some(room => room.arrival_date === dashboardDate && ['BOOKED', 'CHECKED_IN', 'CHECKED_OUT'].includes(room.reservation_status))), 'arrival');
+  const departures = schedule(reservationGroups.filter(group => group.rooms.some(room => room.departure_date === dashboardDate && ['BOOKED', 'CHECKED_IN', 'CHECKED_OUT'].includes(room.reservation_status))), 'departure');
+  const sampleTransactions = billings.flatMap(billing => billing.payments);
+  const netForDate = (date: string) => sampleTransactions.filter(payment => payment.created_at.slice(0, 10) === date).reduce((sum, payment) => sum + (payment.status === 'SUCCEEDED' ? payment.amount : payment.status === 'REFUNDED' ? -payment.amount : 0), 0);
+  const openTasks = housekeeping.filter(task => !task.completed_at && ['DIRTY', 'CLEANING', 'OUT_OF_SERVICE'].includes(task.status));
+  const occupiedRoomIds = new Set(reservationGroups.flatMap(group => group.rooms.filter(room => room.reservation_status === 'CHECKED_IN' && room.room).map(room => room.room!.id)));
+  const occupiedCount = rooms.filter(room => room.status === 'OCCUPIED' || occupiedRoomIds.has(room.id)).length;
+  const maintenanceCount = rooms.filter(room => room.status === 'MAINTENANCE' && !occupiedRoomIds.has(room.id)).length;
+  const sourceTotals = new Map<string, { label: string; collected: number; refunded: number; amount: number }>();
+  for (const billing of billings) {
+    const source = reservationGroups.find(group => group.id === billing.reservation_room.reservation_group_id)?.source ?? 'Direct';
+    const current = sourceTotals.get(source) ?? { label: source, collected: 0, refunded: 0, amount: 0 };
+    for (const payment of billing.payments.filter(payment => payment.created_at.slice(0, 7) === dashboardDate.slice(0, 7) && payment.created_at.slice(0, 10) <= dashboardDate)) {
+      if (payment.status === 'SUCCEEDED') { current.collected += payment.amount; current.amount += payment.amount; }
+      if (payment.status === 'REFUNDED') { current.refunded += payment.amount; current.amount -= payment.amount; }
+    }
+    if (current.collected || current.refunded) sourceTotals.set(source, current);
+  }
   const dashboard: DashboardSummary = {
-    date: today,
-    reservation_groups_today: 2,
-    occupancy_rate: 63,
-    occupied_rooms: 5,
-    total_rooms: rooms.length,
-    revenue_today: 38400,
-    reservation_room_arrivals_today: 2,
-    reservation_room_departures_today: 2,
-    active_reservation_groups: 5,
-    open_housekeeping_tasks: housekeeping.filter(task => !task.completed_at).length,
-    pending_balance_total: billings.reduce((sum, billing) => sum + billing.balance_due, 0),
-    revenue_by_ota: buildRevenueByOta(reservationGroups),
+    date: dashboardDate, timezone: 'Asia/Kolkata', generated_at: new Date().toISOString(), property_id: property.id,
+    properties: [{ id: property.id, name: property.name, property_type: property.property_type }],
+    reservation_groups_today: reservationGroups.filter(group => group.created_at.slice(0, 10) === dashboardDate).length,
+    occupancy_rate: rooms.length ? Math.round(occupiedCount / rooms.length * 1000) / 10 : 0,
+    occupied_rooms: occupiedCount, total_rooms: rooms.length, available_rooms: rooms.length - occupiedCount - maintenanceCount, out_of_service_rooms: maintenanceCount,
+    revenue_today: netForDate(dashboardDate), revenue_yesterday: netForDate(addDays(dashboardDate, -1)),
+    collected_today: sampleTransactions.filter(payment => payment.created_at.slice(0, 10) === dashboardDate && payment.status === 'SUCCEEDED').reduce((sum, payment) => sum + payment.amount, 0),
+    refunded_today: sampleTransactions.filter(payment => payment.created_at.slice(0, 10) === dashboardDate && payment.status === 'REFUNDED').reduce((sum, payment) => sum + payment.amount, 0),
+    revenue_month_to_date: [...sourceTotals.values()].reduce((sum, row) => sum + row.amount, 0),
+    reservation_room_arrivals_today: arrivals.reduce((sum, row) => sum + row.room_count, 0), reservation_room_departures_today: departures.reduce((sum, row) => sum + row.room_count, 0),
+    pending_arrivals_today: arrivals.reduce((sum, row) => sum + row.pending_rooms, 0), pending_departures_today: departures.reduce((sum, row) => sum + row.pending_rooms, 0),
+    unassigned_arrivals_today: arrivals.reduce((sum, row) => sum + row.unassigned_rooms, 0),
+    active_reservation_groups: reservationGroups.filter(group => ['BOOKED', 'CHECKED_IN'].includes(group.reservation_status)).length,
+    open_housekeeping_tasks: openTasks.length, overdue_housekeeping_tasks: openTasks.filter(task => task.due_date && task.due_date < today).length,
+    housekeeping_by_status: ['DIRTY', 'CLEANING', 'OUT_OF_SERVICE'].map(status => ({ status, count: openTasks.filter(task => task.status === status).length })),
+    pending_balance_total: billings.reduce((sum, billing) => sum + billing.balance_due, 0), unpaid_invoice_count: billings.filter(billing => billing.balance_due > 0).length,
+    revenue_by_ota: [...sourceTotals.values()], collections_trend: Array.from({ length: 7 }, (_, index) => ({ date: addDays(dashboardDate, index - 6), amount: netForDate(addDays(dashboardDate, index - 6)) })),
+    arrivals, departures, upcoming_arrivals: schedule(reservationGroups.filter(group => group.reservation_status === 'BOOKED' && group.rooms[0].arrival_date > dashboardDate && group.rooms[0].arrival_date < addDays(dashboardDate, 7)), 'arrival'),
   };
   const folios = new Map<string, ReservationGroupFolio>();
   for (const group of reservationGroups) {

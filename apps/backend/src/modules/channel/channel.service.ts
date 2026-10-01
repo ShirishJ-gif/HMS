@@ -15,6 +15,7 @@ import {
   ChannelSyncType,
   BackgroundJobType,
   BackgroundJobStatus,
+  PropertyType,
   Prisma,
   RoomStatus,
   WebhookDomain,
@@ -36,7 +37,6 @@ import { CreateChannelRateMappingDto } from './dto/create-channel-rate-mapping.d
 import { CreateChannelRoomMappingDto } from './dto/create-channel-room-mapping.dto';
 import { GetProviderAvailabilityQueryDto } from './dto/get-provider-availability-query.dto';
 import { SaveChannelMappingsBatchDto } from './dto/save-channel-mappings-batch.dto';
-import { SetupZodomusChannelDto } from './dto/setup-zodomus-channel.dto';
 import { SyncChannelDto } from './dto/sync-channel.dto';
 import { UpdateChannelAutomationDto } from './dto/update-channel-automation.dto';
 import { UpdateChannelRateMappingDto } from './dto/update-channel-rate-mapping.dto';
@@ -44,13 +44,7 @@ import { UpdateChannelRoomMappingDto } from './dto/update-channel-room-mapping.d
 import { AirbnbOauthTestDto } from './dto/airbnb-oauth-test.dto';
 import { InventorySyncPayloadService } from './inventory-sync-payload.service';
 import { RateSyncPayloadService } from './rate-sync-payload.service';
-import {
-  readZodomusAppCredentials,
-  readZodomusConnectionConfig,
-  ZodomusOtaKey,
-} from './providers/zodomus.types';
-import { ZodomusClient } from './providers/zodomus-client';
-import { ZodomusReservationImportService } from './zodomus-reservation-import.service';
+import { ChannelReservationImportService } from './channel-reservation-import.service';
 
 type InventorySnapshotRow = {
   date: string;
@@ -94,6 +88,7 @@ type ImportedReservationCleanupSummary = {
   active_room_nights_released: number;
   physical_rooms_released: number;
 };
+type LegacyZodomusOtaKey = 'BOOKING_COM' | 'EXPEDIA' | 'AIRBNB';
 
 @Injectable()
 export class ChannelService implements OnModuleInit, OnModuleDestroy {
@@ -110,7 +105,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     private readonly inventorySyncPayloadService: InventorySyncPayloadService,
     private readonly rateSyncPayloadService: RateSyncPayloadService,
     private readonly metricsService: MetricsService,
-    private readonly zodomusReservationImportService: ZodomusReservationImportService,
+    private readonly channelReservationImportService: ChannelReservationImportService,
   ) {}
 
   onModuleInit() {
@@ -137,25 +132,18 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
   async createConnection(dto: CreateChannelConnectionDto, user?: AuthenticatedUser) {
     assertCanAccessProperty(user, dto.property_id);
-    let normalizedCredentials = dto.credentials ? ({ ...dto.credentials } as Record<string, unknown>) : undefined;
-
-    if (dto.provider === ChannelProvider.ZODOMUS) {
-      const appCredentials = readZodomusAppCredentials();
-      const connectionConfig = readZodomusConnectionConfig(dto.credentials);
-      normalizedCredentials = {
-        channel_code: connectionConfig.channel_code,
-        ota_key: connectionConfig.ota_key,
-        ota_name: connectionConfig.ota_name,
-        environment: appCredentials.environment,
-        automation: this.defaultZodomusAutomationConfig(),
-        setup_status: this.defaultZodomusSetupStatus(),
-      };
+    const property = await this.prisma.property.findUnique({ where: { id: dto.property_id }, select: { propertyType: true } });
+    if (!property) throw new NotFoundException('Property not found');
+    if (property.propertyType === PropertyType.RENTAL_VILLAS) {
+      throw new BadRequestException('Channel Manager is available for hotel properties only. Rental villas use whole-property availability and iCal sync.');
     }
+    const normalizedConfig = this.providerService.normalizeConnectionConfig({
+      provider: dto.provider,
+      credentials: dto.credentials,
+    });
+    const normalizedCredentials = normalizedConfig.credentials;
 
-    const normalizedOtaName =
-      typeof normalizedCredentials?.ota_name === 'string' ? normalizedCredentials.ota_name : null;
-
-    if (dto.provider === ChannelProvider.MOCK || dto.provider === ChannelProvider.ZODOMUS) {
+    if (normalizedConfig.shouldValidate) {
       await this.providerService.validateConnection({
         provider: dto.provider,
         external_hotel_id: dto.external_hotel_id,
@@ -185,7 +173,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         metadata: {
           name: connection.name,
           external_hotel_id: connection.externalHotelId,
-          ota_name: normalizedOtaName,
+          ota_name: normalizedConfig.auditOtaName,
           connection_check: 'validated',
         },
         user,
@@ -338,29 +326,28 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async setupZodomusConnection(dto: SetupZodomusChannelDto, user?: AuthenticatedUser) {
-    const connectionConfig = readZodomusConnectionConfig({ ota_key: dto.ota_key });
-    const priceModelId = dto.price_model_id ?? this.defaultZodomusPriceModel(dto.ota_key);
-    this.assertValidZodomusPriceModel(connectionConfig.ota_key, priceModelId);
-
+  async setupProviderConnection(
+    provider: ChannelProvider,
+    input: {
+      property_id: string;
+      external_hotel_id: string;
+      options?: Record<string, unknown>;
+    },
+    user?: AuthenticatedUser,
+  ) {
+    const setupPlan = this.providerService.buildSetupPlan({
+      provider,
+      property_id: input.property_id,
+      external_hotel_id: input.external_hotel_id,
+      options: input.options,
+    });
     const createdConnection = await this.createConnection(
       {
-        property_id: dto.property_id,
-        provider: ChannelProvider.ZODOMUS,
-        name: `${connectionConfig.ota_name} OTA`,
-        external_hotel_id: dto.external_hotel_id,
-        credentials: {
-          ota_key: dto.ota_key,
-          setup_status: {
-            checked: false,
-            activated: false,
-            catalog_loaded: false,
-            rooms_activated: false,
-            ready: false,
-            disconnected: false,
-            price_model_id: priceModelId,
-          },
-        },
+        property_id: setupPlan.property_id,
+        provider: setupPlan.provider,
+        name: setupPlan.name,
+        external_hotel_id: setupPlan.external_hotel_id,
+        credentials: setupPlan.credentials,
       },
       user,
     );
@@ -369,22 +356,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     return {
       connection,
-      catalog: null,
-      setup_status: {
-        checked: false,
-        activated: false,
-        catalog_loaded: false,
-        rooms_activated: false,
-        ready: false,
-        price_model_id: priceModelId,
-        ota_name: connectionConfig.ota_name,
-      },
-      provider_responses: {
-        account: null,
-        channels: null,
-        property_check: null,
-        activation: null,
-      },
+      ...setupPlan.response,
     };
   }
 
@@ -418,7 +390,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     if (providerSummary?.setup_status?.disconnected) {
       throw new BadRequestException(
-        'This connection was remotely disconnected from Zodomus. Create a new connection or reactivate it before resuming sync.',
+        `This connection was remotely disconnected from ${connection.provider}. Create a new connection or reactivate it before resuming sync.`,
       );
     }
 
@@ -453,16 +425,11 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       credentials: connection.credentials,
     });
 
-    await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-      setup_status: {
-        disconnected: true,
-        disconnected_at: new Date().toISOString(),
-        last_disconnect_message: this.readProviderReturnMessage(response),
-        last_disconnect_code: this.readProviderReturnCode(response),
-        ready: false,
-        ready_at: null,
-      },
-    });
+    await this.updateProviderConnectionConfig(
+      connection.id,
+      connection.credentials,
+      this.providerService.disconnectedConfigPatch(connection.provider, response),
+    );
 
     const updated = await this.prisma.channelConnection.update({
       where: { id: connectionId },
@@ -490,27 +457,10 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
   async updateAutomation(connectionId: string, dto: UpdateChannelAutomationDto, user?: AuthenticatedUser) {
     const connection = await this.findAccessibleConnection(connectionId, user);
-    if (connection.provider !== ChannelProvider.ZODOMUS) {
-      throw new BadRequestException('Automation settings are only implemented for Zodomus connections.');
-    }
+    const automationPatch = this.providerService.normalizeAutomationPatch(connection.provider, dto);
 
-    const normalizedSyncWindowDays =
-      dto.sync_window_days !== undefined
-        ? this.normalizeZodomusSyncWindowDays(dto.sync_window_days)
-        : undefined;
-
-    await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-      automation: {
-        ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
-        ...(dto.inventory_interval_minutes !== undefined
-          ? { inventory_interval_minutes: dto.inventory_interval_minutes }
-          : {}),
-        ...(dto.rates_interval_minutes !== undefined ? { rates_interval_minutes: dto.rates_interval_minutes } : {}),
-        ...(dto.bookings_interval_minutes !== undefined
-          ? { bookings_interval_minutes: dto.bookings_interval_minutes }
-          : {}),
-        ...(normalizedSyncWindowDays !== undefined ? { sync_window_days: normalizedSyncWindowDays } : {}),
-      },
+    await this.updateProviderConnectionConfig(connection.id, connection.credentials, {
+      automation: automationPatch,
     });
 
     const updated = await this.getConnectionResponse(connection.id);
@@ -522,17 +472,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       propertyId: connection.propertyId,
       summary: `Updated ${connection.provider} automation settings`,
       metadata: {
-        automation: {
-          ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
-          ...(dto.inventory_interval_minutes !== undefined
-            ? { inventory_interval_minutes: dto.inventory_interval_minutes }
-            : {}),
-          ...(dto.rates_interval_minutes !== undefined ? { rates_interval_minutes: dto.rates_interval_minutes } : {}),
-          ...(dto.bookings_interval_minutes !== undefined
-            ? { bookings_interval_minutes: dto.bookings_interval_minutes }
-            : {}),
-          ...(normalizedSyncWindowDays !== undefined ? { sync_window_days: normalizedSyncWindowDays } : {}),
-        },
+        automation: automationPatch,
       },
       user,
     });
@@ -555,21 +495,11 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       credentials: connection.credentials,
     });
 
-    if (connection.provider === ChannelProvider.ZODOMUS) {
-      const catalog = response as unknown as {
-        rooms?: unknown[];
-        rates?: unknown[];
-      };
-
-      await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-        setup_status: {
-          catalog_loaded: true,
-          catalog_loaded_at: new Date().toISOString(),
-          catalog_room_count: Array.isArray(catalog.rooms) ? catalog.rooms.length : 0,
-          catalog_rate_count: Array.isArray(catalog.rates) ? catalog.rates.length : 0,
-        },
-      });
-    }
+    await this.updateProviderConnectionConfig(
+      connection.id,
+      connection.credentials,
+      this.providerService.catalogLoadedConfigPatch(connection.provider, response),
+    );
 
     return response;
   }
@@ -591,26 +521,11 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       credentials: connection.credentials,
     });
 
-    if (connection.provider === ChannelProvider.ZODOMUS) {
-      const credentialsRecord =
-        connection.credentials && typeof connection.credentials === 'object' && !Array.isArray(connection.credentials)
-          ? (connection.credentials as Record<string, Prisma.JsonValue>)
-          : {};
-      const setupStatus = this.readZodomusSetupStatus(credentialsRecord);
-      const providerReady = this.isZodomusReadyCheckResponse(response);
-      const ready = providerReady && setupStatus.rooms_activated;
-      await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-        setup_status: {
-          checked: true,
-          disconnected: false,
-          checked_at: new Date().toISOString(),
-          last_check_message: this.readProviderReturnMessage(response),
-          last_check_code: this.readProviderReturnCode(response),
-          ready,
-          ready_at: ready ? new Date().toISOString() : null,
-        },
-      });
-    }
+    await this.updateProviderConnectionConfig(
+      connection.id,
+      connection.credentials,
+      this.providerService.propertyCheckedConfigPatch(connection.provider, connection.credentials, response),
+    );
 
     return response;
   }
@@ -626,10 +541,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     assertCanAccessProperty(user, connection.propertyId);
 
-    if (connection.provider === ChannelProvider.ZODOMUS) {
-      const connectionConfig = readZodomusConnectionConfig(connection.credentials);
-      this.assertValidZodomusPriceModel(connectionConfig.ota_key, priceModelId);
-    }
+    this.providerService.validatePropertyActivationInput(connection.provider, connection.credentials, priceModelId);
 
     return this.queueProviderAction(connection, 'PROPERTY_ACTIVATION', {
       price_model_id: priceModelId,
@@ -652,8 +564,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     assertCanAccessProperty(user, connection.propertyId);
 
-    if (connection.provider !== ChannelProvider.ZODOMUS) {
-      throw new BadRequestException('Room activation is currently supported only for Zodomus connections.');
+    if (!this.providerService.capabilitiesFor(connection.provider).roomActivation) {
+      throw new BadRequestException(`Room activation is not implemented for ${connection.provider} connections.`);
     }
 
     await this.assertCanBuildZodomusRoomsActivationPayload(connection);
@@ -663,8 +575,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   async cancelProviderRooms(connectionId: string, dto: CancelChannelRoomsDto, user?: AuthenticatedUser) {
     const connection = await this.findAccessibleConnection(connectionId, user);
 
-    if (connection.provider !== ChannelProvider.ZODOMUS) {
-      throw new BadRequestException('Room cancellation is currently supported only for Zodomus connections.');
+    if (!this.providerService.capabilitiesFor(connection.provider).roomCancellation) {
+      throw new BadRequestException(`Room cancellation is not implemented for ${connection.provider} connections.`);
     }
 
     const rooms = dto.rooms.map((room) => ({ roomId: room.roomId }));
@@ -688,18 +600,11 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       user,
     });
 
-    await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-      setup_status: {
-        rooms_activated: false,
-        rooms_cancelled: true,
-        rooms_cancelled_at: new Date().toISOString(),
-        cancelled_room_count: rooms.length,
-        last_rooms_cancellation_message: this.readProviderReturnMessage(cancellation),
-        last_rooms_cancellation_code: this.readProviderReturnCode(cancellation),
-        ready: false,
-        ready_at: null,
-      },
-    });
+    await this.updateProviderConnectionConfig(
+      connection.id,
+      connection.credentials,
+      this.providerService.roomsCancelledConfigPatch(connection.provider, cancellation, rooms.length),
+    );
 
     return {
       cancellation,
@@ -744,68 +649,38 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   }
 
   async activateAirbnbHost(connectionId: string, user?: AuthenticatedUser) {
-    const { client, channelId, propertyId } = await this.zodomusCertificationClient(connectionId, user);
-    return client.activateAirbnbHost({ channelId, propertyId });
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.providerService.activateAirbnbHost(connection);
   }
 
   async activateAirbnbOauthTest(connectionId: string, dto: AirbnbOauthTestDto, user?: AuthenticatedUser) {
-    const { client, channelId, propertyId } = await this.zodomusCertificationClient(connectionId, user);
-    return client.activateAirbnbOauthTest({
-      channelId,
-      propertyId,
-      ...(dto.token ? { token: dto.token } : {}),
-      ...(dto.client_id ? { client_id: dto.client_id } : {}),
-    });
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.providerService.activateAirbnbOauthTest(connection, dto);
   }
 
   async getAirbnbHostStatus(connectionId: string, token: string | undefined, user?: AuthenticatedUser) {
-    const { client } = await this.zodomusCertificationClient(connectionId, user);
-    const trimmedToken = token?.trim();
-    if (!trimmedToken) {
-      throw new BadRequestException('Airbnb token is required to check host status.');
-    }
-
-    return client.getAirbnbHostStatus({
-      token: trimmedToken,
-    });
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.providerService.getAirbnbHostStatus(connection, token);
   }
 
   async getAirbnbHostInfo(connectionId: string, token: string | undefined, user?: AuthenticatedUser) {
-    const { client } = await this.zodomusCertificationClient(connectionId, user);
-    const trimmedToken = token?.trim();
-    if (!trimmedToken) {
-      throw new BadRequestException('Airbnb token is required to get host info.');
-    }
-
-    return client.getAirbnbHostInfo({
-      token: trimmedToken,
-    });
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.providerService.getAirbnbHostInfo(connection, token);
   }
 
   async cancelAirbnbHost(connectionId: string, token: string, user?: AuthenticatedUser) {
-    await this.zodomusCertificationClient(connectionId, user);
-    return new ZodomusClient(readZodomusAppCredentials()).cancelAirbnbHost({ token });
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.providerService.cancelAirbnbHost(connection, token);
   }
 
   async getAirbnbListings(connectionId: string, user?: AuthenticatedUser) {
-    const { client, propertyId } = await this.zodomusCertificationClient(connectionId, user);
-    return client.getAirbnbListings({
-      propertyId,
-      _limit: '50',
-    });
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.providerService.getAirbnbListings(connection);
   }
 
   async getAirbnbListingsWithToken(connectionId: string, token: string | undefined, user?: AuthenticatedUser) {
-    const { client } = await this.zodomusCertificationClient(connectionId, user);
-    const trimmedToken = token?.trim();
-    if (!trimmedToken) {
-      throw new BadRequestException('Airbnb token is required to get listings.');
-    }
-
-    return client.getAirbnbListings({
-      token: trimmedToken,
-      _limit: '50',
-    });
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.providerService.getAirbnbListingsWithToken(connection, token);
   }
 
   async getProviderAvailability(
@@ -813,14 +688,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     query: GetProviderAvailabilityQueryDto = {},
     user?: AuthenticatedUser,
   ) {
-    const { client, channelId, propertyId } = await this.zodomusCertificationClient(connectionId, user);
-    const window = this.providerAvailabilityWindow(query);
-    return client.getAvailability({
-      channelId: channelId.toString(),
-      propertyId,
-      dateFrom: window.from,
-      dateTo: window.to,
-    });
+    const connection = await this.findAccessibleConnection(connectionId, user);
+    return this.providerService.getAvailability(connection, query);
   }
 
   async pushProviderAvailabilityMultiple(connectionId: string, dto: SyncChannelDto, user?: AuthenticatedUser) {
@@ -932,7 +801,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
             event_type: 'test_reservation_fallback',
             external_event_id: null,
             provider_property_id: input.connection.externalHotelId,
-            provider_channel_id: readZodomusConnectionConfig(input.connection.credentials).channel_code,
+            provider_channel_id: this.providerService.reservationWebhookFallbackContext(input.connection).provider_channel_id,
             reservation_id: input.reservationId,
             reservation_ids: [input.reservationId],
           },
@@ -1010,7 +879,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       const providerReservationDetail = this.readObject(
         this.readObject(detailResponse as unknown as Prisma.JsonValue).response,
       );
-      importSummary = await this.zodomusReservationImportService.importFromSync({
+      importSummary = (await this.channelReservationImportService.importFromSync({
+        provider: input.connection.provider,
         channelConnectionId: input.connection.id,
         propertyId: input.connection.propertyId,
         responsePayload: JSON.parse(
@@ -1018,7 +888,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
             reservations: [providerReservationDetail],
           }),
         ) as Prisma.JsonValue,
-      });
+      })) ?? importSummary;
 
       if (this.didProviderTestImportDiscoverReservation(importSummary)) {
         return { importSummary, attempts: attempt, imported: true };
@@ -1348,7 +1218,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         user,
       });
 
-      await this.markZodomusMappingsChanged(connection);
+      await this.markProviderMappingsChanged(connection);
 
       return this.toRoomMappingResponse(updated);
     } catch (error) {
@@ -1392,7 +1262,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       user,
     });
 
-    await this.markZodomusMappingsChanged(connection);
+    await this.markProviderMappingsChanged(connection);
 
     return { deleted: true, id: mappingId };
   }
@@ -1467,7 +1337,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         user,
       });
 
-      await this.markZodomusMappingsChanged(connection);
+      await this.markProviderMappingsChanged(connection);
 
       return this.toRateMappingResponse(updated);
     } catch (error) {
@@ -1502,7 +1372,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       user,
     });
 
-    await this.markZodomusMappingsChanged(connection);
+    await this.markProviderMappingsChanged(connection);
 
     return { deleted: true, id: mappingId };
   }
@@ -1554,15 +1424,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       include: { roomCategory: true },
     });
 
-    if (connection.provider === ChannelProvider.ZODOMUS) {
-      await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-        setup_status: {
-          rooms_activated: false,
-          ready: false,
-          ready_at: null,
-        },
-      });
-    }
+    await this.markProviderMappingsChanged(connection);
 
     return this.toRoomMappingResponse(updated);
   }
@@ -1587,15 +1449,7 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
       include: { ratePlan: true },
     });
 
-    if (connection.provider === ChannelProvider.ZODOMUS) {
-      await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-        setup_status: {
-          rooms_activated: false,
-          ready: false,
-          ready_at: null,
-        },
-      });
-    }
+    await this.markProviderMappingsChanged(connection);
 
     return this.toRateMappingResponse(updated);
   }
@@ -1792,14 +1646,8 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         });
       }
 
-      if (connection.provider === ChannelProvider.ZODOMUS && (result.room_mappings.length > 0 || result.rate_mappings.length > 0)) {
-        await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-          setup_status: {
-            rooms_activated: false,
-            ready: false,
-            ready_at: null,
-          },
-        });
+      if (result.room_mappings.length > 0 || result.rate_mappings.length > 0) {
+        await this.markProviderMappingsChanged(connection);
       }
 
       return result;
@@ -1829,18 +1677,14 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
 
     assertCanAccessProperty(user, connection.propertyId);
 
-    if (connection.provider !== ChannelProvider.ZODOMUS) {
-      throw new BadRequestException('Reservation summary backfill is currently supported only for Zodomus connections.');
+    if (!this.providerService.capabilitiesFor(connection.provider).reservationSummaryBackfill) {
+      throw new BadRequestException(`Reservation summary backfill is not implemented for ${connection.provider} connections.`);
     }
 
-    const setupStatus = this.readZodomusSetupStatus(
-      connection.credentials && typeof connection.credentials === 'object' && !Array.isArray(connection.credentials)
-        ? (connection.credentials as Record<string, Prisma.JsonValue>)
-        : {},
-    );
+    const setupStatus = this.providerService.summarizeConfig(connection.provider, connection.credentials)?.setup_status;
 
-    if (!setupStatus.ready || !setupStatus.rooms_activated || setupStatus.disconnected) {
-      throw new BadRequestException('Reservation summary backfill requires a ready Zodomus connection.');
+    if (!setupStatus?.ready || !setupStatus.rooms_activated || setupStatus.disconnected) {
+      throw new BadRequestException(`Reservation summary backfill requires a ready ${connection.provider} connection.`);
     }
 
     const requestPayload = {
@@ -2616,73 +2460,6 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     return connection;
   }
 
-  private async zodomusCertificationClient(connectionId: string, user?: AuthenticatedUser) {
-    const connection = await this.findAccessibleConnection(connectionId, user);
-    return this.zodomusClientForConnection(connection);
-  }
-
-  private zodomusClientForConnection(connection: { provider: ChannelProvider; externalHotelId: string | null; credentials: Prisma.JsonValue | null }) {
-    if (connection.provider !== ChannelProvider.ZODOMUS) {
-      throw new BadRequestException('This certification API is currently supported only for Zodomus connections.');
-    }
-
-    const appCredentials = readZodomusAppCredentials();
-    const connectionConfig = readZodomusConnectionConfig(connection.credentials);
-    const propertyId = this.requiredExternalHotelId(connection.externalHotelId);
-
-    return {
-      client: new ZodomusClient(appCredentials),
-      channelId: Number(connectionConfig.channel_code),
-      propertyId,
-    };
-  }
-
-  private requiredExternalHotelId(value: string | null) {
-    if (!value?.trim()) {
-      throw new BadRequestException('Zodomus property ID is required for this provider call.');
-    }
-
-    return value.trim();
-  }
-
-  private async ensureAirbnbStandardPricingAvailability(
-    client: ZodomusClient,
-    channelId: number,
-    propertyId: string,
-  ) {
-    await client.setAirbnbPricingAvailability({
-      channelId,
-      propertyId,
-      pricingAvailabilityModelType: 'STANDARD',
-      inModelTransition: 'false',
-      clearIncompatibleSettings: 'false',
-    });
-  }
-
-  private providerAvailabilityWindow(query: GetProviderAvailabilityQueryDto) {
-    if ((query.from && !query.to) || (!query.from && query.to)) {
-      throw new BadRequestException('Both from and to are required when checking provider availability for a custom window.');
-    }
-
-    if (query.from && query.to) {
-      if (query.from > query.to) {
-        throw new BadRequestException('Provider availability from date must be on or before the to date.');
-      }
-
-      return { from: query.from, to: query.to };
-    }
-
-    const appCredentials = readZodomusAppCredentials();
-    const windowDays = this.defaultZodomusSyncWindowDays(appCredentials.environment);
-    const fromDate = this.toDateOnly(new Date());
-    const toDate = this.addDays(fromDate, Math.max(windowDays - 1, 0));
-
-    return {
-      from: fromDate.toISOString().slice(0, 10),
-      to: toDate.toISOString().slice(0, 10),
-    };
-  }
-
   private nextDate(value: string) {
     const date = new Date(`${value}T00:00:00.000Z`);
     if (Number.isNaN(date.getTime())) {
@@ -2881,12 +2658,10 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
         throw new BadRequestException('Zodomus rate sync requires both from and to dates.');
       }
 
-      const providerSummary = this.readProviderConfigSummary(connection.provider, connection.credentials);
-      const zodomusConnectionConfig =
-        connection.provider === ChannelProvider.ZODOMUS ? readZodomusConnectionConfig(connection.credentials) : null;
+      const providerSummary = this.providerService.summarizeConfig(connection.provider, connection.credentials);
       const priceModelId =
         providerSummary?.setup_status?.price_model_id ??
-        (zodomusConnectionConfig ? this.defaultZodomusPriceModel(zodomusConnectionConfig.ota_key) : null);
+        this.providerService.defaultPriceModelId(connection.provider, connection.credentials);
       const activeRoomMappings = connection.roomMappings.filter((mapping) => mapping.isActivationEnabled);
       const activeRateMappings = connection.rateMappings.filter((mapping) => mapping.isActivationEnabled);
       const roomMappingByCategoryId = new Map(
@@ -3186,47 +2961,28 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   }
 
   private readProviderConfigSummary(provider: ChannelProvider, credentials: Prisma.JsonValue | null) {
-    const record =
-      credentials && typeof credentials === 'object' && !Array.isArray(credentials)
-        ? (credentials as Record<string, Prisma.JsonValue>)
-        : {};
-
-    if (provider === ChannelProvider.ZODOMUS) {
-      const channelId = typeof record.channel_code === 'string' ? record.channel_code : null;
-      const environment = typeof record.environment === 'string' ? record.environment : null;
-      const otaName = typeof record.ota_name === 'string' ? record.ota_name : null;
-
-      return {
-        channel_id: channelId,
-        ota_name: otaName,
-        environment: environment ?? process.env.ZODOMUS_ENVIRONMENT?.trim() ?? null,
-        setup_status: this.readZodomusSetupStatus(record),
-        automation: this.readZodomusAutomationConfig(record),
-      };
-    }
-
-    return null;
+    return this.providerService.summarizeConfig(provider, credentials);
   }
 
-  private defaultZodomusPriceModel(otaKey: ZodomusOtaKey) {
+  private defaultZodomusPriceModel(otaKey: LegacyZodomusOtaKey) {
     if (otaKey === 'BOOKING_COM') return 1;
     if (otaKey === 'EXPEDIA') return 3;
     return 4;
   }
 
-  private allowedZodomusPriceModels(otaKey: ZodomusOtaKey) {
+  private allowedZodomusPriceModels(otaKey: LegacyZodomusOtaKey) {
     if (otaKey === 'BOOKING_COM') return [1, 2];
     if (otaKey === 'EXPEDIA') return [3, 4, 5];
     return [4];
   }
 
-  private zodomusOtaLabel(otaKey: ZodomusOtaKey) {
+  private zodomusOtaLabel(otaKey: LegacyZodomusOtaKey) {
     if (otaKey === 'BOOKING_COM') return 'Booking.com';
     if (otaKey === 'EXPEDIA') return 'Expedia';
     return 'Airbnb';
   }
 
-  private assertValidZodomusPriceModel(otaKey: ZodomusOtaKey, priceModelId: number) {
+  private assertValidZodomusPriceModel(otaKey: LegacyZodomusOtaKey, priceModelId: number) {
     const allowedPriceModels = this.allowedZodomusPriceModels(otaKey);
 
     if (!allowedPriceModels.includes(priceModelId)) {
@@ -3534,11 +3290,15 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
     return 0;
   }
 
-  private async updateZodomusConnectionConfig(
+  private async updateProviderConnectionConfig(
     connectionId: string,
     existingCredentials: Prisma.JsonValue | null,
-    patch: Record<string, unknown>,
+    patch: Record<string, unknown> | null,
   ) {
+    if (!patch) {
+      return;
+    }
+
     const existing = this.readPlainRecord(existingCredentials);
     const setupPatch = this.readUnknownRecord(patch.setup_status);
     const automationPatch = this.readUnknownRecord(patch.automation);
@@ -3572,15 +3332,15 @@ export class ChannelService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async markZodomusMappingsChanged(connection: { id: string; provider: ChannelProvider; credentials: Prisma.JsonValue | null }) {
-    if (connection.provider !== ChannelProvider.ZODOMUS) return;
+    await this.markProviderMappingsChanged(connection);
+  }
 
-    await this.updateZodomusConnectionConfig(connection.id, connection.credentials, {
-      setup_status: {
-        rooms_activated: false,
-        ready: false,
-        ready_at: null,
-      },
-    });
+  private async markProviderMappingsChanged(connection: { id: string; provider: ChannelProvider; credentials: Prisma.JsonValue | null }) {
+    await this.updateProviderConnectionConfig(
+      connection.id,
+      connection.credentials,
+      this.providerService.mappingsChangedConfigPatch(connection.provider),
+    );
   }
 
   private readProviderReturnMessage(response: unknown) {

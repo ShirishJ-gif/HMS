@@ -1,4 +1,5 @@
-import { KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
+import { CSSProperties, KeyboardEvent, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 type CustomSelectOption = {
   description?: string;
@@ -32,6 +33,8 @@ export function CustomSelect({
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const listboxRef = useRef<HTMLDivElement | null>(null);
+  const [dialogMenu, setDialogMenu] = useState<{ host: HTMLDialogElement; style: CSSProperties } | null>(null);
   const listboxId = useId();
   const buttonId = useId();
   const selectedOption = options.find((option) => option.value === value) ?? null;
@@ -40,7 +43,7 @@ export function CustomSelect({
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node) && !listboxRef.current?.contains(event.target as Node)) setOpen(false);
     }
     function handleWindowBlur() { setOpen(false); }
     document.addEventListener('mousedown', handlePointerDown);
@@ -54,6 +57,39 @@ export function CustomSelect({
   useEffect(() => {
     if (!open) setHighlightedIndex(options.findIndex((o) => o.value === value));
   }, [open, options, value]);
+
+  // Keep menus in the dialog's focus scope, outside its scrolling form body.
+  useLayoutEffect(() => {
+    if (!open) { setDialogMenu(null); return; }
+    const root = rootRef.current;
+    const host = root?.closest('dialog');
+    if (!root || !host) return;
+    function positionMenu() {
+      if (!root || !host) return;
+      const trigger = root.getBoundingClientRect();
+      const bounds = host.getBoundingClientRect();
+      const topLimit = Math.max(8, bounds.top + 8);
+      const bottomLimit = Math.min(window.innerHeight - 8, bounds.bottom - 8);
+      const below = Math.max(0, bottomLimit - trigger.bottom - 4);
+      const above = Math.max(0, trigger.top - topLimit - 4);
+      const menuHeight = Math.min(256, listboxRef.current?.scrollHeight ?? 256);
+      const openAbove = below < menuHeight && above > below;
+      const maxHeight = Math.max(0, Math.min(256, openAbove ? above : below));
+      const height = Math.min(menuHeight, maxHeight);
+      setDialogMenu({ host, style: {
+        position: 'fixed', left: trigger.left, width: trigger.width, right: 'auto',
+        top: openAbove ? trigger.top - height - 4 : trigger.bottom + 4,
+        maxHeight,
+      } });
+    }
+    positionMenu();
+    host.addEventListener('scroll', positionMenu, true);
+    window.addEventListener('resize', positionMenu);
+    return () => {
+      host.removeEventListener('scroll', positionMenu, true);
+      window.removeEventListener('resize', positionMenu);
+    };
+  }, [open, options]);
 
   function commitSelection(nextValue: string) {
     if (nextValue !== value) onChange(nextValue);
@@ -81,8 +117,63 @@ export function CustomSelect({
       if (highlightedIndex >= 0 && options[highlightedIndex]) commitSelection(options[highlightedIndex].value);
       return;
     }
-    if (event.key === 'Escape') setOpen(false);
+    if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); }
   }
+
+  const menu = open ? (
+        <div
+          ref={listboxRef}
+          style={dialogMenu?.style}
+          onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false); rootRef.current?.querySelector('button')?.focus(); } }}
+          aria-labelledby={buttonId}
+          id={listboxId}
+          role="listbox"
+          className="absolute top-[calc(100%+4px)] left-0 right-0 z-50 bg-white border border-slate-200 rounded-xl shadow-xl shadow-slate-900/10 py-1.5 max-h-64 overflow-y-auto scrollbar-none"
+        >
+          {options.length > 0 ? options.map((option, index) => {
+            const selected = option.value === value;
+            const highlighted = index === highlightedIndex;
+            return (
+              <button
+                key={option.value}
+                aria-selected={selected}
+                role="option"
+                type="button"
+                onClick={() => commitSelection(option.value)}
+                className={[
+                  'flex items-center justify-between w-full px-3 py-2.5 text-sm text-left rounded-lg mx-1 transition-colors',
+                  'w-[calc(100%-8px)]',
+                  selected ? (neutralTone ? 'bg-slate-100 text-slate-800 font-semibold' : 'bg-emerald-50 text-emerald-700 font-semibold') : 'text-slate-700',
+                  highlighted && !selected ? 'bg-slate-50' : '',
+                  'hover:bg-slate-50',
+                ].join(' ')}
+              >
+                <span className="flex min-w-0 items-start gap-2" style={{ paddingLeft: `${(option.indentLevel ?? 0) * 14}px` }}>
+                  {option.indentLevel ? <span className="mt-2 h-px w-3 flex-shrink-0 bg-slate-200" aria-hidden="true" /> : null}
+                  <span className="min-w-0">
+                    {option.eyebrow && (
+                      <span className="mb-0.5 block truncate text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">
+                        {option.eyebrow}
+                      </span>
+                    )}
+                    <span className="block truncate">{option.label}</span>
+                    {option.description && (
+                      <span className={`mt-0.5 block truncate text-[11px] font-medium ${selected && !neutralTone ? 'text-emerald-600/75' : 'text-slate-400'}`}>
+                        {option.description}
+                      </span>
+                    )}
+                  </span>
+                </span>
+                {selected && (
+                  <span className={`w-1.5 h-1.5 rounded-full ${neutralTone ? 'bg-slate-500' : 'bg-emerald-500'} flex-shrink-0`} aria-hidden="true" />
+                )}
+              </button>
+            );
+          }) : (
+            <div className="px-3 py-3 text-sm text-slate-400 text-center">No options available</div>
+          )}
+        </div>
+  ) : null;
 
   if (shouldLockToSingleOption) {
     return (
@@ -141,57 +232,7 @@ export function CustomSelect({
         </span>
       </button>
 
-      {open && (
-        <div
-          aria-labelledby={buttonId}
-          id={listboxId}
-          role="listbox"
-          className="absolute top-[calc(100%+4px)] left-0 right-0 z-50 bg-white border border-slate-200 rounded-xl shadow-xl shadow-slate-900/10 py-1.5 max-h-64 overflow-y-auto scrollbar-none"
-        >
-          {options.length > 0 ? options.map((option, index) => {
-            const selected = option.value === value;
-            const highlighted = index === highlightedIndex;
-            return (
-              <button
-                key={option.value}
-                aria-selected={selected}
-                role="option"
-                type="button"
-                onClick={() => commitSelection(option.value)}
-                className={[
-                  'flex items-center justify-between w-full px-3 py-2.5 text-sm text-left rounded-lg mx-1 transition-colors',
-                  'w-[calc(100%-8px)]',
-                  selected ? (neutralTone ? 'bg-slate-100 text-slate-800 font-semibold' : 'bg-emerald-50 text-emerald-700 font-semibold') : 'text-slate-700',
-                  highlighted && !selected ? 'bg-slate-50' : '',
-                  'hover:bg-slate-50',
-                ].join(' ')}
-              >
-                <span className="flex min-w-0 items-start gap-2" style={{ paddingLeft: `${(option.indentLevel ?? 0) * 14}px` }}>
-                  {option.indentLevel ? <span className="mt-2 h-px w-3 flex-shrink-0 bg-slate-200" aria-hidden="true" /> : null}
-                  <span className="min-w-0">
-                    {option.eyebrow && (
-                      <span className="mb-0.5 block truncate text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">
-                        {option.eyebrow}
-                      </span>
-                    )}
-                    <span className="block truncate">{option.label}</span>
-                    {option.description && (
-                      <span className={`mt-0.5 block truncate text-[11px] font-medium ${selected && !neutralTone ? 'text-emerald-600/75' : 'text-slate-400'}`}>
-                        {option.description}
-                      </span>
-                    )}
-                  </span>
-                </span>
-                {selected && (
-                  <span className={`w-1.5 h-1.5 rounded-full ${neutralTone ? 'bg-slate-500' : 'bg-emerald-500'} flex-shrink-0`} aria-hidden="true" />
-                )}
-              </button>
-            );
-          }) : (
-            <div className="px-3 py-3 text-sm text-slate-400 text-center">No options available</div>
-          )}
-        </div>
-      )}
+      {dialogMenu && menu ? createPortal(menu, dialogMenu.host) : menu}
     </div>
   );
 }

@@ -4,8 +4,9 @@ export class CreateInventoryBlockDto {
   @IsUUID()
   property_id: string;
 
+  @IsOptional()
   @IsUUID()
-  room_category_id: string;
+  room_category_id?: string;
 
   @IsString()
   from_date: string;

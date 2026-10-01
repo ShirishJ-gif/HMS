@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, UserRole } from '@prisma/client';
+import { Prisma, PropertyType, UserRole } from '@prisma/client';
 import { dirname, join } from 'node:path';
 import { renameSync } from 'node:fs';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -15,10 +15,49 @@ import { UpdatePricingRuleDto } from './dto/update-pricing-rule.dto';
 import { UpdatePropertyDto } from './dto/update-property.dto';
 import { UpdatePropertyStatusDto } from './dto/update-property-status.dto';
 import { UpdateRoomCategoryDto } from './dto/update-room-category.dto';
+import { ensureVillaInventory } from './villa-inventory';
+import { UpdateVillaRateDto } from './dto/update-villa-rate.dto';
 
 @Injectable()
 export class PropertyService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async getVillaSettings(id: string, user?: AuthenticatedUser) {
+    assertCanAccessProperty(user, id);
+    const { ratePlan, roomRatePlan, category, room, property } = await ensureVillaInventory(this.prisma, id);
+    return {
+      property_id: id,
+      room_category_id: category.id,
+      room_id: room.id,
+      rate_plan_id: ratePlan.id,
+      room_rate_plan_id: roomRatePlan.id,
+      nightly_rate: ratePlan.isActive ? Number(ratePlan.baseRate) : null,
+      whole_villa_rate: ratePlan.isActive ? Number(ratePlan.baseRate) : null,
+      per_room_rate: roomRatePlan.isActive ? Number(roomRatePlan.baseRate) : null,
+      total_rooms: property.villaTotalRooms,
+      min_rooms: property.villaMinRooms,
+      max_rooms: property.villaMaxRooms,
+      currency: ratePlan.currency,
+    };
+  }
+
+  async updateVillaRate(id: string, dto: UpdateVillaRateDto, user?: AuthenticatedUser) {
+    assertCanAccessProperty(user, id);
+    await this.prisma.$transaction(async tx => {
+      const { ratePlan, roomRatePlan } = await ensureVillaInventory(tx, id);
+      const property = await tx.property.findUniqueOrThrow({ where: { id } });
+      const wholeRate = dto.whole_villa_rate ?? dto.nightly_rate ?? property.villaWholeRate ?? ratePlan.baseRate;
+      const roomRate = dto.per_room_rate;
+      const totalRooms = dto.total_rooms ?? property.villaTotalRooms;
+      const minRooms = dto.min_rooms ?? Math.min(property.villaMinRooms, totalRooms);
+      const maxRooms = dto.max_rooms ?? Math.min(property.villaMaxRooms, totalRooms);
+      if (minRooms > maxRooms || maxRooms > totalRooms) throw new BadRequestException('Villa room limits must satisfy minimum <= maximum <= total rooms');
+      await tx.property.update({ where: { id }, data: { villaWholeRate: wholeRate, villaRoomRate: roomRate, villaTotalRooms: totalRooms, villaMinRooms: minRooms, villaMaxRooms: maxRooms } });
+      await tx.ratePlan.update({ where: { id: ratePlan.id }, data: { baseRate: wholeRate, isActive: true } });
+      if (roomRate != null) await tx.ratePlan.update({ where: { id: roomRatePlan.id }, data: { baseRate: roomRate, isActive: true } });
+    });
+    return this.getVillaSettings(id, user);
+  }
 
   async createProperty(dto: CreatePropertyDto, user?: AuthenticatedUser) {
     if (user?.role === UserRole.ORG_OWNER && !user.organization_id) {
@@ -26,11 +65,14 @@ export class PropertyService {
     }
 
     try {
-      const property = await this.prisma.property.create({
+      const property = await this.prisma.$transaction(async tx => {
+        const saved = await tx.property.create({
         data: {
           organizationId: user?.role === UserRole.ORG_OWNER ? user.organization_id : undefined,
           name: dto.name,
           code: dto.code,
+          propertyType: dto.property_type,
+          villaWholeRate: dto.property_type === PropertyType.RENTAL_VILLAS ? dto.nightly_rate : undefined,
           phone: dto.phone,
           email: dto.email,
           address: dto.address,
@@ -40,6 +82,9 @@ export class PropertyService {
         },
       });
 
+        if (saved.propertyType === PropertyType.RENTAL_VILLAS) await ensureVillaInventory(tx, saved.id);
+        return saved;
+      });
       return this.toPropertyResponse(property);
     } catch (error) {
       this.handlePrismaError(error, 'Property code already exists');
@@ -184,10 +229,12 @@ export class PropertyService {
     assertCanAccessProperty(user, id);
 
     try {
-      const property = await this.prisma.property.update({
+      const property = await this.prisma.$transaction(async tx => {
+        const saved = await tx.property.update({
         where: { id },
         data: {
           name: dto.name,
+          propertyType: dto.property_type,
           phone: dto.phone,
           email: dto.email,
           address: dto.address,
@@ -200,6 +247,9 @@ export class PropertyService {
         },
       });
 
+        if (saved.propertyType === PropertyType.RENTAL_VILLAS) await ensureVillaInventory(tx, saved.id);
+        return saved;
+      });
       return this.toPropertyResponse(property);
     } catch (error) {
       this.handlePrismaError(error, 'Property update failed');
@@ -911,6 +961,7 @@ export class PropertyService {
   private toPropertyResponse(property: {
     id: string;
     name: string;
+    propertyType: PropertyType;
     code: string;
     phone: string | null;
     email: string | null;
@@ -933,6 +984,7 @@ export class PropertyService {
     return {
       id: property.id,
       name: property.name,
+      property_type: property.propertyType,
       code: property.code,
       phone: property.phone,
       email: property.email,

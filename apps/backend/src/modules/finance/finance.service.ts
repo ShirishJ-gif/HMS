@@ -1,3 +1,4 @@
+import { recalculateBilling } from '../billing/billing-calculations';
 import { Injectable } from '@nestjs/common';
 import { BookingStatus, ChannelConnectionStatus, PaymentStatus, PaymentTransactionStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -144,7 +145,8 @@ export class FinanceService {
     const billableExtraCharges = billing.extraCharges.filter((charge) => !this.isOtaMetadataCharge(charge.description));
     const billableExtraChargesTotal = billableExtraCharges.reduce((total, charge) => total + charge.amount.toNumber(), 0);
     const visibleTotal = billing.amount.toNumber() + billing.tax.toNumber() + billableExtraChargesTotal;
-    const balanceDue = billing.paymentStatus === PaymentStatus.PAID ? 0 : Math.max(0, visibleTotal - paidTotal + refundedTotal);
+    const calculation = recalculateBilling(billing);
+    const balanceDue = calculation.balance.toNumber();
 
     return {
       id: billing.id,
@@ -156,7 +158,7 @@ export class FinanceService {
       refunded_total: refundedTotal,
       balance_due: balanceDue,
       total: visibleTotal,
-      payment_status: billing.paymentStatus,
+      payment_status: calculation.paymentStatus,
       ota_payment_breakdown: this.extractOtaPaymentBreakdown(billing),
       reservation_room: {
         id: billing.reservationRoom.id,

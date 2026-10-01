@@ -99,7 +99,7 @@ export class EmailAutomationController {
       if (!connections.some((connection) => connection.id === connectionId)) {
         throw new NotFoundException('Email connection not found for property');
       }
-      return this.emailAutomationService.syncConnection(connectionId, { backfillHours: dto.backfill_hours });
+      return this.emailAutomationService.syncConnection(connectionId, { backfillHours: dto.backfill_hours, fromEmail: dto.from_email, subject: dto.subject });
     });
   }
 

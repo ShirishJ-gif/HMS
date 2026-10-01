@@ -5,6 +5,7 @@ import { InventoryService } from '../inventory/inventory.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GetAvailabilityDto } from './dto/get-availability.dto';
+import { ensureVillaInventory, VILLA_INVENTORY_CODE } from '../property/villa-inventory';
 
 @Injectable()
 export class AvailabilityService {
@@ -32,8 +33,10 @@ export class AvailabilityService {
       throw new NotFoundException('Property not found');
     }
 
+    const villa = property.propertyType === 'RENTAL_VILLAS';
+    if (villa) await ensureVillaInventory(this.prisma, property.id);
     const categories = await this.prisma.roomCategory.findMany({
-      where: { propertyId: query.property_id },
+      where: { propertyId: query.property_id, ...(villa ? { code: VILLA_INVENTORY_CODE } : {}) },
       include: {
         rooms: true,
         ratePlans: {

@@ -1,6 +1,6 @@
-import { Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, ParseEnumPipe, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
-import { UserRole } from '@prisma/client';
+import { ChannelProvider, UserRole } from '@prisma/client';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -15,7 +15,7 @@ import { CreateChannelRateMappingDto } from './dto/create-channel-rate-mapping.d
 import { CreateChannelRoomMappingDto } from './dto/create-channel-room-mapping.dto';
 import { GetProviderAvailabilityQueryDto } from './dto/get-provider-availability-query.dto';
 import { SaveChannelMappingsBatchDto } from './dto/save-channel-mappings-batch.dto';
-import { SetupZodomusChannelDto } from './dto/setup-zodomus-channel.dto';
+import { SetupChannelProviderDto } from './dto/setup-channel-provider.dto';
 import { SyncChannelDto } from './dto/sync-channel.dto';
 import { UpdateChannelAutomationDto } from './dto/update-channel-automation.dto';
 import { UpdateChannelMappingActivationDto } from './dto/update-channel-mapping-activation.dto';
@@ -54,10 +54,22 @@ export class ChannelController {
     return this.channelService.deleteConnection(id, user);
   }
 
-  @Post('zodomus/setup')
+  @Post(':provider/setup')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
-  setupZodomusConnection(@CurrentUser() user: AuthenticatedUser, @Body() dto: SetupZodomusChannelDto) {
-    return this.channelService.setupZodomusConnection(dto, user);
+  setupProviderConnection(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('provider', new ParseEnumPipe(ChannelProvider)) provider: ChannelProvider,
+    @Body() dto: SetupChannelProviderDto,
+  ) {
+    return this.channelService.setupProviderConnection(
+      provider,
+      {
+        property_id: dto.property_id,
+        external_hotel_id: dto.external_hotel_id,
+        options: dto.options,
+      },
+      user,
+    );
   }
 
   @Post(':id/pause')

@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AuditAction, BookingStatus, Prisma, RoomStatus } from '@prisma/client';
+import { AuditAction, BookingStatus, Prisma, PropertyType, RoomStatus } from '@prisma/client';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty } from '../auth/property-scope';
@@ -14,6 +14,8 @@ import { RoomOutOfServiceCalendarService } from '../room-out-of-service/room-out
 import { CreateInventoryBlockDto } from './dto/create-inventory-block.dto';
 import { GetInventoryCalendarDto } from './dto/get-inventory-calendar.dto';
 import { SetInventoryRestrictionsDto } from './dto/set-inventory-restrictions.dto';
+
+import { ensureVillaInventory, VILLA_INVENTORY_CODE } from '../property/villa-inventory';
 
 type DbClient = PrismaService | Prisma.TransactionClient;
 
@@ -49,9 +51,10 @@ export class InventoryService {
       to,
     });
 
+    const villa = property.propertyType === PropertyType.RENTAL_VILLAS;
     const [categories, rows]: [any[], any[]] = await this.prisma.$transaction([
       this.prisma.roomCategory.findMany({
-        where: { propertyId: query.property_id },
+        where: { propertyId: query.property_id, ...(villa ? { code: VILLA_INVENTORY_CODE } : {}) },
         orderBy: { name: 'asc' },
       }),
       this.prisma.inventoryCalendar.findMany({
@@ -84,6 +87,14 @@ export class InventoryService {
 
   async createInventoryBlock(dto: CreateInventoryBlockDto, user?: AuthenticatedUser) {
     assertCanAccessProperty(user, dto.property_id);
+    const property = await this.prisma.property.findUnique({ where: { id: dto.property_id } });
+    if (property?.propertyType === PropertyType.RENTAL_VILLAS) {
+      const { category } = await ensureVillaInventory(this.prisma, dto.property_id);
+      dto = { ...dto, room_category_id: category.id };
+    }
+    if (!dto.room_category_id) throw new BadRequestException('Room category is required for hotels');
+    const roomCategoryId = dto.room_category_id;
+
     const fromDate = this.parseDateOnly(dto.from_date, 'from_date');
     const toDate = this.parseDateOnly(dto.to_date, 'to_date');
 
@@ -92,10 +103,10 @@ export class InventoryService {
     }
 
     const { block, roomCategory } = await this.prisma.$transaction(async (tx) => {
-      await this.acquireInventoryAllocationLock(tx, dto.property_id, dto.room_category_id);
+      await this.acquireInventoryAllocationLock(tx, dto.property_id, roomCategoryId);
 
       const roomCategory = await tx.roomCategory.findUnique({
-        where: { id: dto.room_category_id },
+        where: { id: roomCategoryId },
       });
 
       if (!roomCategory || roomCategory.propertyId !== dto.property_id) {
@@ -104,7 +115,7 @@ export class InventoryService {
 
       const rows = await this.rebuildCalendarRange({
         propertyId: dto.property_id,
-        roomCategoryIds: [dto.room_category_id],
+        roomCategoryIds: [roomCategoryId],
         from: fromDate,
         to: toDate,
       }, tx);
@@ -118,7 +129,7 @@ export class InventoryService {
       const block = await tx.inventoryBlock.create({
         data: {
           propertyId: dto.property_id,
-          roomCategoryId: dto.room_category_id,
+          roomCategoryId: roomCategoryId,
           fromDate,
           toDate,
           blockedRooms: dto.blocked_rooms,
@@ -130,7 +141,7 @@ export class InventoryService {
 
       await this.rebuildCalendarRange({
         propertyId: dto.property_id,
-        roomCategoryIds: [dto.room_category_id],
+        roomCategoryIds: [roomCategoryId],
         from: fromDate,
         to: toDate,
       }, tx);
@@ -208,6 +219,9 @@ export class InventoryService {
     });
     if (!block) throw new NotFoundException('Inventory block not found');
     assertCanAccessProperty(user, block.propertyId);
+    if (block.source.startsWith('ICAL_IMPORT:')) {
+      throw new ConflictException('Imported dates are managed by their source calendar. Update that calendar and sync it again.');
+    }
 
     let googleEventResult: Awaited<ReturnType<GoogleCalendarService['deleteBusyBlockEvent']>> | null = null;
     if (deleteGoogleEvent) {
@@ -260,6 +274,14 @@ export class InventoryService {
 
   async setInventoryRestrictions(dto: SetInventoryRestrictionsDto, user?: AuthenticatedUser) {
     assertCanAccessProperty(user, dto.property_id);
+    const property = await this.prisma.property.findUnique({ where: { id: dto.property_id } });
+    if (property?.propertyType === PropertyType.RENTAL_VILLAS) {
+      const { category } = await ensureVillaInventory(this.prisma, dto.property_id);
+      dto = { ...dto, room_category_id: category.id };
+    }
+    if (!dto.room_category_id) throw new BadRequestException('Room category is required for hotels');
+    const roomCategoryId = dto.room_category_id;
+
     const fromDate = this.parseDateOnly(dto.from_date, 'from_date');
     const toDate = this.parseDateOnly(dto.to_date, 'to_date');
 
@@ -286,10 +308,10 @@ export class InventoryService {
     }
 
     const roomCategory = await this.prisma.$transaction(async (tx) => {
-      await this.acquireInventoryAllocationLock(tx, dto.property_id, dto.room_category_id);
+      await this.acquireInventoryAllocationLock(tx, dto.property_id, roomCategoryId);
 
       const roomCategory = await tx.roomCategory.findUnique({
-        where: { id: dto.room_category_id },
+        where: { id: roomCategoryId },
       });
 
       if (!roomCategory || roomCategory.propertyId !== dto.property_id) {
@@ -298,7 +320,7 @@ export class InventoryService {
 
       await this.rebuildCalendarRange({
         propertyId: dto.property_id,
-        roomCategoryIds: [dto.room_category_id],
+        roomCategoryIds: [roomCategoryId],
         from: fromDate,
         to: toDate,
       }, tx);
@@ -306,7 +328,7 @@ export class InventoryService {
       await tx.inventoryCalendar.updateMany({
         where: {
           propertyId: dto.property_id,
-          roomCategoryId: dto.room_category_id,
+          roomCategoryId: roomCategoryId,
           stayDate: {
             gte: fromDate,
             lte: toDate,
@@ -327,11 +349,11 @@ export class InventoryService {
     await this.auditLogService.record({
       action: AuditAction.UPDATE,
       entityType: 'inventory_restriction',
-      entityId: dto.room_category_id,
+      entityId: roomCategoryId,
       propertyId: dto.property_id,
       summary: `Updated inventory restrictions for ${roomCategory.name}`,
       metadata: {
-        room_category_id: dto.room_category_id,
+        room_category_id: roomCategoryId,
         from_date: dto.from_date,
         to_date: dto.to_date,
         stop_sell: dto.stop_sell,
@@ -345,7 +367,7 @@ export class InventoryService {
 
     return {
       property_id: dto.property_id,
-      room_category_id: dto.room_category_id,
+      room_category_id: roomCategoryId,
       from_date: dto.from_date,
       to_date: dto.to_date,
       stop_sell: dto.stop_sell,
@@ -363,6 +385,7 @@ export class InventoryService {
       from: Date;
       to: Date;
       roomCategoryIds?: string[];
+      excludeReservationGroupId?: string;
     },
     db: DbClient = this.prisma,
   ) {
@@ -370,10 +393,13 @@ export class InventoryService {
       throw new BadRequestException('to must be on or after from');
     }
 
+    const property = await db.property.findUnique({ where: { id: input.propertyId } });
+    const villa = property?.propertyType === PropertyType.RENTAL_VILLAS;
+    if (villa) await ensureVillaInventory(db, input.propertyId);
     const roomCategories = await db.roomCategory.findMany({
       where: {
         propertyId: input.propertyId,
-        ...(input.roomCategoryIds?.length ? { id: { in: input.roomCategoryIds } } : {}),
+        ...(villa ? { code: VILLA_INVENTORY_CODE } : input.roomCategoryIds?.length ? { id: { in: input.roomCategoryIds } } : {}),
       },
       orderBy: { name: 'asc' },
     });
@@ -387,7 +413,7 @@ export class InventoryService {
     const rooms = await db.room.findMany({
       where: {
         propertyId: input.propertyId,
-        roomCategoryId: { in: roomCategoryIds },
+        ...(villa ? {} : { roomCategoryId: { in: roomCategoryIds } }),
       },
       select: {
         id: true,
@@ -407,7 +433,8 @@ export class InventoryService {
       db.reservationRoom.findMany({
         where: {
           propertyId: input.propertyId,
-          roomCategoryId: { in: roomCategoryIds },
+          ...(input.excludeReservationGroupId ? { reservationGroupId: { not: input.excludeReservationGroupId } } : {}),
+          ...(villa ? {} : { roomCategoryId: { in: roomCategoryIds } }),
           status: {
             in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN],
           },
@@ -423,7 +450,7 @@ export class InventoryService {
       db.inventoryBlock.findMany({
         where: {
           propertyId: input.propertyId,
-          roomCategoryId: { in: roomCategoryIds },
+          ...(villa ? {} : { roomCategoryId: { in: roomCategoryIds } }),
           fromDate: { lte: input.to },
           toDate: { gte: input.from },
         },
@@ -437,7 +464,7 @@ export class InventoryService {
       db.inventoryCalendar.findMany({
         where: {
           propertyId: input.propertyId,
-          roomCategoryId: { in: roomCategoryIds },
+          ...(villa ? {} : { roomCategoryId: { in: roomCategoryIds } }),
           stayDate: { gte: input.from, lte: input.to },
         },
       }),
@@ -481,8 +508,8 @@ export class InventoryService {
 
     for (const row of rows) {
       const date = this.toDateOnly(row.stayDate);
-      const roomsForCategory = categoryRooms.get(row.roomCategoryId) ?? [];
-      const totalRooms = roomsForCategory.length;
+      const roomsForCategory = villa ? rooms : categoryRooms.get(row.roomCategoryId) ?? [];
+      const totalRooms = villa ? Math.max(1, property?.villaTotalRooms ?? roomsForCategory.length) : roomsForCategory.length;
       const outOfServiceRooms = roomsForCategory.filter(
         (room) =>
           room.status === RoomStatus.MAINTENANCE ||
@@ -491,16 +518,17 @@ export class InventoryService {
       const manualBlockedRooms = inventoryBlocks
         .filter(
           (block: any) =>
-            block.roomCategoryId === row.roomCategoryId &&
+            (villa || block.roomCategoryId === row.roomCategoryId) &&
             this.overlapsDateInclusive(block.fromDate, block.toDate, date),
         )
         .reduce((sum: number, block: any) => sum + block.blockedRooms, 0);
       const blockedRooms = Math.min(totalRooms, outOfServiceRooms + manualBlockedRooms);
-      const reservedRooms = reservationRooms.filter(
+      const reservationCount = reservationRooms.filter(
         (reservationRoom: any) =>
-          reservationRoom.roomCategoryId === row.roomCategoryId &&
+          (villa || reservationRoom.roomCategoryId === row.roomCategoryId) &&
           this.overlapsStayDate(reservationRoom.arrivalDate, reservationRoom.departureDate, date),
       ).length;
+      const reservedRooms = villa ? Math.min(totalRooms, reservationCount) : reservationCount;
       const availableRooms = Math.max(totalRooms - blockedRooms - reservedRooms, 0);
 
       await db.inventoryCalendar.update({
@@ -538,6 +566,7 @@ export class InventoryService {
       checkInDate: Date;
       checkOutDate: Date;
       roomCount: number;
+      excludeReservationGroupId?: string;
     },
   ) {
     const stayDates = this.eachStayDate(input.checkInDate, input.checkOutDate);
@@ -551,6 +580,7 @@ export class InventoryService {
       {
         propertyId: input.propertyId,
         roomCategoryIds: [input.roomCategoryId],
+        excludeReservationGroupId: input.excludeReservationGroupId,
         from: stayDates[0],
         to: stayDates[stayDates.length - 1],
       },
@@ -690,10 +720,12 @@ export class InventoryService {
     propertyId: string,
     roomCategoryId: string,
   ) {
+    const property = await tx.property.findUnique({ where: { id: propertyId } });
+    const allocationKey = property?.propertyType === PropertyType.RENTAL_VILLAS ? VILLA_INVENTORY_CODE : roomCategoryId;
     await tx.$queryRaw`
       SELECT COUNT(*)::int
       FROM (
-        SELECT pg_advisory_xact_lock(hashtext(${propertyId}), hashtext(${roomCategoryId}))
+        SELECT pg_advisory_xact_lock(hashtext(${propertyId}), hashtext(${allocationKey}))
       ) AS inventory_allocation_lock
     `;
   }
@@ -737,6 +769,7 @@ export class InventoryService {
     blockedRooms: number;
     reason: string;
     source: string;
+    sourceName?: string | null;
     googleCalendarId?: string | null;
     googleCalendarEventId?: string | null;
     googleCalendarHtmlLink?: string | null;
@@ -753,6 +786,7 @@ export class InventoryService {
       blocked_rooms: block.blockedRooms,
       reason: block.reason,
       source: block.source,
+      source_name: block.sourceName ?? null,
       google_calendar_id: block.googleCalendarId ?? null,
       google_calendar_event_id: block.googleCalendarEventId ?? null,
       google_calendar_html_link: block.googleCalendarHtmlLink ?? null,

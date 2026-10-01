@@ -1,3 +1,5 @@
+import { billingTotal, billingPaymentState } from '../billing/billing-calculations';
+import { ensureVillaInventory } from '../property/villa-inventory';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   AuditAction,
@@ -24,7 +26,7 @@ import { PaymentProviderService } from '../payment/payment-provider.service';
 import { PricingService } from '../pricing/pricing.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CheckInReservationRoomDto } from './dto/check-in-reservation-room.dto';
-import { CreateDirectReservationDto } from './dto/create-direct-reservation.dto';
+import { CreateDirectReservationDto, DIRECT_GUEST_ID_PROOF_TYPES } from './dto/create-direct-reservation.dto';
 import { FindReservationFeedQueryDto } from './dto/find-reservation-feed-query.dto';
 import { FindReservationGroupsQueryDto } from './dto/find-reservation-groups-query.dto';
 import { UpdateDirectReservationDto } from './dto/update-direct-reservation.dto';
@@ -129,8 +131,43 @@ export class BookingService {
     private readonly pricingService: PricingService,
   ) {}
 
+  private async resolveDirectInventory(dto: CreateDirectReservationDto) {
+    const property = await this.prisma.property.findUnique({ where: { id: dto.property_id } });
+    if (property?.propertyType === 'RENTAL_VILLAS') {
+      const { category, ratePlan, roomRatePlan } = await ensureVillaInventory(this.prisma, dto.property_id);
+      const mode = dto.villa_booking_mode ?? 'WHOLE_VILLA';
+      const roomCount = mode === 'WHOLE_VILLA' ? property.villaTotalRooms : (dto.room_count ?? property.villaMinRooms);
+      if (mode === 'ROOM_COUNT' && (roomCount < property.villaMinRooms || roomCount > property.villaMaxRooms)) {
+        throw new BadRequestException(`Villa bookings must contain between ${property.villaMinRooms} and ${property.villaMaxRooms} rooms`);
+      }
+      const selectedRatePlan = mode === 'WHOLE_VILLA' ? ratePlan : roomRatePlan;
+      if (!selectedRatePlan.isActive || selectedRatePlan.baseRate.lte(0)) {
+        throw new BadRequestException(`Set the ${mode === 'WHOLE_VILLA' ? 'whole-villa' : 'per-room'} villa rate in Availability & Rates before booking`);
+      }
+      return { ...dto, room_category_id: category.id, rate_plan_id: selectedRatePlan.id, room_count: roomCount, villa_booking_mode: mode };
+    }
+    if (!dto.room_category_id || !dto.rate_plan_id) throw new BadRequestException('Room category and rate plan are required for hotels');
+    return dto;
+  }
+
+  private directStayAmounts(stayAmount: Prisma.Decimal, roomCount: number, wholeVilla: boolean) {
+    if (!wholeVilla) {
+      return { totalAmount: stayAmount.mul(roomCount), roomAmounts: Array.from({ length: roomCount }, () => stayAmount) };
+    }
+    // A whole-villa price is charged once; room lines only allocate that charge for folios.
+    const totalAmount = stayAmount.toDecimalPlaces(2);
+    const perRoom = totalAmount.div(roomCount).toDecimalPlaces(2, Prisma.Decimal.ROUND_DOWN);
+    const remainderCents = totalAmount.sub(perRoom.mul(roomCount)).mul(100).toNumber();
+    const roomAmounts = Array.from({ length: roomCount }, (_, index) =>
+      index < remainderCents ? perRoom.add('0.01') : perRoom,
+    );
+    return { totalAmount, roomAmounts };
+  }
+
   async createDirectReservation(dto: CreateDirectReservationDto, user?: AuthenticatedUser) {
+    this.validateDirectGuestProof(dto);
     assertCanAccessProperty(user, dto.property_id);
+    dto = await this.resolveDirectInventory(dto);
     const checkInDate = this.parseDateOnly(dto.check_in_date, 'check_in_date');
     const checkOutDate = this.parseDateOnly(dto.check_out_date, 'check_out_date');
     if (checkOutDate <= checkInDate) {
@@ -207,7 +244,9 @@ export class BookingService {
           });
 
           const reservationReference = await this.generateDirectReservationReference(tx, property.code);
-          const totalAmount = pricing.totalAmount.mul(new Prisma.Decimal(roomCount));
+          const { totalAmount, roomAmounts } = this.directStayAmounts(
+            pricing.totalAmount, roomCount, property.propertyType === 'RENTAL_VILLAS' && dto.villa_booking_mode === 'WHOLE_VILLA',
+          );
           if (advanceAmount && advanceAmount.gt(totalAmount)) {
             throw new BadRequestException('Advance payment amount exceeds reservation total');
           }
@@ -229,6 +268,7 @@ export class BookingService {
               modifiedAt: new Date(),
               rawPayload: {
                 mode: 'direct_reservation',
+                ...(property.propertyType === 'RENTAL_VILLAS' ? { villa_booking_mode: dto.villa_booking_mode } : {}),
                 room_count: roomCount,
                 adults,
                 children,
@@ -243,6 +283,7 @@ export class BookingService {
           let paymentCount = 0;
 
           for (let index = 0; index < roomCount; index += 1) {
+            const roomAmount = roomAmounts[index];
             const reservationRoom = await tx.reservationRoom.create({
               data: {
                 reservationGroupId: group.id,
@@ -253,7 +294,7 @@ export class BookingService {
                 ratePlanId: ratePlan.id,
                 arrivalDate: checkInDate,
                 departureDate: checkOutDate,
-                totalAmount: pricing.totalAmount,
+                totalAmount: roomAmount,
                 currency: pricing.currency,
                 status: BookingStatus.BOOKED,
                 guestName: guest.name,
@@ -273,11 +314,11 @@ export class BookingService {
             if (advanceAmount) {
               const allocation =
                 remainingAdvance && remainingAdvance.gt(0)
-                  ? remainingAdvance.lessThan(pricing.totalAmount)
+                  ? remainingAdvance.lessThan(roomAmount)
                     ? remainingAdvance
-                    : pricing.totalAmount
+                    : roomAmount
                   : null;
-              if (!allocation) {
+              if (!allocation || allocation.lte(0)) {
                 continue;
               }
 
@@ -401,7 +442,7 @@ export class BookingService {
     }
 
     await this.queueDirectReservationNotifications(reservationGroup);
-    await this.backgroundJobService.queueInventorySyncsForProperty(reservationGroup.propertyId, {
+    if (reservationGroup.property.propertyType !== 'RENTAL_VILLAS') await this.backgroundJobService.queueInventorySyncsForProperty(reservationGroup.propertyId, {
       trigger: 'direct_reservation_created',
       from: this.formatDateOnly(checkInDate),
       to: this.formatDateOnly(this.addDays(checkOutDate, -1)),
@@ -411,7 +452,9 @@ export class BookingService {
   }
 
   async updateDirectReservation(id: string, dto: UpdateDirectReservationDto, user?: AuthenticatedUser) {
+    this.validateDirectGuestProof(dto);
     assertCanAccessProperty(user, dto.property_id);
+    dto = await this.resolveDirectInventory(dto);
     const checkInDate = this.parseDateOnly(dto.check_in_date, 'check_in_date');
     const checkOutDate = this.parseDateOnly(dto.check_out_date, 'check_out_date');
     if (checkOutDate <= checkInDate) throw new ConflictException('check_out_date must be after check_in_date');
@@ -474,6 +517,7 @@ export class BookingService {
         checkInDate,
         checkOutDate,
         roomCount: existing.rooms.length,
+        excludeReservationGroupId: existing.id,
       });
 
       const guest = await this.resolveUpdatedDirectGuest(tx, existing.primaryGuestId, dto);
@@ -487,7 +531,9 @@ export class BookingService {
       });
       const adults = dto.adults ?? 1;
       const children = dto.children ?? 0;
-      const groupTotal = pricing.totalAmount.mul(new Prisma.Decimal(existing.rooms.length));
+      const { totalAmount: groupTotal, roomAmounts } = this.directStayAmounts(
+        pricing.totalAmount, existing.rooms.length, existing.property.propertyType === 'RENTAL_VILLAS' && dto.villa_booking_mode === 'WHOLE_VILLA',
+      );
 
       await tx.reservationGroup.update({
         where: { id },
@@ -499,6 +545,7 @@ export class BookingService {
           modifiedAt: new Date(),
           rawPayload: {
             ...(this.readObject(existing.rawPayload) as Prisma.InputJsonObject),
+            ...(existing.property.propertyType === 'RENTAL_VILLAS' ? { villa_booking_mode: dto.villa_booking_mode } : {}),
             edited_at: new Date().toISOString(),
             edited_by_user_id: user?.sub ?? null,
           },
@@ -514,7 +561,7 @@ export class BookingService {
             ratePlanId: ratePlan.id,
             arrivalDate: checkInDate,
             departureDate: checkOutDate,
-            totalAmount: pricing.totalAmount,
+            totalAmount: roomAmounts[index],
             currency: pricing.currency,
             guestName: guest.name,
             adults,
@@ -553,7 +600,7 @@ export class BookingService {
       user,
     });
 
-    await this.backgroundJobService.queueInventorySyncsForProperty(updated.propertyId, {
+    if (updated.property.propertyType !== 'RENTAL_VILLAS') await this.backgroundJobService.queueInventorySyncsForProperty(updated.propertyId, {
       trigger: 'direct_reservation_updated',
       from: this.formatDateOnly(checkInDate),
       to: this.formatDateOnly(this.addDays(checkOutDate, -1)),
@@ -1063,6 +1110,12 @@ export class BookingService {
         address: dto.guest.address.trim(),
       },
     });
+  }
+
+  private validateDirectGuestProof(dto: CreateDirectReservationDto) {
+    if (dto.guest && !DIRECT_GUEST_ID_PROOF_TYPES.includes(dto.guest.id_proof)) {
+      throw new BadRequestException('Select an ID proof type only; do not include an ID number');
+    }
   }
 
   private async resolveUpdatedDirectGuest(
@@ -1751,34 +1804,27 @@ export class BookingService {
       totalAmount: Prisma.Decimal | null;
     },
   ) {
+    await tx.$queryRaw`SELECT id FROM billings WHERE reservation_room_id = ${reservationRoom.id}::uuid FOR UPDATE`;
     const existingBilling = await tx.billing.findUnique({
       where: { reservationRoomId: reservationRoom.id },
       include: {
         payments: true,
+        extraCharges: true,
       },
     });
 
     const amount = reservationRoom.totalAmount ?? new Prisma.Decimal(0);
 
     if (existingBilling) {
-      const succeededTotal = existingBilling.payments
-        .filter((payment) => payment.status === PaymentTransactionStatus.SUCCEEDED)
-        .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0));
-      const refundedTotal = existingBilling.payments
-        .filter((payment) => payment.status === PaymentTransactionStatus.REFUNDED)
-        .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0));
-      const netPaid = succeededTotal.sub(refundedTotal);
+      const total = billingTotal(amount, existingBilling.tax, existingBilling.extraCharges);
+      const { paymentStatus } = billingPaymentState(total, existingBilling.payments, amount.add(existingBilling.tax));
 
       return tx.billing.update({
         where: { id: existingBilling.id },
         data: {
           amount,
-          total: amount.add(existingBilling.tax),
-          paymentStatus: netPaid.lte(0)
-            ? PaymentStatus.PENDING
-            : netPaid.gte(amount.add(existingBilling.tax))
-              ? PaymentStatus.PAID
-              : PaymentStatus.PARTIAL,
+          total,
+          paymentStatus,
         },
       });
     }

@@ -1,3 +1,4 @@
+import { FocusBanner, type DashboardFocus } from '../components/WorkspaceUI';
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api, getApiErrorMessage } from '../api/client';
@@ -6,6 +7,8 @@ import { CustomSelect } from '../components/CustomSelect';
 import { DelayedSpinnerOverlay } from '../components/Spinner';
 import { useScrollLock } from '../hooks/useScrollLock';
 import { formatCurrency } from '../utils/format';
+import { bookingBillHtml, groupBookingBills } from '../utils/booking-bills';
+import { invoiceHtml, invoiceChargeLines, paymentReferenceLabel, airbnbPayoutPaymentDetails, formatGuestName, nights, otaPaymentRows } from '../utils/invoice-print';
 import { ErrorMsg, FloatingSuccessToast, StatCard } from './ui';
 import { createPreviewData, isPreviewId } from './previewData';
 
@@ -29,7 +32,7 @@ const STATUS_CFG: Record<string, { badge: string; label: string }> = {
 
 const defaultPayForm = { amount: '', provider: 'CASH' as PaymentProvider, provider_reference: '' };
 const defaultGroupPayForm = { amount: '', provider: 'CASH' as PaymentProvider, provider_reference: '' };
-const defaultExtraChargeForm = { billing_id: '', description: '', amount: '' };
+const defaultExtraChargeForm = { description: '', amount: '' };
 const FOLIOS_PER_PAGE = 8;
 
 type FinanceOverview = {
@@ -55,60 +58,11 @@ let financeOverviewCache: FinanceOverview | null = null;
 let financeOverviewCacheAt = 0;
 const financeOverviewCacheTtlMs = 60_000;
 
-function paymentReferenceLabel(payment: { provider: PaymentProvider; provider_reference: string | null }) {
-  return payment.provider === 'CASH' ? '—' : payment.provider_reference ?? '—';
-}
-
-function paymentMetadata(payment: { metadata?: unknown }) {
-  return payment.metadata && typeof payment.metadata === 'object' && !Array.isArray(payment.metadata)
-    ? payment.metadata as Record<string, unknown>
-    : null;
-}
-
-function numericMetadataValue(metadata: Record<string, unknown> | null, key: string) {
-  const value = metadata?.[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function airbnbPayoutPaymentDetails(payment: { metadata?: unknown; amount: number }) {
-  const metadata = paymentMetadata(payment);
-  if (metadata?.source !== 'airbnb_payout_email') return null;
-  const netReceived = numericMetadataValue(metadata, 'net_received') ?? numericMetadataValue(metadata, 'payout_amount') ?? payment.amount;
-  const taxWithholding = numericMetadataValue(metadata, 'tax_withholding');
-  const youEarn = numericMetadataValue(metadata, 'airbnb_payout_before_tax') ?? (
-    netReceived != null && taxWithholding != null ? netReceived + taxWithholding : null
-  );
-  return {
-    youEarn,
-    taxWithholding,
-    netReceived,
-  };
-}
-
-function escapeHtml(value: string | number | null | undefined) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
 function fmtDate(d: string) {
   return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 }
 function initials(name: string) {
   return formatGuestName(name).split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase();
-}
-function formatGuestName(name: string) {
-  return name
-    .trim()
-    .split(/\s+/)
-    .map(part => part ? `${part[0].toUpperCase()}${part.slice(1).toLowerCase()}` : '')
-    .join(' ');
-}
-function nights(from: string, to: string) {
-  return Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86400000);
 }
 function matchesPaymentStatus(paymentStatus: string, filter: string) {
   if (filter === 'ALL') return true;
@@ -116,165 +70,16 @@ function matchesPaymentStatus(paymentStatus: string, filter: string) {
   return paymentStatus === filter;
 }
 
-function otaPaymentRows(billing: Billing) {
-  const breakdown = billing.ota_payment_breakdown;
-  if (!breakdown) return [];
-  return [
-    { label: 'Room fee', value: breakdown.room_fee },
-    { label: 'Occupancy taxes', value: breakdown.occupancy_taxes },
-    { label: 'Guest service fee', value: breakdown.guest_service_fee == null ? null : Math.abs(breakdown.guest_service_fee) },
-    { label: 'Host service fee', value: breakdown.host_service_fee == null ? null : Math.abs(breakdown.host_service_fee) },
-  ].filter((row): row is { label: string; value: number } => row.value != null);
-}
-
 // ── Print invoice (browser-print, no backend needed) ──────────────────────
 function printInvoice(billing: Billing) {
-  const r = billing.reservation_room;
-  const n = nights(r.check_in_date, r.check_out_date);
-  const paid = billing.paid_total - billing.refunded_total;
-  const otaRows = otaPaymentRows(billing);
-  const lines = otaRows.length > 0
-    ? otaRows.map(row => ({ desc: row.label, amount: row.value }))
-    : [
-        { desc: `Room charge - ${r.room_category.name} (${n} night${n !== 1 ? 's' : ''})`, amount: billing.amount },
-        ...billing.extra_charges.map(ec => ({ desc: ec.description, amount: ec.amount })),
-        { desc: 'Hotel tax', amount: billing.tax },
-      ];
-  const guestName = formatGuestName(r.guest.name);
-  const generatedAt = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-  const statusLabel = STATUS_CFG[billing.payment_status]?.label ?? billing.payment_status;
-  const invoiceNo = billing.id.slice(0, 8).toUpperCase();
-  const checkIn = new Date(r.check_in_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-  const checkOut = new Date(r.check_out_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-  const paymentRows = billing.payments.map(payment => {
-    const payoutDetails = airbnbPayoutPaymentDetails(payment);
-    const provider = payoutDetails ? 'Airbnb payout' : payment.provider;
-    const amount = payoutDetails
-      ? [
-          payoutDetails.youEarn != null ? `<div><span>You earn</span><strong>${formatCurrency(payoutDetails.youEarn)}</strong></div>` : '',
-          payoutDetails.taxWithholding != null ? `<div><span>GST</span><strong>${formatCurrency(payoutDetails.taxWithholding)}</strong></div>` : '',
-          `<div class="net"><span>Net received</span><strong>${formatCurrency(payoutDetails.netReceived)}</strong></div>`,
-        ].filter(Boolean).join('')
-      : formatCurrency(payment.amount);
-    return `<tr>
-      <td>${new Date(payment.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
-      <td>${escapeHtml(provider)}</td>
-      <td class="mono">${escapeHtml(paymentReferenceLabel(payment))}</td>
-      <td>${amount}</td>
-      <td><span class="status">${escapeHtml(payment.status)}</span></td>
-    </tr>`;
-  }).join('');
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Invoice — ${guestName}</title>
-<style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif; color: #172033; background: #fff; padding: 42px; max-width: 820px; margin: 0 auto; }
-  .top { display:flex; justify-content:space-between; gap:32px; align-items:flex-start; padding-bottom:24px; border-bottom:2px solid #172033; }
-  h1 { font-size: 30px; font-weight: 900; letter-spacing:0; color:#0f172a; }
-  .muted { color:#64748b; font-size:12px; line-height:1.55; }
-  .invoice-meta { text-align:right; }
-  .invoice-meta strong { display:block; font-size:22px; color:#0f172a; margin-bottom:6px; }
-  .badge { display:inline-block; margin-top:10px; padding:5px 10px; border-radius:999px; background:${billing.balance_due > 0 ? '#fff1f2' : '#ecfdf5'}; color:${billing.balance_due > 0 ? '#be123c' : '#047857'}; font-size:11px; font-weight:800; text-transform:uppercase; }
-  .section { margin-top:26px; }
-  .section-title { font-size:11px; font-weight:900; text-transform:uppercase; color:#94a3b8; margin-bottom:10px; }
-  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-  .box { border:1px solid #e2e8f0; border-radius:10px; padding:14px 16px; min-height:96px; }
-  .box p { font-size:10px; font-weight:800; text-transform:uppercase; color:#94a3b8; margin-bottom:5px; }
-  .box strong { display:block; font-size:14px; color:#0f172a; margin-bottom:4px; }
-  .box span { display:block; font-size:12px; color:#64748b; line-height:1.5; }
-  table { width:100%; border-collapse:collapse; }
-  th { text-align:left; font-size:10px; font-weight:900; text-transform:uppercase; color:#94a3b8; padding:10px 0; border-bottom:1px solid #e2e8f0; }
-  th:last-child, td:last-child { text-align:right; }
-  td { padding:12px 0; font-size:12.5px; border-bottom:1px solid #f1f5f9; vertical-align:top; }
-  .amount { font-weight:800; color:#0f172a; }
-  .mono { font-family:'SFMono-Regular', Consolas, monospace; font-size:10.5px; color:#64748b; }
-  .totals { width:320px; margin-left:auto; margin-top:16px; }
-  .totals div { display:flex; justify-content:space-between; padding:8px 0; font-size:13px; color:#475569; }
-  .totals strong { color:#0f172a; }
-  .grand { border-top:2px solid #172033; margin-top:4px; padding-top:12px !important; font-size:16px !important; font-weight:900; color:#0f172a !important; }
-  .paid { color:#047857 !important; font-weight:800; }
-  .balance { color:${billing.balance_due > 0 ? '#be123c' : '#047857'} !important; font-weight:900; }
-  .status { display:inline-block; padding:4px 8px; border-radius:999px; background:#ecfdf5; color:#047857; font-size:10px; font-weight:800; }
-  .net { border-top:1px solid #e2e8f0; margin-top:4px; padding-top:4px; }
-  td div { display:flex; justify-content:space-between; gap:12px; min-width:170px; }
-  td div span { color:#64748b; }
-  td div strong { color:#0f172a; }
-  .footer { margin-top:34px; padding-top:16px; border-top:1px solid #e2e8f0; display:flex; justify-content:space-between; gap:20px; font-size:11px; color:#94a3b8; }
-  @media print { body { padding: 28px; } .no-break { break-inside: avoid; } }
-</style></head><body>
-<div class="top">
-  <div>
-    <h1>${escapeHtml(r.property.name)}</h1>
-    <p class="muted">${escapeHtml(r.property.code)}<br/>Professional stay invoice generated from HMS</p>
-  </div>
-  <div class="invoice-meta">
-    <strong>Invoice ${escapeHtml(invoiceNo)}</strong>
-    <p class="muted">Generated ${escapeHtml(generatedAt)}<br/>Reservation ${escapeHtml(r.external_reservation_id)}</p>
-    <span class="badge">${escapeHtml(statusLabel)}</span>
-  </div>
-</div>
-
-<div class="section grid no-break">
-  <div class="box">
-    <p>Bill to</p>
-    <strong>${escapeHtml(guestName)}</strong>
-    ${r.guest.phone ? `<span>${escapeHtml(r.guest.phone)}</span>` : ''}
-    ${r.guest.email ? `<span>${escapeHtml(r.guest.email)}</span>` : ''}
-  </div>
-  <div class="box">
-    <p>Stay details</p>
-    <strong>${escapeHtml(r.room_category.name)}${r.room.room_number ? ` - Room ${escapeHtml(r.room.room_number)}` : ''}</strong>
-    <span>${escapeHtml(checkIn)} to ${escapeHtml(checkOut)}</span>
-    <span>${n} night${n !== 1 ? 's' : ''} - ${escapeHtml(r.rate_plan.name)}</span>
-  </div>
-  <div class="box">
-    <p>Reservation details</p>
-    <strong>${escapeHtml(r.external_reservation_id)}</strong>
-    <span>Room reservation ${escapeHtml(r.external_room_reservation_id)}</span>
-    <span>Status: ${escapeHtml(r.reservation_status)}</span>
-  </div>
-  <div class="box">
-    <p>Invoice summary</p>
-    <strong>${escapeHtml(statusLabel)}</strong>
-    <span>Paid: ${formatCurrency(paid)}</span>
-    <span>Balance: ${formatCurrency(billing.balance_due)}</span>
-  </div>
-</div>
-
-<div class="section no-break">
-<p class="section-title">Charges</p>
-<table>
-  <thead><tr><th>Description</th><th>Amount</th></tr></thead>
-  <tbody>
-    ${lines.map(l => `<tr><td>${escapeHtml(l.desc)}</td><td class="amount">${formatCurrency(l.amount)}</td></tr>`).join('')}
-  </tbody>
-</table>
-</div>
-
-<div class="totals no-break">
-  <div><span>Total</span><strong>${formatCurrency(billing.total)}</strong></div>
-  <div><span>Paid</span><strong class="paid">${formatCurrency(paid)}</strong></div>
-  <div class="grand"><span>Balance due</span><strong class="balance">${formatCurrency(billing.balance_due)}</strong></div>
-</div>
-
-${billing.payments.length > 0 ? `
-<div class="section no-break">
-<p class="section-title">Payment history</p>
-<table>
-  <thead><tr><th>Date</th><th>Provider</th><th>Reference</th><th>Amount</th><th>Status</th></tr></thead>
-  <tbody>${paymentRows}</tbody>
-</table>
-</div>` : ''}
-<div class="footer">
-  <span>${escapeHtml(r.property.name)}</span>
-  <span>Thank you for your stay.</span>
-</div>
-</body></html>`;
+  const html = invoiceHtml(billing);
   const w = window.open('', '_blank');
   if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 400); }
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────
-export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnabled?: boolean }) {
+export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, initialFocus, onReturn, returnLabel = 'Reports & Analytics' }: { previewDataEnabled?: boolean; initialFolioGroupId?: string | null; initialFocus?: DashboardFocus | null; onReturn?: () => void; returnLabel?: string }) {
+  const [focus, setFocus] = useState(initialFocus);
   const [reloadKey, setReloadKey]             = useState(0);
   const [selectedBillingId, setSelectedBillingId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter]       = useState<string>('ALL');
@@ -301,6 +106,18 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   const [deletingExtraChargeId, setDeletingExtraChargeId] = useState<string | null>(null);
   const [folioPage, setFolioPage] = useState(1);
   const folioRequestIdRef = useRef(0);
+  const folioDetailRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (initialFolioGroupId) void openFolio(initialFolioGroupId, true);
+    return () => { folioRequestIdRef.current += 1; };
+  }, [initialFolioGroupId]);
+
+  useEffect(() => {
+    if (initialFolioGroupId && selectedFolio?.reservation_group_id === initialFolioGroupId) {
+      folioDetailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [initialFolioGroupId, selectedFolio]);
 
   const [financeState, setFinanceState] = useState<FinanceState>(() => {
     const hasFreshCache = financeOverviewCache && Date.now() - financeOverviewCacheAt < financeOverviewCacheTtlMs;
@@ -336,22 +153,23 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   }, [reloadKey]);
 
   const previewData       = previewDataEnabled ? createPreviewData() : null;
-  const billings          = previewData?.billings ?? financeState.data?.billings ?? [];
-  const reservationGroups = previewData?.reservationGroups ?? financeState.data?.reservation_groups ?? [];
+  const billings = (previewData?.billings ?? financeState.data?.billings ?? []).filter(b => !focus || (!focus.propertyId || b.reservation_room.property.id === focus.propertyId));
+  const reservationGroups = (previewData?.reservationGroups ?? financeState.data?.reservation_groups ?? []).filter(g => !focus || !focus.propertyId || g.property.id === focus.propertyId);
   const transactionCount  = previewData?.payments.length ?? financeState.data?.summary.transaction_count ?? 0;
 
   // Invoice list — filtered
-  const filteredBillings = billings.filter(b =>
-    matchesPaymentStatus(b.payment_status, statusFilter)
+  const bookingBills = groupBookingBills(billings, reservationGroups);
+  const filteredBookingBills = bookingBills.filter(b =>
+    matchesPaymentStatus(b.status, statusFilter) && (!focus || b.balance > 0)
   );
 
   const selectedBilling = billings.find(b => b.id === selectedBillingId) ?? null;
 
   // Stats
-  const totalBilled    = previewData ? billings.reduce((s, b) => s + b.total, 0) : financeState.data?.summary.total_billed ?? 0;
-  const totalCollected = previewData ? billings.reduce((s, b) => s + (b.paid_total - b.refunded_total), 0) : financeState.data?.summary.total_collected ?? 0;
-  const totalBalance   = previewData ? billings.reduce((s, b) => s + b.balance_due, 0) : financeState.data?.summary.total_balance ?? 0;
-  const openCount      = previewData ? billings.filter(b => b.balance_due > 0).length : financeState.data?.summary.open_invoice_count ?? 0;
+  const totalBilled    = (previewData || focus) ? billings.reduce((s, b) => s + b.total, 0) : financeState.data?.summary.total_billed ?? 0;
+  const totalCollected = (previewData || focus) ? billings.reduce((s, b) => s + (b.paid_total - b.refunded_total), 0) : financeState.data?.summary.total_collected ?? 0;
+  const totalBalance   = (previewData || focus) ? billings.reduce((s, b) => s + b.balance_due, 0) : financeState.data?.summary.total_balance ?? 0;
+  const openCount = bookingBills.filter(b => b.balance > 0).length;
 
   // Folio rows (reservation groups that have billing activity)
   const invoicedRoomIds = new Set(billings.map(b => b.reservation_room_id));
@@ -369,7 +187,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
       billed_total: lineInvoices.reduce((s, b) => s + b.total, 0),
       balance_due: lineInvoices.reduce((s, b) => s + b.balance_due, 0),
     };
-  }).filter(f => f.checked_out_count > 0 || f.invoiced_count > 0);
+  }).filter(f => (f.checked_out_count > 0 || f.invoiced_count > 0) && (!focus || f.balance_due > 0));
   const folioTotalPages = Math.max(1, Math.ceil(folioRows.length / FOLIOS_PER_PAGE));
   const clampedFolioPage = Math.min(folioPage, folioTotalPages);
   const paginatedFolioRows = folioRows.slice((clampedFolioPage - 1) * FOLIOS_PER_PAGE, clampedFolioPage * FOLIOS_PER_PAGE);
@@ -520,7 +338,8 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   async function submitFolioExtraCharge(e: FormEvent) {
     e.preventDefault();
     if (!selectedFolioGroupId || !selectedFolio) return;
-    const billingId = extraChargeForm.billing_id || selectedFolio.invoices[0]?.id;
+    // Keep the existing accounting link; the combined bill itemizes charges independently of rooms.
+    const billingId = selectedFolio.invoices[0]?.id;
     if (!billingId) {
       setActionError('Generate an invoice before adding extra charges.');
       return;
@@ -578,13 +397,16 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
   return (
     <div className="relative -mx-5 lg:-mx-8 -my-6 lg:-my-8 flex flex-col min-h-0">
       <DelayedSpinnerOverlay loading={loading} />
+      {onReturn && <div className="px-5 pt-5 lg:px-8"><button type="button" onClick={onReturn} className="text-sm font-semibold text-indigo-600 hover:underline">← Back to {returnLabel}</button></div>}
+
+      {focus && <div className="px-5 pt-4 lg:px-8"><FocusBanner focus={focus} clear={() => setFocus(null)} /></div>}
 
       {/* Page header */}
       <div className="px-5 lg:px-8 pt-6 lg:pt-8 pb-4 flex items-center justify-between gap-4 flex-wrap">
         <div>
           <p className="text-[10.5px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Finance</p>
           <h1 className="text-[22px] font-black text-slate-900 tracking-tight leading-none">Payment & Folios</h1>
-          <p className="text-[12px] text-slate-400 mt-1">Collect payments, manage invoices, and review grouped OTA folios</p>
+          <p className="text-[12px] text-slate-400 mt-1">One bill per booking, with all room charges and payments together</p>
         </div>
       </div>
 
@@ -593,13 +415,13 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
       {actionError && <div className="mx-5 lg:mx-8 mb-3"><ErrorMsg>{actionError}</ErrorMsg></div>}
 
       {/* Stats cards */}
-      <div className="px-5 lg:px-8 pb-4 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+      <div className={`px-5 lg:px-8 pb-4 grid grid-cols-2 ${focus ? 'xl:grid-cols-4' : 'md:grid-cols-3 xl:grid-cols-5'} gap-3`}>
         {[
-          { label: 'Total billed',  value: formatCurrency(totalBilled),    sub: `${billings.length} invoice${billings.length === 1 ? '' : 's'}`, color: 'text-slate-900' },
+          { label: 'Total billed',  value: formatCurrency(totalBilled),    sub: `${bookingBills.length} booking bill${bookingBills.length === 1 ? '' : 's'}`, color: 'text-slate-900' },
           { label: 'Collected',     value: formatCurrency(totalCollected),  sub: 'Net of refunds', color: 'text-emerald-600' },
           { label: 'Balance due',   value: formatCurrency(totalBalance),    sub: totalBalance > 0 ? 'Outstanding' : 'Clear', color: totalBalance > 0 ? 'text-rose-600' : 'text-slate-500' },
-          { label: 'Open invoices', value: String(openCount),               sub: openCount > 0 ? 'Needs follow-up' : 'All settled', color: openCount > 0 ? 'text-amber-600' : 'text-slate-500' },
-          { label: 'Transactions',  value: String(transactionCount),         sub: 'Payment records', color: 'text-sky-700' },
+          { label: 'Open bills', value: String(openCount),               sub: openCount > 0 ? 'Needs follow-up' : 'All settled', color: openCount > 0 ? 'text-amber-600' : 'text-slate-500' },
+          ...(!focus ? [{ label: 'Transactions', value: String(transactionCount), sub: 'Payment records', color: 'text-sky-700' }] : []),
         ].map((s) => (
           <StatCard
             key={s.label}
@@ -627,7 +449,7 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
         {/* Left — invoice list */}
         <div className="w-[300px] lg:w-[340px] flex-shrink-0 flex flex-col bg-white border border-black/[0.06] rounded-2xl overflow-hidden self-start sticky top-5">
           <div className="px-4 py-3 border-b border-slate-100 flex-shrink-0">
-            <p className="text-[13px] font-bold text-slate-900 mb-2.5">Invoices <span className="font-normal text-slate-400">({filteredBillings.length})</span></p>
+            <p className="text-[13px] font-bold text-slate-900 mb-2.5">Booking bills <span className="font-normal text-slate-400">({filteredBookingBills.length})</span></p>
             <div className="flex gap-2.5 flex-wrap">
               {([['ALL','All'],['UNPAID','Unpaid'],['PARTIAL','Partial'],['PAID','Paid']] as const).map(([v,l]) => (
                 <button key={v} type="button" onClick={() => setStatusFilter(v)}
@@ -638,39 +460,38 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
             </div>
           </div>
           <div className="scrollbar-none max-h-[600px] divide-y divide-slate-50 overflow-y-auto">
-            {filteredBillings.map(b => {
-              const br = b.reservation_room;
-              const bcfg = STATUS_CFG[b.payment_status] ?? STATUS_CFG['UNPAID'];
-              const isSel = selectedBillingId === b.id;
+            {filteredBookingBills.map(b => {
+              const bcfg = STATUS_CFG[b.status] ?? STATUS_CFG['UNPAID'];
+              const isSel = selectedFolioGroupId === b.id || b.invoices.some(invoice => invoice.id === selectedBillingId);
               return (
                 <button key={b.id} type="button"
-                  onClick={() => { setSelectedBillingId(isSel ? null : b.id); setSelectedFolioGroupId(null); setSelectedFolio(null); }}
+                  onClick={() => { setSelectedBillingId(null); void openFolio(b.id); }}
                   className={`w-full text-left px-4 py-3.5 transition-colors
                     ${isSel ? 'bg-slate-50 ' : 'hover:bg-slate-50/80'}`}>
                   <div className="flex items-start justify-between gap-2 mb-1.5">
                     <div className="flex items-center gap-2 min-w-0">
                       <div className="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0">
-                        {initials(br.guest.name)}
+                        {initials(b.guest)}
                       </div>
                       <div className="min-w-0">
-                        <p className="text-[12.5px] font-bold text-slate-900 truncate leading-tight">{formatGuestName(br.guest.name)}</p>
-                        <p className="text-[10.5px] text-slate-400">Room {br.room.room_number ?? '—'} · {br.room_category.name}</p>
+                        <p className="text-[12.5px] font-bold text-slate-900 truncate leading-tight">{formatGuestName(b.guest)}</p>
+                        <p className="text-[10.5px] text-slate-400">{b.roomCount} room{b.roomCount === 1 ? '' : 's'} · {b.reference}</p>
                       </div>
                     </div>
                     <span className={`text-[9.5px] font-bold px-2 py-0.5 rounded-full border flex-shrink-0 ${bcfg.badge}`}>{bcfg.label}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-[10.5px] text-slate-400">{fmtDate(br.check_in_date)} → {fmtDate(br.check_out_date)}</span>
+                    <span className="text-[10.5px] text-slate-400">{fmtDate(b.arrival)} → {fmtDate(b.departure)}</span>
                     <div className="text-right">
                       <p className="text-[12.5px] font-bold text-slate-900">{formatCurrency(b.total)}</p>
-                      {b.balance_due > 0 && <p className="text-[10px] font-semibold text-rose-600">{formatCurrency(b.balance_due)} due</p>}
+                      {b.balance > 0 && <p className="text-[10px] font-semibold text-rose-600">{formatCurrency(b.balance)} due</p>}
                     </div>
                   </div>
                 </button>
               );
             })}
-            {filteredBillings.length === 0 && !loading && (
-              <p className="px-4 py-6 text-[12px] text-slate-400 text-center">No invoices match this filter.</p>
+            {filteredBookingBills.length === 0 && !loading && (
+              <p className="px-4 py-6 text-[12px] text-slate-400 text-center">No booking bills match this filter.</p>
             )}
           </div>
         </div>
@@ -744,25 +565,6 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                                 </td>
                                 <td className="px-4 py-3 text-right text-[12.5px] font-bold text-slate-900">{formatCurrency(selectedBilling.amount)}</td>
                               </tr>
-                              {selectedBilling.extra_charges.map(ec => (
-                                <tr key={ec.id} className="border-b border-slate-50">
-                                  <td className="px-4 py-3">
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">Extra</span>
-                                      <span className="text-[12.5px] text-slate-800">{ec.description}</span>
-                                      <button
-                                        type="button"
-                                        disabled={deletingExtraChargeId === ec.id}
-                                        onClick={() => void deleteExtraCharge(selectedBilling.id, ec.id)}
-                                        className="ml-auto rounded-md px-2 py-1 text-[10.5px] font-bold uppercase tracking-wide text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
-                                      >
-                                        {deletingExtraChargeId === ec.id ? 'Removing' : 'Remove'}
-                                      </button>
-                                    </div>
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-[12.5px] font-bold text-slate-900">{formatCurrency(ec.amount)}</td>
-                                </tr>
-                              ))}
                               <tr className="border-b border-slate-50">
                                 <td className="px-4 py-3">
                                   <div className="flex items-center gap-2">
@@ -774,6 +576,25 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                               </tr>
                             </>
                           )}
+                          {selectedBilling.extra_charges.map(ec => (
+                            <tr key={ec.id} className="border-b border-slate-50">
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">Extra</span>
+                                  <span className="text-[12.5px] text-slate-800">{ec.description}</span>
+                                  <button
+                                    type="button"
+                                    disabled={deletingExtraChargeId === ec.id}
+                                    onClick={() => void deleteExtraCharge(selectedBilling.id, ec.id)}
+                                    className="ml-auto rounded-md px-2 py-1 text-[10.5px] font-bold uppercase tracking-wide text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
+                                  >
+                                    {deletingExtraChargeId === ec.id ? 'Removing' : 'Remove'}
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-right text-[12.5px] font-bold text-slate-900">{formatCurrency(ec.amount)}</td>
+                            </tr>
+                          ))}
                           <tr className="bg-slate-50/60">
                             <td className="px-4 py-3 text-[13px] font-black text-slate-900">Total</td>
                             <td className="px-4 py-3 text-right text-[14px] font-black text-slate-900">{formatCurrency(selectedBilling.total)}</td>
@@ -870,13 +691,6 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
             );
           })()}
 
-          {/* No invoice selected prompt */}
-          {!selectedBilling && !loading && billings.length > 0 && (
-            <div className="bg-white border border-black/[0.06] rounded-2xl px-6 py-12 text-center text-[13px] text-slate-400">
-              Select an invoice on the left to view charges and payment history.
-            </div>
-          )}
-
           {/* ── Uninvoiced rooms ── */}
           {uninvoiced.length > 0 && (
             <div className="bg-white border border-amber-100 rounded-2xl overflow-hidden">
@@ -918,10 +732,10 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
           )}
 
           {/* ── Reservation folios ── */}
-          {folioRows.length > 0 && (
+          {!selectedFolioGroupId && folioRows.length > 0 && (
             <div className="bg-white border border-black/[0.06] rounded-2xl overflow-hidden">
               <div className="px-6 py-4 border-b border-slate-100">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">OTA reservation folios</p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Reservation folios</p>
                 <p className="text-[14px] font-bold text-slate-900">{folioRows.length} grouped folio{folioRows.length > 1 ? 's' : ''}</p>
               </div>
               <div className="overflow-x-auto">
@@ -992,21 +806,28 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
 
           {/* ── Expanded folio detail ── */}
           {selectedFolioGroupId && (
-            <div className="relative bg-white border border-black/[0.06] rounded-2xl overflow-hidden">
+            <div ref={folioDetailRef} className="relative bg-white border border-black/[0.06] rounded-2xl overflow-hidden">
               <DelayedSpinnerOverlay loading={folioLoading && folioLoadingGroupId === selectedFolioGroupId} />
               <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Folio detail</p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Combined booking bill</p>
                   <p className="text-[14px] font-bold text-slate-900">{selectedFolio?.external_reservation_id ?? 'Loading…'}</p>
                 </div>
+                <div className="flex flex-wrap items-center gap-2">
+                {selectedFolio && selectedFolio.invoices.length > 0 && <button type="button"
+                  onClick={() => { const printWindow = window.open('', '_blank'); if (printWindow) { printWindow.document.write(bookingBillHtml(selectedFolio)); printWindow.document.close(); printWindow.focus(); setTimeout(() => printWindow.print(), 400); } }}
+                  className="h-7 px-3 rounded-lg text-[11px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50">
+                  Print booking bill
+                </button>}
                 <button type="button" onClick={closeFolio}
                   className="h-7 px-3 rounded-lg text-[11px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50">
                   Close folio
                 </button>
+                </div>
               </div>
               {folioError  && <div className="px-6 py-4"><ErrorMsg>{folioError}</ErrorMsg></div>}
               {selectedFolio && (
-                <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-5 p-6">
+                <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_280px] gap-5 p-6">
                   <div className="space-y-4">
                     {/* Summary cards */}
                     <div className="grid grid-cols-3 gap-3">
@@ -1046,30 +867,58 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                         </table>
                       </div>
                     </div>
-                    {/* Folio invoices */}
+                    {/* Itemized booking charges */}
                     <div className="border border-slate-100 rounded-xl overflow-hidden">
                       <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/60">
-                        <p className="text-[12px] font-bold text-slate-900">{selectedFolio.invoices.length} invoices</p>
+                        <p className="text-[12px] font-bold text-slate-900">Booking charges</p>
                       </div>
-                      <table className="w-full min-w-[520px]">
-                        <thead><tr className="border-b border-slate-100">{['Guest','Extras','Total','Paid','Balance','Status'].map(h => <th key={h} className="px-4 py-2.5 text-left text-[10px] font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+                      <table className="w-full">
+                        <thead><tr className="border-b border-slate-100">
+                          <th className="px-4 py-2.5 text-left text-[10px] font-bold uppercase tracking-wide text-slate-400">Description</th>
+                          <th className="px-4 py-2.5 text-right text-[10px] font-bold uppercase tracking-wide text-slate-400">Amount</th>
+                        </tr></thead>
                         <tbody>
-                          {selectedFolio.invoices.map(inv => (
-                            <tr key={inv.id} className="border-b border-slate-50 last:border-0">
-                              <td className="px-4 py-3 text-[12.5px] font-semibold text-slate-900">{formatGuestName(inv.reservation_room.guest.name)}</td>
-                              <td className="px-4 py-3 text-[12px] text-slate-600">{formatCurrency(inv.extra_charges_total)}</td>
-                              <td className="px-4 py-3 text-[12.5px] font-bold text-slate-900">{formatCurrency(inv.total)}</td>
-                              <td className="px-4 py-3 text-[12px] text-emerald-600 font-semibold">{formatCurrency(inv.paid_total - inv.refunded_total)}</td>
-                              <td className={`px-4 py-3 text-[12.5px] font-bold ${inv.balance_due > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{formatCurrency(inv.balance_due)}</td>
-                              <td className="px-4 py-3">
-                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${(STATUS_CFG[inv.payment_status] ?? STATUS_CFG['UNPAID']).badge}`}>
-                                  {(STATUS_CFG[inv.payment_status] ?? STATUS_CFG['UNPAID']).label}
-                                </span>
-                              </td>
+                          {invoiceChargeLines(selectedFolio.invoices, true, { includeExtras: false }).map((line, index) => (
+                            <tr key={`stay-${index}`} className="border-b border-slate-50">
+                              <td className="px-4 py-3 text-[12.5px] text-slate-700 [overflow-wrap:anywhere]">{line.desc}</td>
+                              <td className="px-4 py-3 text-right text-[12.5px] font-bold text-slate-900 whitespace-nowrap">{formatCurrency(line.amount)}</td>
                             </tr>
                           ))}
+                          {selectedFolio.invoices.flatMap(inv => inv.extra_charges.map(charge => (
+                            <tr key={charge.id} className="border-b border-slate-50">
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-3">
+                                  <span className="min-w-0 text-[12.5px] text-slate-800 [overflow-wrap:anywhere]">{charge.description}</span>
+                                  <button type="button" disabled={deletingExtraChargeId === charge.id}
+                                    aria-label={`Remove ${charge.description}`}
+                                    onClick={() => void deleteExtraCharge(inv.id, charge.id)}
+                                    className="ml-auto shrink-0 rounded-md px-2 py-1 text-[10.5px] font-semibold text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40">
+                                    {deletingExtraChargeId === charge.id ? 'Removing…' : 'Remove'}
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-right text-[12.5px] font-bold text-slate-900 whitespace-nowrap">{formatCurrency(charge.amount)}</td>
+                            </tr>
+                          )))}
+                          <tr className="bg-slate-50/60">
+                            <td className="px-4 py-3 text-[13px] font-bold text-slate-900">Total billed</td>
+                            <td className="px-4 py-3 text-right text-[14px] font-bold text-slate-900 whitespace-nowrap">{formatCurrency(selectedFolio.billed_total)}</td>
+                          </tr>
                         </tbody>
                       </table>
+                      {selectedFolio.invoices.length > 0 && (
+                        <details className="border-t border-slate-100 px-4 py-3">
+                          <summary className="cursor-pointer text-[11.5px] font-semibold text-slate-500">Individual invoices & payment history</summary>
+                          <div className="mt-3 flex flex-wrap gap-3">
+                            {selectedFolio.invoices.map((inv, index) => (
+                              <button key={inv.id} type="button" className="text-[12px] font-semibold text-indigo-600 hover:underline"
+                                onClick={() => { closeFolio(); setSelectedBillingId(inv.id); }}>
+                                Invoice {index + 1}
+                              </button>
+                            ))}
+                          </div>
+                        </details>
+                      )}
                     </div>
                   </div>
 
@@ -1077,27 +926,13 @@ export function PaymentsPage({ previewDataEnabled = false }: { previewDataEnable
                   <div className="space-y-4">
                     <div className="bg-white border border-slate-200 rounded-xl p-5">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Other charges</p>
-                      <p className="text-[14px] font-bold text-slate-900 mb-4">Add food or expenses</p>
+                      <p className="text-[14px] font-bold text-slate-900 mb-4">Add a charge to this booking</p>
                       {selectedFolio.invoices.length === 0 ? (
                         <p className="text-[12px] text-slate-500 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                           Generate an invoice before adding extra charges.
                         </p>
                       ) : (
                         <form onSubmit={submitFolioExtraCharge} className="space-y-3">
-                          <div className="space-y-1.5">
-                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Apply to invoice</label>
-                            <select
-                              value={extraChargeForm.billing_id || selectedFolio.invoices[0]?.id || ''}
-                              onChange={e => setExtraChargeForm(f => ({ ...f, billing_id: e.target.value }))}
-                              className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[12.5px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400/30"
-                            >
-                              {selectedFolio.invoices.map(inv => (
-                                <option key={inv.id} value={inv.id}>
-                                  {formatGuestName(inv.reservation_room.guest.name)} · {inv.reservation_room.room_category.name}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
                           <div className="space-y-1.5">
                             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Description</label>
                             <input

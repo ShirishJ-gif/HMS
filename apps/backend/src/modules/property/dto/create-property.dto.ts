@@ -1,6 +1,17 @@
-import { IsEmail, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { PropertyType } from '@prisma/client';
+import { IsEmail, IsEnum, IsNumber, Min, Max, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 export class CreatePropertyDto {
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  @Max(99999999.99)
+  nightly_rate?: number;
+
+  @IsOptional()
+  @IsEnum(PropertyType)
+  property_type?: PropertyType;
+
   @IsString()
   @MaxLength(160)
   name: string;

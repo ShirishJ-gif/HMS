@@ -47,9 +47,17 @@ export type MediaImage = {
   created_at: string;
 };
 
+export type PropertyType = 'HOTEL' | 'RENTAL_VILLAS';
+
+export const PROPERTY_TYPE_OPTIONS: { label: string; value: PropertyType }[] = [
+  { label: 'Hotel', value: 'HOTEL' },
+  { label: 'Rental Villas', value: 'RENTAL_VILLAS' },
+];
+
 export type Property = {
   id: string;
   name: string;
+  property_type: PropertyType;
   code: string;
   phone: string | null;
   email: string | null;
@@ -104,19 +112,53 @@ export type PricingRule = {
   };
 };
 
+export type DashboardStay = {
+  id: string;
+  reference: string;
+  guest_name: string;
+  property_id: string;
+  property_name: string;
+  arrival: string;
+  departure: string;
+  room_count: number;
+  pending_rooms: number;
+  unassigned_rooms: number;
+  room_labels: string;
+};
+
 export type DashboardSummary = {
   date: string;
+  timezone: string;
+  generated_at: string;
+  property_id: string;
+  properties: Array<{ id: string; name: string; property_type: PropertyType }>;
   reservation_groups_today: number;
   occupancy_rate: number;
   occupied_rooms: number;
   total_rooms: number;
+  available_rooms: number;
+  out_of_service_rooms: number;
   revenue_today: number;
+  collected_today: number;
+  refunded_today: number;
+  revenue_yesterday: number;
+  revenue_month_to_date: number;
+  pending_arrivals_today: number;
+  pending_departures_today: number;
+  unassigned_arrivals_today: number;
   reservation_room_arrivals_today: number;
   reservation_room_departures_today: number;
   active_reservation_groups: number;
   open_housekeeping_tasks: number;
+  overdue_housekeeping_tasks: number;
+  housekeeping_by_status: Array<{ status: string; count: number }>;
   pending_balance_total: number;
-  revenue_by_ota: Array<{ label: string; amount: number }>;
+  unpaid_invoice_count: number;
+  revenue_by_ota: Array<{ label: string; collected: number; refunded: number; amount: number }>;
+  collections_trend: Array<{ date: string; amount: number }>;
+  arrivals: DashboardStay[];
+  departures: DashboardStay[];
+  upcoming_arrivals: DashboardStay[];
 };
 
 export type NotificationFeedItem = {
@@ -609,7 +651,7 @@ export type ChannelProviderActionResponse = {
   message?: string;
 };
 
-export type ZodomusSetupResponse = {
+export type ChannelProviderSetupResponse = {
   connection: ChannelConnection;
   catalog: ChannelProviderCatalog | null;
   setup_status: {

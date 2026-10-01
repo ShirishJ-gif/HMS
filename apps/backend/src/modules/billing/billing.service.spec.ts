@@ -4,9 +4,12 @@ import { BillingService } from './billing.service';
 
 describe('BillingService', () => {
   const tx = {
+    $queryRaw: jest.fn(),
+    auditLog: { create: jest.fn() },
+    user: { findUnique: jest.fn() },
     reservationRoom: { findUnique: jest.fn() },
     billing: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
-    billingExtraCharge: { create: jest.fn() },
+    billingExtraCharge: { create: jest.fn(), delete: jest.fn() },
   };
   const prisma = {
     $transaction: jest.fn(),
@@ -117,9 +120,10 @@ describe('BillingService', () => {
   let service: BillingService;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
     prisma.$transaction.mockImplementation((callback) => callback(tx));
     service = new BillingService(prisma as never);
+    tx.billingExtraCharge.create.mockImplementation(({ data }) => ({ ...data, id: "charge-1", amount: new Prisma.Decimal(data.amount) }));
   });
 
   it('generates an invoice from imported room-stay total and tax', async () => {
@@ -166,8 +170,9 @@ describe('BillingService', () => {
   });
 
   it('updates payment status', async () => {
-    const paidBilling = billingRecord({ paymentStatus: PaymentStatus.PAID });
-    prisma.billing.update.mockResolvedValue(paidBilling);
+    const paidBilling = billingRecord({ paymentStatus: PaymentStatus.PAID, payments: [{ amount: new Prisma.Decimal(16800), status: 'SUCCEEDED' }] });
+    tx.billing.findUnique.mockResolvedValue(paidBilling);
+    tx.billing.update.mockResolvedValue(paidBilling);
 
     await expect(
       service.updatePaymentStatus(paidBilling.id, { payment_status: PaymentStatus.PAID }),
@@ -198,6 +203,63 @@ describe('BillingService', () => {
         AND: [{ reservationRoomId: { not: null } }],
       },
     });
+  });
+
+  it('reopens a paid bill when a guest extra charge is added', async () => {
+    const existing = billingRecord({
+      paymentStatus: PaymentStatus.PAID,
+      payments: [{ amount: new Prisma.Decimal(16800), status: 'SUCCEEDED' }],
+    });
+    tx.billing.findUnique.mockResolvedValue(existing);
+    tx.billing.update.mockImplementation(({ data }) => ({ ...existing, ...data,
+      extraCharges: [{ id: 'charge-1', description: 'Dinner', amount: new Prisma.Decimal(5000) }],
+    }));
+    const result = await service.addExtraCharge(existing.id, { description: 'Dinner', amount: '5000' });
+    expect(result).toMatchObject({ total: 21800, balance_due: 5000, payment_status: PaymentStatus.PARTIAL });
+  });
+
+  it('marks a bill paid when removing the last outstanding extra charge', async () => {
+    const existing = billingRecord({
+      total: new Prisma.Decimal(21800), paymentStatus: PaymentStatus.PARTIAL,
+      extraCharges: [{ id: 'charge-1', description: 'Dinner', amount: new Prisma.Decimal(5000) }],
+      payments: [{ amount: new Prisma.Decimal(16800), status: 'SUCCEEDED' }],
+    });
+    tx.billing.findUnique.mockResolvedValue(existing);
+    tx.billing.update.mockImplementation(({ data }) => ({ ...existing, ...data, extraCharges: [] }));
+    const result = await service.deleteExtraCharge(existing.id, 'charge-1');
+    expect(result).toMatchObject({ total: 16800, balance_due: 0, payment_status: PaymentStatus.PAID });
+  });
+
+  it('keeps fully refunded bills refunded when adding charges', async () => {
+    const existing = billingRecord({ paymentStatus: PaymentStatus.REFUNDED, payments: [
+      { amount: new Prisma.Decimal(16800), status: 'SUCCEEDED' },
+      { amount: new Prisma.Decimal(16800), status: 'REFUNDED' },
+    ] });
+    tx.billing.findUnique.mockResolvedValue(existing);
+    tx.billing.update.mockImplementation(({ data }) => ({ ...existing, ...data,
+      extraCharges: [{ id: 'charge-1', description: 'Dinner', amount: new Prisma.Decimal(5000) }],
+    }));
+    const result = await service.addExtraCharge(existing.id, { description: 'Dinner', amount: '5000' });
+    expect(result).toMatchObject({ total: 21800, balance_due: 21800, payment_status: PaymentStatus.REFUNDED });
+  });
+
+  it('does not allow an arbitrary PAID status to hide an unpaid balance', async () => {
+    const existing = billingRecord();
+    tx.billing.findUnique.mockResolvedValue(existing);
+    await expect(service.updatePaymentStatus(existing.id, { payment_status: PaymentStatus.PAID })).rejects.toThrow(ConflictException);
+    expect(tx.billing.update).not.toHaveBeenCalled();
+  });
+
+  it('leaves only extra services due after an Airbnb room settlement', async () => {
+    const existing = billingRecord({ paymentStatus: PaymentStatus.PAID, payments: [
+      { amount: new Prisma.Decimal(13000), status: 'SUCCEEDED', metadata: { source: 'airbnb_payout_email' } },
+    ] });
+    tx.billing.findUnique.mockResolvedValue(existing);
+    tx.billing.update.mockImplementation(({ data }) => ({ ...existing, ...data,
+      extraCharges: [{ id: 'charge-1', description: 'Dinner', amount: new Prisma.Decimal(5000) }],
+    }));
+    const result = await service.addExtraCharge(existing.id, { description: 'Dinner', amount: '5000' });
+    expect(result).toMatchObject({ total: 21800, paid_total: 13000, balance_due: 5000, payment_status: PaymentStatus.PARTIAL });
   });
 
   function billingRecord(overrides: Record<string, unknown> = {}): any {

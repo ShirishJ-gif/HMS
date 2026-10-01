@@ -1,431 +1,923 @@
-import { useEffect, useState } from 'react';
-import { api } from '../api/client';
-import { DashboardSummary, ReservationGroup } from '../api/types';
-import { PaginatedResponse } from '../api/pagination';
-import { useAsync } from '../hooks/useAsync';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  ArrowDownLeft,
+  ArrowUpRight,
+  BedDouble,
+  CalendarDays,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  CreditCard,
+  LogIn,
+  LogOut,
+  RefreshCw,
+  Sparkles,
+} from 'lucide-react';
+import { api, getApiErrorMessage } from '../api/client';
+import type { DashboardSummary, DashboardStay } from '../api/types';
 import { formatCurrency } from '../utils/format';
-import { MetricCard, SignalCard, StatusBadge, Panel, PageHeader, SectionHeading, Divider, ErrorMsg, LoadingMsg, TableCard, Th, Td } from './ui';
+import { useWorkspaceState } from '../hooks/useWorkspaceState';
+import { workspacePanel, type DashboardFocus } from '../components/WorkspaceUI';
+import { InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { createPreviewData } from './previewData';
 
-export function DashboardPage({ previewDataEnabled = false }: { previewDataEnabled?: boolean }) {
-  const [reloadKey, setReloadKey] = useState(0);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
-  const { data, error, loading } = useAsync(
-    async () => {
-      if (previewDataEnabled) return createPreviewData().dashboard;
-      return (await api.get<DashboardSummary>('/dashboard/summary')).data;
-    },
-    [previewDataEnabled, reloadKey],
-  );
-  const { data: recentData } = useAsync(
-    async () => {
-      if (previewDataEnabled) {
-        const reservations = createPreviewData().reservationGroups;
-        return {
-          data: reservations,
-          meta: { page: 1, limit: reservations.length, total: reservations.length, total_pages: 1 },
-        } satisfies PaginatedResponse<ReservationGroup>;
-      }
-      return (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/feed', { params: { page: 1, limit: 25, status: 'BOOKED' } })).data;
-    },
-    [previewDataEnabled, reloadKey],
-  );
-  const recentReservations = (recentData?.data ?? [])
-    .filter((reservation) => reservation.reservation_status === 'BOOKED')
-    .map((reservation) => ({
-      reservation,
-      arrival: reservation.rooms[0]?.arrival_date ?? reservation.arrival_date ?? null,
-      departure: reservation.rooms[reservation.rooms.length - 1]?.departure_date ?? reservation.departure_date ?? null,
-    }))
-    .filter((entry) => !entry.arrival || entry.arrival >= getLocalDate())
-    .sort((left, right) => (left.arrival ?? '').localeCompare(right.arrival ?? ''))
-    .slice(0, 5);
+export type DashboardDestination = 'reports' | 'bookings' | 'payments' | 'housekeeping' | 'availability' | 'setup';
+type ScheduleTab = 'arrivals' | 'departures' | 'upcoming_arrivals';
+const panel = workspacePanel;
+const button =
+  'inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 disabled:opacity-50';
+const colors = ['#6366f1', '#10b981', '#38bdf8', '#f59e0b', '#a78bfa', '#fb7185'];
+const shortDate = (date: string) =>
+  new Date(`${date}T00:00:00Z`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+function Empty({ children }: { children: ReactNode }) {
+  return <div className="px-5 py-6 text-center text-sm leading-6 text-slate-500">{children}</div>;
+}
 
-  useEffect(() => { if (data) setLastUpdatedAt(new Date()); }, [data]);
-
+export function DashboardPage({
+  previewDataEnabled = false,
+  activePropertyId = '',
+  onNavigate,
+  onOpenFolio,
+}: {
+  previewDataEnabled?: boolean;
+  activePropertyId?: string;
+  onNavigate?: (page: DashboardDestination, focus?: DashboardFocus) => void;
+  onOpenFolio?: (groupId: string) => void;
+}) {
+  const scopeKey = `${previewDataEnabled ? 'sample' : 'live'}:${activePropertyId}`;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  const [selectedDate, setSelectedDate] = useWorkspaceState(`${scopeKey}:date`, '');
+  const requestedDate = selectedDate || today;
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [showCompleted, setShowCompleted] = useWorkspaceState(`${scopeKey}:completed`, false);
+  const [refresh, setRefresh] = useState(0);
+  const [state, setState] = useWorkspaceState<{ key: string; data: DashboardSummary } | null>('dashboard:data', null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useWorkspaceState<ScheduleTab>(`${scopeKey}:tab`, 'arrivals');
+  const [page, setPage] = useWorkspaceState(`${scopeKey}:page`, 1);
+  const scheduleRef = useRef<HTMLElement>(null);
+  const data = state?.key === scopeKey ? state.data : null;
   useEffect(() => {
-    const id = window.setInterval(() => setReloadKey((v) => v + 1), 15000);
-    const onFocus = () => setReloadKey((v) => v + 1);
-    const onVisible = () => { if (document.visibilityState === 'visible') setReloadKey((v) => v + 1); };
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisible);
-    return () => { window.clearInterval(id); window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVisible); };
-  }, []);
-
-  const refreshBtn = (
-    <div className="flex flex-col items-end gap-1">
-      <button
-        type="button"
-        disabled={loading}
-        onClick={() => setReloadKey((v) => v + 1)}
-        className="flex items-center gap-1.5 h-8 px-3 rounded-lg border border-slate-200 bg-white text-[12px] font-medium text-slate-600 hover:bg-slate-50 hover:border-slate-300 disabled:opacity-50 transition"
-      >
-        <svg aria-hidden="true" className={`w-3 h-3 ${loading ? 'animate-spin-icon' : ''}`} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-          <path d="M20 11a8 8 0 0 0-14.8-4"/><path d="M4 5v4h4"/><path d="M4 13a8 8 0 0 0 14.8 4"/><path d="M20 19v-4h-4"/>
-        </svg>
-        {loading ? 'Refreshing…' : 'Refresh'}
-      </button>
-      <span aria-live="polite" className="text-[11px] text-slate-400">
-        {lastUpdatedAt ? `Updated ${formatTime(lastUpdatedAt)}` : 'Auto-syncs every 15 s'}
-      </span>
-    </div>
-  );
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    const load = previewDataEnabled
+      ? Promise.resolve(createPreviewData(requestedDate).dashboard)
+      : api
+          .get<DashboardSummary>('/dashboard/summary', {
+            params: { property_id: activePropertyId || undefined, date: requestedDate },
+            signal: controller.signal,
+          })
+          .then((response) => response.data);
+    load
+      .then((summary) => {
+        if (!controller.signal.aborted) setState({ key: scopeKey, data: summary });
+      })
+      .catch((err: unknown) => {
+        if (!controller.signal.aborted) setError(getApiErrorMessage(err));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [scopeKey, requestedDate, refresh]);
+  useEffect(() => {
+    if (previewDataEnabled) return;
+    const update = () => {
+      if (document.visibilityState === 'visible') setRefresh((value) => value + 1);
+    };
+    const timer = window.setInterval(update, 60_000);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, [previewDataEnabled]);
+  const date = data?.date ?? requestedDate;
+  const isToday = date === today;
+  const updating = loading || (!error && data?.date !== requestedDate);
+  function chooseDate(value: string) {
+    setSelectedDate(value === today ? '' : value);
+    setPage(1);
+    setCalendarOpen(false);
+  }
+  function moveDay(offset: number) {
+    chooseDate(
+      new Date(new Date(`${requestedDate}T00:00:00Z`).getTime() + offset * 86400000).toISOString().slice(0, 10),
+    );
+  }
+  const scopeName = data
+    ? data.properties.length === 1
+      ? data.properties[0].name
+      : `${data.properties.length} properties`
+    : 'Your property workspace';
+  function selectTab(next: ScheduleTab, scroll = false) {
+    setTab(next);
+    setPage(1);
+    if (scroll)
+      window.requestAnimationFrame(() => {
+        scheduleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        scheduleRef.current?.focus({ preventScroll: true });
+      });
+  }
+  const allSchedule = data?.[tab] ?? [];
+  const completedCount = tab === 'upcoming_arrivals' ? 0 : allSchedule.filter((row) => row.pending_rooms === 0).length;
+  const schedule = allSchedule
+    .filter((row) => tab === 'upcoming_arrivals' || showCompleted || row.pending_rooms > 0)
+    .sort((a, b) => b.pending_rooms - a.pending_rooms);
+  const totalPages = Math.max(1, Math.ceil(schedule.length / 5));
+  const currentPage = Math.min(page, totalPages);
+  const visibleRows = schedule.slice((currentPage - 1) * 5, currentPage * 5);
+  const maxCollection = Math.max(1, ...(data?.collections_trend ?? []).map((point) => Math.abs(point.amount)));
+  const monthGross = data?.revenue_by_ota.reduce((sum, row) => sum + row.collected, 0) ?? 0;
+  const weekTotal = data?.collections_trend.reduce((sum, point) => sum + point.amount, 0) ?? 0;
+  const attention: Array<{
+    title: string;
+    description: string;
+    page: DashboardDestination;
+    focus: DashboardFocus['kind'];
+    tone: 'amber' | 'slate';
+  }> = data
+    ? [
+        ...(data.unassigned_arrivals_today
+          ? [
+              {
+                title: `${data.unassigned_arrivals_today} arriving ${data.unassigned_arrivals_today === 1 ? 'room needs' : 'rooms need'} assignment`,
+                description: 'Assign rooms before guests check in.',
+                page: 'bookings' as const,
+                focus: 'unassigned_arrivals' as const,
+                tone: 'amber' as const,
+              },
+            ]
+          : []),
+        ...(data.overdue_housekeeping_tasks
+          ? [
+              {
+                title: `${data.overdue_housekeeping_tasks} overdue housekeeping ${data.overdue_housekeeping_tasks === 1 ? 'task' : 'tasks'}`,
+                description: 'Review the rooms waiting to be prepared.',
+                page: 'housekeeping' as const,
+                focus: 'overdue_housekeeping' as const,
+                tone: 'amber' as const,
+              },
+            ]
+          : []),
+        ...(data.pending_departures_today
+          ? [
+              {
+                title: `${data.pending_departures_today} ${data.pending_departures_today === 1 ? 'room still needs' : 'rooms still need'} checkout`,
+                description: `Review departures and folios for ${isToday ? 'today' : shortDate(date)}.`,
+                page: 'bookings' as const,
+                focus: 'pending_departures' as const,
+                tone: 'slate' as const,
+              },
+            ]
+          : []),
+        ...(data.pending_balance_total > 0
+          ? [
+              {
+                title: `${formatCurrency(data.pending_balance_total)} outstanding`,
+                description: `${data.unpaid_invoice_count} open ${data.unpaid_invoice_count === 1 ? 'invoice' : 'invoices'} across visible stays.`,
+                page: 'payments' as const,
+                focus: 'outstanding_folios' as const,
+                tone: 'slate' as const,
+              },
+            ]
+          : []),
+      ]
+    : [];
 
   return (
-    <section className="space-y-6">
-      <PageHeader
-        eyebrow="Overview"
-        title="Dashboard"
-        subtitle="Live operating posture, OTA reservation pressure, and today's financial signals."
+    <section className="space-y-5 pb-8">
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-400">
+            {requestedDate === today ? 'Today at a glance' : 'Your day at a glance'}
+          </p>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Dashboard</h1>
+          <p className="mt-1.5 text-sm text-slate-500">Your front desk, room status, and collections in one place.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {onNavigate && (
+            <button type="button" className={button} onClick={() => onNavigate('reports')}>
+              View reports
+              <ArrowUpRight size={14} />
+            </button>
+          )}
+          <button
+            type="button"
+            className={`${button} !border-slate-800 !bg-slate-800 !text-white`}
+            disabled={updating}
+            onClick={() => setRefresh((value) => value + 1)}
+          >
+            <RefreshCw size={14} className={updating ? 'animate-spin' : ''} />
+            {updating && data ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
+      </header>
+      <div
+        className="flex flex-wrap items-center gap-2"
+        role="group"
+        aria-label="Dashboard date"
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') setCalendarOpen(false);
+        }}
       >
-        {refreshBtn}
-      </PageHeader>
-
-      {loading && !data && <LoadingMsg>Loading dashboard…</LoadingMsg>}
-      {error && <ErrorMsg>{error}</ErrorMsg>}
-
+        <button type="button" className={button} aria-label="Previous day" onClick={() => moveDay(-1)}>
+          <ChevronLeft size={16} />
+        </button>
+        <InlineCalendarDatePicker
+          label="Dashboard date"
+          value={requestedDate}
+          open={calendarOpen}
+          setOpen={setCalendarOpen}
+          onChange={chooseDate}
+          buttonClassName={button}
+          panelClassName="-translate-x-12 max-w-[calc(100vw-3rem)] sm:translate-x-0"
+          renderTrigger={() => (
+            <>
+              <CalendarDays size={16} />
+              <span>
+                {new Date(`${requestedDate}T00:00:00Z`).toLocaleDateString('en-IN', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                  timeZone: 'UTC',
+                })}
+              </span>
+            </>
+          )}
+        />
+        <button type="button" className={button} aria-label="Next day" onClick={() => moveDay(1)}>
+          <ChevronRight size={16} />
+        </button>
+        <button type="button" className={button} disabled={requestedDate === today} onClick={() => chooseDate(today)}>
+          Today
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="inline-flex items-center gap-1.5 font-medium text-slate-700">
+            <CalendarDays size={14} />
+            {new Date(`${date}T00:00:00Z`).toLocaleDateString('en-IN', {
+              weekday: 'long',
+              day: 'numeric',
+              month: 'long',
+              timeZone: 'UTC',
+            })}
+          </span>
+          <span>{scopeName}</span>
+          <span>IST · Asia/Kolkata</span>
+        </div>
+        <span role="status" className="inline-flex items-center gap-1.5">
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${error ? 'bg-amber-500' : previewDataEnabled ? 'bg-indigo-500' : 'bg-emerald-500'}`}
+          />
+          {updating && data
+            ? `Updating · showing ${shortDate(date)}`
+            : data
+              ? `${error ? 'Last successful update' : previewDataEnabled ? 'Sample data' : 'Updated'} · ${new Date(data.generated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`
+              : loading
+                ? 'Loading dashboard…'
+                : 'Unavailable'}
+        </span>
+      </div>
+      {requestedDate !== today && (
+        <p className="text-xs leading-5 text-slate-500">
+          Arrivals, departures and collections follow the selected date. Room status, housekeeping and outstanding
+          balances are current; reservation progress shows its latest status.
+        </p>
+      )}
+      {previewDataEnabled && (
+        <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-xs leading-5 text-indigo-800">
+          Sample workspace: Harbour Grand Demo. These figures illustrate the dashboard and are separate from your
+          selected property.
+        </div>
+      )}
+      {error && (
+        <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p className="font-semibold">
+            {data
+              ? 'Could not refresh. The figures below are from the last successful update.'
+              : 'Could not load the dashboard.'}
+          </p>
+          <p className="mt-1 text-xs">{error}</p>
+          <button
+            type="button"
+            className="mt-2 text-xs font-semibold underline"
+            onClick={() => setRefresh((value) => value + 1)}
+          >
+            Try again
+          </button>
+        </div>
+      )}
+      {!data && loading && (
+        <div
+          className="workspace-skeleton grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4"
+          aria-busy="true"
+          aria-label="Loading dashboard"
+        >
+          {[0, 1, 2, 3].map((index) => (
+            <div key={index} className={`${panel} h-40 p-4`}>
+              <div className="h-3 w-28 rounded animate-shimmer" />
+              <div className="mt-6 h-8 w-20 rounded animate-shimmer" />
+              <div className="mt-5 h-3 w-40 rounded animate-shimmer" />
+            </div>
+          ))}
+        </div>
+      )}
       {data && (
-        <>
-          {/* KPI row */}
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-            <MetricCard label="Reservations today" value={data.reservation_groups_today.toString()} sub="Active groups" />
-            <MetricCard label="Occupancy rate" value={`${data.occupancy_rate}%`} sub={`${data.occupied_rooms} of ${data.total_rooms} rooms`} />
-            <MetricCard label="Available rooms" value={String(data.total_rooms - data.occupied_rooms)} sub={`of ${data.total_rooms} total`} />
-            <MetricCard label="Revenue today" value={formatCurrency(data.revenue_today)} sub="Collected" />
-            <MetricCard label="Open HK tasks" value={String(data.open_housekeeping_tasks)} sub="Housekeeping queue" />
+        <fieldset
+          disabled={updating || Boolean(error)}
+          aria-busy={updating}
+          className="workspace-results min-w-0 space-y-5"
+        >
+          {data.total_rooms === 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-100 bg-indigo-50 p-4 text-sm text-indigo-900">
+              <span>Add your rooms to start tracking occupancy and room status.</span>
+              {onNavigate && (
+                <button type="button" className={button} onClick={() => onNavigate('setup')}>
+                  Open property setup
+                  <ChevronRight size={14} />
+                </button>
+              )}
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <button
+              type="button"
+              onClick={() => selectTab('arrivals', true)}
+              className={`${panel} p-4 text-left transition-colors hover:border-indigo-300`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-500">
+                  Arrivals {isToday ? 'today' : shortDate(date)}
+                </span>
+                <LogIn size={18} className="text-indigo-500" />
+              </div>
+              <div className="mt-3 flex items-baseline gap-2">
+                <strong className="text-2xl font-bold tracking-tight text-slate-900">
+                  {data.reservation_room_arrivals_today}
+                </strong>
+                <span className="text-xs text-slate-400">room check-ins</span>
+              </div>
+              <div className="mt-4 flex items-center justify-between gap-2">
+                <span
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${data.pending_arrivals_today ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-500'}`}
+                >
+                  {data.pending_arrivals_today} remaining
+                </span>
+                <span className="text-xs text-slate-500">
+                  {data.reservation_room_arrivals_today - data.pending_arrivals_today} checked in
+                </span>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => selectTab('departures', true)}
+              className={`${panel} p-4 text-left transition-colors hover:border-indigo-300`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-500">
+                  Departures {isToday ? 'today' : shortDate(date)}
+                </span>
+                <LogOut size={18} className="text-sky-500" />
+              </div>
+              <div className="mt-3 flex items-baseline gap-2">
+                <strong className="text-2xl font-bold tracking-tight text-slate-900">
+                  {data.reservation_room_departures_today}
+                </strong>
+                <span className="text-xs text-slate-400">room checkouts</span>
+              </div>
+              <div className="mt-4 flex items-center justify-between gap-2">
+                <span
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${data.pending_departures_today ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-500'}`}
+                >
+                  {data.pending_departures_today} remaining
+                </span>
+                <span className="text-xs text-slate-500">
+                  {data.reservation_room_departures_today - data.pending_departures_today} checked out
+                </span>
+              </div>
+            </button>
+            <div className={`${panel} p-4`}>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-500">Current occupancy</span>
+                <BedDouble size={18} className="text-emerald-500" />
+              </div>
+              <strong className="mt-3 block text-2xl font-bold tracking-tight text-slate-900">
+                {data.total_rooms ? `${data.occupancy_rate.toFixed(1)}%` : '—'}
+              </strong>
+              <p className="mt-4 text-xs leading-6 text-slate-500">
+                {data.occupied_rooms} occupied of {data.total_rooms} configured rooms
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate?.('payments')}
+              disabled={!onNavigate}
+              className={`${panel} p-4 text-left transition-colors enabled:hover:border-indigo-300`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-500">
+                  Net collected {isToday ? 'today' : shortDate(date)}
+                </span>
+                <CreditCard size={18} className="text-violet-500" />
+              </div>
+              <strong className="mt-3 block text-2xl font-bold tracking-tight text-slate-900">
+                {formatCurrency(data.revenue_today)}
+              </strong>
+              <p className="mt-4 flex items-center gap-1 text-xs leading-6 text-slate-500">
+                {data.revenue_today === data.revenue_yesterday ? (
+                  isToday ? (
+                    'Same as yesterday'
+                  ) : (
+                    'Same as the previous day'
+                  )
+                ) : (
+                  <>
+                    {data.revenue_today > data.revenue_yesterday ? (
+                      <ArrowUpRight size={13} />
+                    ) : (
+                      <ArrowDownLeft size={13} />
+                    )}
+                    {formatCurrency(Math.abs(data.revenue_today - data.revenue_yesterday))}{' '}
+                    {data.revenue_today > data.revenue_yesterday ? 'more' : 'less'} than{' '}
+                    {isToday ? 'yesterday' : 'the previous day'}
+                  </>
+                )}
+              </p>
+            </button>
           </div>
 
-          {/* Room utilisation bar */}
-          {data.total_rooms > 0 && (
-            <Panel className="!py-4">
-              <div className="flex flex-wrap items-center gap-5">
-                <div className="flex-shrink-0">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-400 mb-0.5">Room utilisation</p>
-                  <p className="text-sm font-semibold text-slate-800">
-                    {data.occupied_rooms} occupied · {data.total_rooms - data.occupied_rooms} free
-                  </p>
+          <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.75fr)_minmax(300px,1fr)]">
+            {/* Independent desktop columns; mobile keeps the schedule and attention cards first. */}
+            <div className="contents xl:flex xl:min-w-0 xl:flex-col xl:gap-4">
+              <section
+                ref={scheduleRef}
+                tabIndex={-1}
+                aria-label="Guest schedule"
+                className={`${panel} order-1 xl:order-none min-w-0 scroll-mt-4 overflow-hidden outline-none`}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3 p-4">
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900">Guest schedule</h2>
+                    <p className="mt-1 text-xs text-slate-500">Plan arrivals, room assignments, and departures.</p>
+                  </div>
+                  {onNavigate && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('bookings')}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 hover:underline"
+                    >
+                      Reservations
+                      <ArrowUpRight size={14} />
+                    </button>
+                  )}
                 </div>
-                <div className="flex-1 min-w-[100px]">
-                  <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-700"
-                      style={{ width: `${Math.min(data.occupancy_rate, 100)}%` }}
-                    />
+                <div
+                  className="flex flex-wrap gap-1 border-b border-slate-100 px-5 pb-3"
+                  role="group"
+                  aria-label="Schedule view"
+                >
+                  {(
+                    [
+                      { id: 'arrivals', label: 'Arrivals' },
+                      { id: 'departures', label: 'Departures' },
+                      { id: 'upcoming_arrivals', label: 'Next 6 days' },
+                    ] as const
+                  ).map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      aria-pressed={tab === item.id}
+                      onClick={() => selectTab(item.id)}
+                      className={`rounded-lg px-3 py-2 text-xs font-semibold ${tab === item.id ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'}`}
+                    >
+                      {item.label}
+                      <span
+                        className={`ml-2 rounded px-1.5 py-0.5 text-[10px] ${tab === item.id ? 'bg-white/15' : 'bg-slate-100'}`}
+                      >
+                        {data[item.id].length}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                {completedCount > 0 && (
+                  <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5 text-xs text-slate-500">
+                    <span>
+                      {allSchedule.length - completedCount} pending · {completedCount} completed
+                    </span>
+                    <button
+                      type="button"
+                      aria-pressed={showCompleted}
+                      onClick={() => {
+                        setShowCompleted((value) => !value);
+                        setPage(1);
+                      }}
+                      className="font-semibold text-indigo-600 hover:underline"
+                    >
+                      {showCompleted ? 'Hide completed' : `Show completed (${completedCount})`}
+                    </button>
+                  </div>
+                )}
+                {visibleRows.length ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-slate-50 text-xs text-slate-500">
+                        <tr>
+                          {['Guest', 'Stay', 'Rooms', 'Progress', ''].map((title, index) => (
+                            <th key={index} scope="col" className="px-5 py-3 font-semibold">
+                              {title || <span className="sr-only">Actions</span>}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {visibleRows.map((row) => (
+                          <ScheduleRow
+                            key={`${row.id}:${row.arrival}:${row.departure}`}
+                            row={row}
+                            tab={tab}
+                            onOpenFolio={onOpenFolio}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 px-5 py-5 text-sm text-slate-500">
+                    <CalendarDays size={22} className="shrink-0 text-slate-300" />
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-700">
+                        {completedCount > 0 && !showCompleted
+                          ? tab === 'arrivals'
+                            ? 'All arrivals checked in'
+                            : 'All departures checked out'
+                          : tab === 'arrivals'
+                            ? `No arrivals scheduled for ${isToday ? 'today' : shortDate(date)}`
+                            : tab === 'departures'
+                              ? `No departures scheduled for ${isToday ? 'today' : shortDate(date)}`
+                              : 'No arrivals in the next six days'}
+                      </p>
+                      <p className="mt-1 text-xs">
+                        {tab === 'arrivals'
+                          ? 'Check the next six days to prepare for upcoming guests.'
+                          : 'New bookings and status updates will appear here.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
+                  <span>
+                    {data.reservation_groups_today} bookings created {isToday ? 'today' : `on ${shortDate(date)}`} ·{' '}
+                    {data.active_reservation_groups} active groups
+                  </span>
+                  {totalPages > 1 && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className={button}
+                        disabled={currentPage === 1}
+                        onClick={() => setPage(currentPage - 1)}
+                      >
+                        Previous
+                      </button>
+                      <span>
+                        {currentPage} / {totalPages}
+                      </span>
+                      <button
+                        type="button"
+                        className={button}
+                        disabled={currentPage === totalPages}
+                        onClick={() => setPage(currentPage + 1)}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </section>
+              <section className={`${panel} order-3 xl:order-none min-w-0 p-4`}>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900">
+                      {isToday ? 'Collections over the last 7 days' : `Collections · 7 days ending ${shortDate(date)}`}
+                    </h2>
+                    <p className="mt-1 text-xs text-slate-500">Payments received, less refunds · payment date in IST</p>
+                  </div>
+                  <div className="text-right">
+                    <strong className="block text-xl font-bold text-slate-900">{formatCurrency(weekTotal)}</strong>
+                    <span className="text-xs text-slate-500">7-day net total</span>
                   </div>
                 </div>
-                <StatusBadge
-                  label={`${data.occupancy_rate}%`}
-                  tone={data.occupancy_rate >= 75 ? 'rose' : data.occupancy_rate >= 50 ? 'gold' : 'green'}
-                />
-              </div>
-            </Panel>
-          )}
-
-          {/* Recent reservations */}
-          {recentReservations.length > 0 && (
-            <TableCard eyebrow="Upcoming arrivals" title="Booked reservations">
-              <table className="min-w-full text-[12.5px]">
-                <thead>
-                  <tr>
-                    <Th>Guest</Th>
-                    <Th>Ref</Th>
-                    <Th>Property</Th>
-                    <Th>Arrival</Th>
-                    <Th>Departure</Th>
-                    <Th>Rooms</Th>
-                    <Th>Amount</Th>
-                    <Th>Status</Th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {recentReservations.map(({ reservation: r, arrival, departure }) => {
-                    return (
-                      <tr key={r.id} className="hover:bg-slate-50/60 transition-colors">
-                        <Td className="font-medium text-slate-800 max-w-[140px] truncate">
-                          {r.primary_guest?.name ?? 'Guest'}
-                        </Td>
-                        <Td className="text-slate-400 font-mono text-[11px]">{r.external_reservation_id}</Td>
-                        <Td className="text-slate-500">{r.property.name}</Td>
-                        <Td className="text-slate-500">{arrival ? fmtDate(arrival) : '—'}</Td>
-                        <Td className="text-slate-500">{departure ? fmtDate(departure) : '—'}</Td>
-                        <Td className="text-slate-500">{r.rooms.length}</Td>
-                        <Td className="text-slate-700 font-medium">
-                          {r.total_amount != null ? formatCurrency(r.total_amount) : '—'}
-                        </Td>
-                        <Td>
-                          <StatusBadge
-                            label={r.reservation_status.replace(/_/g, ' ')}
-                            tone={
-                              r.reservation_status === 'CHECKED_IN' ? 'green' :
-                              r.reservation_status === 'CHECKED_OUT' ? 'slate' :
-                              r.reservation_status === 'CANCELLED' ? 'rose' : 'gold'
-                            }
-                          />
-                        </Td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </TableCard>
-          )}
-
-          {/* Operating posture + watch list */}
-          <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-5">
-
-            {/* Operating posture */}
-            <Panel>
-              <SectionHeading eyebrow="Today" title="Operating posture">
-                <StatusBadge
-                  label={data.occupancy_rate >= 75 ? 'High occupancy' : 'Stable'}
-                  tone={data.occupancy_rate >= 75 ? 'rose' : 'green'}
-                />
-              </SectionHeading>
-
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-1">
-                <SignalCard
-                  label="Check-in pressure"
-                  value={data.reservation_room_arrivals_today > 6 ? 'Busy' : 'Normal'}
-                  detail={`${data.reservation_room_arrivals_today} room arrivals today`}
-                />
-                <SignalCard
-                  label="Room coverage"
-                  value={data.total_rooms === 0 ? 'Setup needed' : 'Live'}
-                  detail={`${data.total_rooms} rooms configured`}
-                />
-                <SignalCard
-                  label="Revenue pace"
-                  value={data.revenue_today > 0 ? 'Collecting' : 'Flat'}
-                  detail={formatCurrency(data.revenue_today)}
-                />
-                <SignalCard
-                  label="Departures"
-                  value={data.reservation_room_departures_today > 0 ? data.reservation_room_departures_today.toString() : 'Quiet'}
-                  detail={`${data.reservation_room_departures_today} departures today`}
-                />
-              </div>
-
-              <Divider />
-
-              {/* Financials strip */}
-              <div className="grid grid-cols-3 gap-5">
-                <Stat label="Active groups" value={data.active_reservation_groups} note="OTA reservation groups in play" />
-                <Stat label="Pending balance" value={formatCurrency(data.pending_balance_total)} note="Across open invoices" />
-                <Stat label="HK queue" value={data.open_housekeeping_tasks} note="Open tasks to clear" />
-              </div>
-            </Panel>
-
-            {/* OTA revenue pie */}
-            <Panel>
-              <SectionHeading eyebrow="Revenue" title="OTA by revenue" />
-              <div className="mt-2">
-                <OtaRevenuePie rows={data.revenue_by_ota} />
-              </div>
-            </Panel>
-
-            {/*
-            Watch list kept for rollback.
-            <Panel>
-              <SectionHeading eyebrow="Attention" title="What to watch" />
-              <ul className="mt-1 divide-y divide-slate-50">
-                {[
-                  {
-                    label: 'OTA arrivals',
-                    icon: 'calendar',
-                    text: `${data.active_reservation_groups} active reservation groups across OTA-imported stays.`,
-                    urgent: data.active_reservation_groups > 0,
-                  },
-                  {
-                    label: 'Open payments',
-                    icon: 'wallet',
-                    text: `${formatCurrency(data.pending_balance_total)} across pending and partial invoices.`,
-                    urgent: data.pending_balance_total > 0,
-                  },
-                  {
-                    label: 'Housekeeping',
-                    icon: 'sparkles',
-                    text: `${data.open_housekeeping_tasks} task${data.open_housekeeping_tasks === 1 ? '' : 's'} open — clear before next arrival wave.`,
-                    urgent: data.open_housekeeping_tasks > 0,
-                  },
-                ].map((item) => (
-                  <li key={item.label} className="flex gap-3 py-3.5">
-                    <span className={`mt-0.5 flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center ${item.urgent ? 'bg-amber-50 text-amber-500' : 'bg-emerald-50 text-emerald-500'}`}>
-                      <WatchIcon name={item.icon} />
-                    </span>
-                    <div>
-                      <p className="text-[12px] font-semibold text-slate-800 leading-tight">{item.label}</p>
-                      <p className="text-[12px] text-slate-500 mt-0.5 leading-relaxed">{item.text}</p>
+                {data.collections_trend.some((point) => point.amount !== 0) ? (
+                  <div className="mt-6">
+                    <div className="mb-2 flex justify-between text-[10px] text-slate-400">
+                      <span>Net collections</span>
+                      <span>Largest daily amount: {formatCurrency(maxCollection)}</span>
                     </div>
-                  </li>
-                ))}
-              </ul>
-            </Panel>
-            */}
+                    <div className="flex h-28 items-end gap-3 border-b border-slate-100 pb-2">
+                      {data.collections_trend.map((point) => (
+                        <div key={point.date} className="flex h-full min-w-0 flex-1 flex-col justify-end gap-2">
+                          <div
+                            tabIndex={0}
+                            role="img"
+                            aria-label={`${shortDate(point.date)}: ${formatCurrency(point.amount)}`}
+                            title={`${shortDate(point.date)}: ${formatCurrency(point.amount)}`}
+                            className={`w-full rounded-t-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 ${point.amount < 0 ? 'bg-rose-400' : point.date === data.date ? 'bg-indigo-600' : 'bg-indigo-300'}`}
+                            style={{
+                              height: Math.max(point.amount === 0 ? 0 : 3, (Math.abs(point.amount) / maxCollection) * 78),
+                            }}
+                          />
+                          <span className="whitespace-nowrap text-center text-[10px] text-slate-500">
+                            {shortDate(point.date)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-xs text-slate-400">Refunds exceeding collections appear in rose.</p>
+                  </div>
+                ) : (
+                  <Empty>No payments or refunds in this seven-day period.</Empty>
+                )}
+                <div className="mt-4 grid grid-cols-3 gap-3 border-t border-slate-100 pt-4">
+                  {[
+                    { label: `Received ${isToday ? 'today' : shortDate(date)}`, amount: data.collected_today },
+                    { label: `Refunded ${isToday ? 'today' : shortDate(date)}`, amount: data.refunded_today },
+                    { label: `Month to ${isToday ? 'date' : shortDate(date)} · net`, amount: data.revenue_month_to_date },
+                  ].map((item) => (
+                    <div key={item.label}>
+                      <p className="text-xs leading-5 text-slate-500">{item.label}</p>
+                      <p className="mt-1 break-words text-sm font-bold text-slate-800">{formatCurrency(item.amount)}</p>
+                    </div>
+                  ))}
+                </div>
+                <details className="mt-4 text-xs text-slate-500">
+                  <summary className="cursor-pointer font-medium">View daily amounts</summary>
+                  <dl className="mt-3 space-y-2">
+                    {data.collections_trend.map((point) => (
+                      <div key={point.date} className="flex justify-between">
+                        <dt>{shortDate(point.date)}</dt>
+                        <dd>{formatCurrency(point.amount)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </details>
+              </section>
+              <section className={`${panel} order-5 xl:order-none min-w-0 overflow-hidden`}>
+                <div className="p-4">
+                  <h2 className="text-sm font-bold text-slate-900">Collections by booking source</h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Month to {isToday ? 'date' : shortDate(date)} · includes direct and OTA bookings · bar shows share of
+                    gross collections
+                  </p>
+                </div>
+                {data.revenue_by_ota.length ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-slate-50 text-xs text-slate-500">
+                        <tr>
+                          {['Source', 'Collected', 'Refunded', 'Net'].map((label) => (
+                            <th key={label} scope="col" className="px-5 py-3 font-semibold">
+                              {label}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {data.revenue_by_ota.map((row, index) => (
+                          <tr key={row.label}>
+                            <td className="min-w-36 px-5 py-3.5">
+                              <span className="text-xs font-semibold text-slate-700">{row.label}</span>
+                              <div className="mt-2 h-1.5 max-w-36 rounded-full bg-slate-100">
+                                <div
+                                  className="h-full rounded-full"
+                                  style={{
+                                    width: `${monthGross ? (row.collected / monthGross) * 100 : 0}%`,
+                                    background: colors[index % colors.length],
+                                  }}
+                                />
+                              </div>
+                            </td>
+                            <td className="whitespace-nowrap px-5 py-3.5 text-xs text-slate-600">
+                              {formatCurrency(row.collected)}
+                            </td>
+                            <td className="whitespace-nowrap px-5 py-3.5 text-xs text-slate-600">
+                              {formatCurrency(row.refunded)}
+                            </td>
+                            <td className="whitespace-nowrap px-5 py-3.5 text-xs font-semibold text-slate-800">
+                              {formatCurrency(row.amount)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <Empty>No collections or refunds for this month through {shortDate(date)}.</Empty>
+                )}
+              </section>
+            </div>
+            <div className="contents xl:flex xl:min-w-0 xl:flex-col xl:gap-4">
+              <aside className={`${panel} order-2 xl:order-none p-4`}>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-bold text-slate-900">Needs attention</h2>
+                  <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
+                    {attention.length}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">Items to review in your property workspace.</p>
+                {attention.length ? (
+                  <div className="mt-4 divide-y divide-slate-100">
+                    {attention.map((item) => (
+                      <button
+                        type="button"
+                        key={item.title}
+                        disabled={!onNavigate}
+                        onClick={() =>
+                          onNavigate?.(item.page, {
+                            kind: item.focus,
+                            propertyId: previewDataEnabled ? '' : activePropertyId,
+                            date: item.focus === 'overdue_housekeeping' ? today : date,
+                          })
+                        }
+                        className="flex w-full items-start gap-3 py-3 text-left enabled:hover:opacity-75"
+                      >
+                        <span
+                          className={`mt-0.5 rounded-lg p-1.5 ${item.tone === 'amber' ? 'bg-amber-50 text-amber-600' : 'bg-slate-50 text-slate-500'}`}
+                        >
+                          <Clock3 size={15} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <strong className="block text-xs font-semibold leading-5 text-slate-800">{item.title}</strong>
+                          <span className="mt-0.5 block text-xs leading-5 text-slate-500">{item.description}</span>
+                        </span>
+                        <ChevronRight size={14} className="mt-1 shrink-0 text-slate-400" />
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-5 rounded-xl bg-emerald-50 p-4">
+                    <Check size={18} className="mb-2 text-emerald-600" />
+                    <p className="text-sm font-semibold text-emerald-800">Nothing in this watch list</p>
+                    <p className="mt-1 text-xs leading-5 text-emerald-700">
+                      No unassigned arrivals, overdue housekeeping, pending departures, or outstanding invoices.
+                    </p>
+                  </div>
+                )}
+              </aside>
+              <section className={`${panel} order-4 xl:order-none p-4`}>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-bold text-slate-900">Room status</h2>
+                  <BedDouble size={18} className="text-slate-400" />
+                </div>
+                <p className="mt-1 text-xs text-slate-500">Physical room status right now</p>
+                <div
+                  className="mt-6 flex h-3 overflow-hidden rounded-full bg-slate-100"
+                  role="img"
+                  aria-label={`${data.occupied_rooms} occupied, ${data.available_rooms} unoccupied, ${data.out_of_service_rooms} out of service`}
+                >
+                  {[
+                    { value: data.occupied_rooms, color: 'bg-indigo-500' },
+                    { value: data.available_rooms, color: 'bg-emerald-400' },
+                    { value: data.out_of_service_rooms, color: 'bg-amber-400' },
+                  ].map((item) => (
+                    <span
+                      key={item.color}
+                      className={item.color}
+                      style={{ width: `${data.total_rooms ? (item.value / data.total_rooms) * 100 : 0}%` }}
+                    />
+                  ))}
+                </div>
+                <dl className="mt-5 space-y-3">
+                  {[
+                    { label: 'Occupied', value: data.occupied_rooms, color: 'bg-indigo-500' },
+                    { label: 'Unoccupied', value: data.available_rooms, color: 'bg-emerald-400' },
+                    { label: 'Out of service', value: data.out_of_service_rooms, color: 'bg-amber-400' },
+                  ].map((item) => (
+                    <div className="flex items-center gap-2 text-sm" key={item.label}>
+                      <span className={`h-2 w-2 rounded-full ${item.color}`} />
+                      <dt className="text-slate-600">{item.label}</dt>
+                      <dd className="ml-auto font-bold text-slate-800">{item.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <p className="mt-5 text-xs leading-5 text-slate-500">
+                  Unoccupied rooms may still need cleaning or be reserved. Check Availability for rooms you can sell.
+                </p>
+                {onNavigate && (
+                  <button type="button" className={`${button} mt-4 w-full`} onClick={() => onNavigate('availability')}>
+                    Open availability
+                    <ArrowUpRight size={14} />
+                  </button>
+                )}
+              </section>
+              <section className={`${panel} order-6 xl:order-none p-4`}>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-bold text-slate-900">Housekeeping</h2>
+                  <Sparkles size={18} className="text-slate-400" />
+                </div>
+                <div className="mt-4 flex items-baseline gap-2">
+                  <strong className="text-2xl font-bold text-slate-900">{data.open_housekeeping_tasks}</strong>
+                  <span className="text-xs text-slate-500">open tasks</span>
+                </div>
+                <dl className="mt-4 space-y-3">
+                  {data.housekeeping_by_status.map((row) => (
+                    <div key={row.status} className="flex justify-between text-xs">
+                      <dt className="text-slate-500">
+                        {row.status === 'DIRTY'
+                          ? 'Waiting for cleaning'
+                          : row.status === 'CLEANING'
+                            ? 'Cleaning in progress'
+                            : 'Out of service'}
+                      </dt>
+                      <dd className="font-semibold text-slate-800">{row.count}</dd>
+                    </div>
+                  ))}
+                </dl>
+                {data.overdue_housekeeping_tasks > 0 && (
+                  <p className="mt-4 rounded-lg bg-amber-50 p-2.5 text-xs font-medium text-amber-800">
+                    {data.overdue_housekeeping_tasks} tasks past their due date
+                  </p>
+                )}
+                {onNavigate && (
+                  <button type="button" className={`${button} mt-5 w-full`} onClick={() => onNavigate('housekeeping')}>
+                    Open housekeeping
+                    <ArrowUpRight size={14} />
+                  </button>
+                )}
+              </section>
+            </div>
           </div>
-        </>
+          <p className="text-xs leading-5 text-slate-400">
+            {previewDataEnabled
+              ? 'Demo figures are illustrative.'
+              : 'Refreshes every minute while this page is visible.'}{' '}
+            Collections use payment and refund dates in IST. Outstanding balances reflect current unpaid amounts,
+            excluding OTA metadata charges.
+          </p>
+        </fieldset>
       )}
     </section>
   );
 }
 
-const OTA_REVENUE_COLORS = ['#334155', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#f43f5e'];
-const OTA_REVENUE_COLOR_BY_LABEL: Record<string, string> = {
-  airbnb: '#fb7185',
-  expedia: '#f59e0b',
-  direct: '#10b981',
-  'walk in': '#10b981',
-};
-
-function OtaRevenuePie({ rows }: { rows: Array<{ label: string; amount: number }> }) {
-  const [selectedLabel, setSelectedLabel] = useState<string | null>(null);
-  const segments = rows.map((row, index) => ({
-    label: row.label,
-    value: row.amount,
-    color: OTA_REVENUE_COLOR_BY_LABEL[row.label.trim().toLowerCase()] ?? OTA_REVENUE_COLORS[index % OTA_REVENUE_COLORS.length],
-  }));
-  const total = segments.reduce((sum, segment) => sum + segment.value, 0);
-
-  return (
-    <div className="flex flex-col items-center gap-3">
-      {segments.length > 0 ? (
-        <PieChart
-          centerLabel="TOTAL"
-          centerValue="100%"
-          onSelect={setSelectedLabel}
-          selectedLabel={selectedLabel}
-          segments={segments}
-          total={total}
-        />
-      ) : (
-        <div className="flex h-[150px] w-[150px] items-center justify-center rounded-full border border-dashed border-slate-200 bg-slate-50 px-4 text-center text-[11px] font-semibold text-slate-400">
-          No OTA revenue
-        </div>
-      )}
-      <div className="w-full space-y-1.5">
-        {segments.map((segment) => {
-          const pct = total > 0 ? Math.round((segment.value / total) * 100) : 0;
-          return (
-            <button
-              key={segment.label}
-              className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
-                selectedLabel === segment.label ? 'bg-slate-100' : 'hover:bg-slate-50'
-              } focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300`}
-              onClick={() => setSelectedLabel((current) => current === segment.label ? null : segment.label)}
-              type="button"
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full" style={{ backgroundColor: segment.color }} />
-                <span className="truncate text-[12px] font-semibold text-slate-700">{segment.label}</span>
-              </div>
-              <div className="flex flex-shrink-0 items-center gap-1.5">
-                <span className="w-10 text-right text-[11.5px] font-bold text-slate-900">{pct}%</span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function PieChart({
-  centerLabel,
-  centerValue,
-  onSelect,
-  selectedLabel,
-  segments,
-  total,
+function ScheduleRow({
+  row,
+  tab,
+  onOpenFolio,
 }: {
-  centerLabel: string;
-  centerValue: string;
-  onSelect: (label: string | null) => void;
-  selectedLabel: string | null;
-  segments: Array<{ label: string; value: number; color: string }>;
-  total: number;
+  row: DashboardStay;
+  tab: ScheduleTab;
+  onOpenFolio?: (id: string) => void;
 }) {
-  const cx = 90, cy = 90, rOuter = 68, rInner = 43, gap = 0.025;
-  let angle = -Math.PI / 2;
-  const slices = segments.map((segment) => {
-    const pct = total > 0 ? segment.value / total : 0;
-    const sweep = pct * Math.PI * 2 - gap;
-    const start = angle + gap / 2;
-    const end = start + sweep;
-    angle += pct * Math.PI * 2;
-    const x1 = cx + rOuter * Math.cos(start), y1 = cy + rOuter * Math.sin(start);
-    const x2 = cx + rOuter * Math.cos(end), y2 = cy + rOuter * Math.sin(end);
-    const xi1 = cx + rInner * Math.cos(start), yi1 = cy + rInner * Math.sin(start);
-    const xi2 = cx + rInner * Math.cos(end), yi2 = cy + rInner * Math.sin(end);
-    const large = sweep > Math.PI ? 1 : 0;
-    const path = `M${xi1},${yi1} L${x1},${y1} A${rOuter},${rOuter} 0 ${large} 1 ${x2},${y2} L${xi2},${yi2} A${rInner},${rInner} 0 ${large} 0 ${xi1},${yi1} Z`;
-    return { ...segment, path };
-  });
-  const selected = selectedLabel ? slices.find((slice) => slice.label === selectedLabel) ?? null : null;
-  const selectedPct = selected && total > 0 ? Math.round((selected.value / total) * 100) : null;
-
+  const pending = row.pending_rooms > 0;
   return (
-    <svg className="h-[180px] w-[180px]" viewBox="0 0 180 180" aria-label="OTA revenue pie chart">
-      {slices.map((slice) => (
-        <path
-          key={slice.label}
-          aria-label={`${slice.label} ${total > 0 ? Math.round((slice.value / total) * 100) : 0}%`}
-          className="cursor-pointer transition-opacity focus:outline-none"
-          d={slice.path}
-          fill={slice.color}
-          opacity={selectedLabel && selectedLabel !== slice.label ? 0.35 : 1}
-          onClick={() => onSelect(selectedLabel === slice.label ? null : slice.label)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              onSelect(selectedLabel === slice.label ? null : slice.label);
-            }
-          }}
-        />
-      ))}
-      <text x={cx} y={cy - 6} textAnchor="middle" className="pointer-events-none fill-slate-900 text-[18px] font-extrabold">
-        {selectedPct == null ? centerValue : `${selectedPct}%`}
-      </text>
-      <text x={cx} y={cy + 13} textAnchor="middle" className="pointer-events-none fill-slate-400 text-[9px] font-bold tracking-[0.12em]">
-        {selected ? selected.label.toUpperCase().slice(0, 14) : centerLabel}
-      </text>
-    </svg>
+    <tr className="hover:bg-slate-50/60">
+      <td className="px-5 py-4">
+        <p className="whitespace-nowrap text-xs font-semibold text-slate-800">{row.guest_name}</p>
+        <p className="mt-1 text-[11px] text-slate-400">{row.reference}</p>
+        <p className="mt-1 text-[11px] text-slate-500">{row.property_name}</p>
+      </td>
+      <td className="whitespace-nowrap px-5 py-4 text-xs text-slate-600">
+        {shortDate(row.arrival)} → {shortDate(row.departure)}
+      </td>
+      <td className="px-5 py-4">
+        <p className="text-xs font-medium text-slate-700">
+          {row.room_count} {row.room_count === 1 ? 'room' : 'rooms'}
+        </p>
+        <p className="mt-1 max-w-36 text-[11px] leading-5 text-slate-400">{row.room_labels}</p>
+      </td>
+      <td className="px-5 py-4">
+        <span
+          className={`inline-block whitespace-nowrap rounded-full px-2 py-1 text-[11px] font-semibold ${pending ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}
+        >
+          {tab === 'upcoming_arrivals'
+            ? 'Upcoming'
+            : pending
+              ? `${row.pending_rooms} ${tab === 'arrivals' ? 'to check in' : 'to check out'}`
+              : tab === 'arrivals'
+                ? 'Checked in'
+                : 'Checked out'}
+        </span>
+        {row.unassigned_rooms > 0 && tab !== 'departures' && (
+          <p className="mt-1.5 text-[11px] text-amber-700">{row.unassigned_rooms} unassigned</p>
+        )}
+      </td>
+      <td className="px-5 py-4">
+        {onOpenFolio && (
+          <button
+            type="button"
+            onClick={() => onOpenFolio(row.id)}
+            className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold text-indigo-600 hover:underline"
+          >
+            Folio
+            <ChevronRight size={14} />
+          </button>
+        )}
+      </td>
+    </tr>
   );
-}
-
-function Stat({ label, value, note }: { label: string; value: string | number; note: string }) {
-  return (
-    <div>
-      <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-400 mb-1">{label}</p>
-      <p className="text-2xl font-bold text-slate-900 leading-none">{value}</p>
-      <p className="text-xs text-slate-400 mt-1 leading-relaxed">{note}</p>
-    </div>
-  );
-}
-
-function WatchIcon({ name }: { name: string }) {
-  const p = {
-    fill: 'none', stroke: 'currentColor', strokeWidth: 1.75,
-    strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
-    viewBox: '0 0 24 24', className: 'w-3.5 h-3.5',
-  };
-  switch (name) {
-    case 'calendar':  return <svg {...p}><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 9h16"/></svg>;
-    case 'wallet':    return <svg {...p}><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M15 12h6M17 10v4"/></svg>;
-    case 'sparkles':  return <svg {...p}><path d="m12 3 1.2 3.3L16.5 7.5l-3.3 1.2L12 12l-1.2-3.3L7.5 7.5l3.3-1.2Z"/><path d="m5 14 .7 1.8L7.5 17l-1.8.7L5 19.5l-.7-1.8L2.5 17l1.8-.7Z"/></svg>;
-    default: return null;
-  }
-}
-
-function formatTime(d: Date) {
-  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(d);
-}
-
-function getLocalDate() {
-  const now = new Date();
-  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-}
-
-function fmtDate(s: string) {
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(s));
 }

@@ -1,5 +1,6 @@
+import type { DashboardFocus } from './components/WorkspaceUI';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { RefObject } from 'react';
+import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { api, getApiErrorMessage, logoutSession } from './api/client';
 import { fetchAllPages } from './api/pagination';
 import {
@@ -10,9 +11,8 @@ import {
   storeAuthSession,
   subscribeToSessionUpdates,
 } from './api/session';
-import { AuthResponse, AuthUser, Property } from './api/types';
+import { AuthResponse, AuthUser, Property, PropertyType, PROPERTY_TYPE_OPTIONS } from './api/types';
 import { AuditLogsPage } from './pages/AuditLogsPage';
-import { ApiTestingPage } from './pages/ApiTestingPage';
 import { BookingsPage } from './pages/BookingsPage';
 import { AvailabilityPage } from './pages/AvailabilityPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -26,22 +26,22 @@ import { OtaMappingPage } from './pages/OtaMappingPage';
 import { OperationsBoardPage } from './pages/OperationsBoardPage';
 import { PaymentsPage } from './pages/PaymentsPage';
 import { PlatformOwnerPage } from './pages/PlatformOwnerPage';
-import { PropertySetupPage } from './pages/PropertySetupPage';
+import { PropertyRoomSetupPage } from './pages/PropertyRoomSetupPage';
 import { OrganizationUsersPage } from './pages/OrganizationUsersPage';
-import { ReportsPage } from './pages/ReportsPage';
+import { ReportsPage, type ReportSelection } from './pages/ReportsPage';
 import { RoomsPage } from './pages/RoomsPage';
 import { SupportConsolePage } from './pages/SupportConsolePage';
 import { NotificationsPage } from './pages/NotificationsPage';
-import { WhatsAppPage } from './features/whatsapp/components/WhatsAppPage';
 import { clearChannelWorkspaceCache, useChannelWorkspace } from './pages/channel/useChannelWorkspace';
 import { WebhookSyncLogsPage } from './pages/WebhookSyncLogsPage';
+import { searchInputCls } from './pages/ui';
 import { readPreviewDataEnabled, writePreviewDataEnabled } from './pages/previewData';
 
 type Page =
   | 'dashboard' | 'operations' | 'reports' | 'graphs' | 'setup'
   | 'availability' | 'ical-calendar' | 'ota-email-ingestion' | 'mapping' | 'rooms' | 'bookings'
   | 'guests' | 'housekeeping' | 'payments' | 'expenses' | 'channels'
-  | 'webhooks' | 'api-testing' | 'support' | 'audit' | 'notifications' | 'whatsapp'
+  | 'webhooks' | 'support' | 'audit' | 'notifications'
   | 'org-users'
   | 'platform-overview' | 'platform-api-sample' | 'platform-api-monitor' | 'platform-properties' | 'platform-integrations' | 'platform-integration-sample' | 'platform-logs';
 
@@ -81,6 +81,7 @@ const navGroups = [
       { id: 'bookings' as Page, label: 'Reservations', icon: 'calendar' },
       { id: 'guests' as Page, label: 'Guests', icon: 'guest' },
       { id: 'housekeeping' as Page, label: 'Housekeeping', icon: 'sparkles' },
+      { id: 'setup' as Page, label: 'Property & Room Setup', icon: 'settings' },
     ],
   },
   {
@@ -103,15 +104,13 @@ const navGroups = [
     section: 'Admin',
     pages: [
       { id: 'webhooks' as Page, label: 'Webhooks & Sync Logs', icon: 'activity' },
-      { id: 'api-testing' as Page, label: 'API Testing Trace', icon: 'activity' },
       { id: 'support' as Page, label: 'Support Console', icon: 'activity' },
       { id: 'audit' as Page, label: 'Audit Logs', icon: 'shield' },
-      { id: 'whatsapp' as Page, label: 'WhatsApp', icon: 'whatsapp' },
     ],
   },
 ];
 
-function visibleNavGroups(user: AuthUser | null) {
+function visibleNavGroups(user: AuthUser | null, selectedProperty?: Property) {
   if (user?.role === 'PLATFORM_OWNER') {
     return navGroups.filter((group) => 'ownerOnly' in group && group.ownerOnly);
   }
@@ -120,7 +119,13 @@ function visibleNavGroups(user: AuthUser | null) {
     if ('ownerOnly' in group && group.ownerOnly) return false;
     if ('orgOwnerOnly' in group && group.orgOwnerOnly) return user?.role === 'ORG_OWNER';
     return true;
-  });
+  }).map((group) => ({
+    ...group,
+    pages: group.pages.filter((page) =>
+      (!isChannelWorkspacePage(page.id) || selectedProperty?.property_type === 'HOTEL') &&
+      (page.id !== 'support' || selectedProperty?.property_type !== 'RENTAL_VILLAS'),
+    ),
+  })).filter((group) => group.pages.length > 0);
 }
 
 function isPlatformPage(page: Page): page is Extract<Page, `platform-${string}`> {
@@ -129,26 +134,39 @@ function isPlatformPage(page: Page): page is Extract<Page, `platform-${string}`>
 
 function requiresSelectedProperty(page: Page) {
   return [
+    'setup',
     'availability',
     'ical-calendar',
     'ota-email-ingestion',
     'mapping',
     'guests',
     'webhooks',
-    'whatsapp',
   ].includes(page);
 }
 
 export function App() {
+  const [user, setUser] = useState<AuthUser | null>(() => getStoredAuthUser());
+  useEffect(() => subscribeToSessionUpdates(setUser), []);
+  // Account changes must discard the previous account's report filters and navigation state.
+  return <AppWorkspace key={`${user?.id ?? 'anonymous'}:${user?.organization_id ?? ''}`} user={user} setUser={setUser} />;
+}
+
+function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispatch<SetStateAction<AuthUser | null>> }) {
+  const propertyStorageKey = `hms_active_property_id:${user?.id ?? 'anonymous'}`;
   const [activePage, setActivePage] = useState<Page>(() => {
     if (isReservationsFullRoute()) return 'bookings';
     const stored = getStoredActivePage();
     if (stored === 'channels') return 'mapping';
+    if (stored === 'rooms') return 'setup';
     return isPage(stored) ? stored : 'dashboard';
   });
-  const [user, setUser] = useState<AuthUser | null>(() => getStoredAuthUser());
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pageKey, setPageKey] = useState(0);
+  const [reportFolioGroupId, setReportFolioGroupId] = useState<string | null>(null);
+  const [folioReturnPage, setFolioReturnPage] = useState<'reports' | 'dashboard'>('reports');
+  const [dashboardFocus, setDashboardFocus] = useState<DashboardFocus | null>(null);
+  const scrollPositions = useRef(new Map<string, number>());
+  const [reportSelection, setReportSelection] = useState<ReportSelection>();
   const [, setOtaMappingFullWorkspace] = useState(false);
   const [previewDataEnabled, setPreviewDataEnabled] = useState(() => readPreviewDataEnabled());
 
@@ -156,7 +174,10 @@ export function App() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [propertiesLoaded, setPropertiesLoaded] = useState(false);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>(
-    () => localStorage.getItem('hms_active_property_id') ?? '',
+    () => {
+      const stored = localStorage.getItem(propertyStorageKey) ?? '';
+      return user?.role === 'PLATFORM_OWNER' || user?.property_id === stored ? stored : '';
+    },
   );
   const [propertyDropdownOpen, setPropertyDropdownOpen] = useState(false);
   const propertyDropdownRef = useRef<HTMLDivElement>(null);
@@ -177,20 +198,22 @@ export function App() {
     : navGroups.flatMap((g) => g.pages).find((p) => p.id === activePage) ?? navGroups[0].pages[0];
   const searchResults = useMemo(() => {
     const query = searchValue.trim().toLowerCase();
-    const pages = visibleNavGroups(user).flatMap((group) => group.pages.map((page) => ({ ...page, section: group.section })));
+    const pages = visibleNavGroups(user, properties.find((property) => property.id === selectedPropertyId)).flatMap((group) => group.pages.map((page) => ({ ...page, section: group.section })));
     if (!query) return [];
     return pages.filter((page) => `${page.label} ${page.section}`.toLowerCase().includes(query)).slice(0, 6);
-  }, [searchValue, user]);
+  }, [searchValue, user, properties, selectedPropertyId]);
+  const selectedProperty = properties.find((property) => property.id === selectedPropertyId);
+  const isVilla = selectedProperty?.property_type === 'RENTAL_VILLAS';
+  const supportsChannelWorkspace = selectedProperty?.property_type === 'HOTEL';
   const channelWorkspaceActive = isChannelWorkspacePage(activePage);
   const channelWorkspace = useChannelWorkspace({
     activePropertyId: selectedPropertyId,
-    enabled: Boolean(user) && channelWorkspaceActive,
+    enabled: Boolean(user) && channelWorkspaceActive && supportsChannelWorkspace,
     diagnosticsEnabled: activePage === 'webhooks',
     onPropertyChange: handlePropertySelect,
     sessionKey: user?.id ?? 'anonymous',
   });
 
-  useEffect(() => subscribeToSessionUpdates(setUser), []);
 
   useEffect(() => {
     if (user?.role === 'PLATFORM_OWNER' && !isPlatformPage(activePage)) {
@@ -210,21 +233,32 @@ export function App() {
       setStoredActivePage('dashboard');
       setPageKey((key) => key + 1);
     }
-  }, [activePage, user]);
+
+    if (isChannelWorkspacePage(activePage) && propertiesLoaded && !supportsChannelWorkspace) {
+      setActivePage('setup');
+      setStoredActivePage('setup');
+      setPageKey((key) => key + 1);
+    }
+    if (activePage === 'support' && propertiesLoaded && isVilla) {
+      setActivePage('dashboard');
+      setStoredActivePage('dashboard');
+      setPageKey((key) => key + 1);
+    }
+  }, [activePage, propertiesLoaded, supportsChannelWorkspace, isVilla, user]);
 
   useEffect(() => {
     if (!user || user.role === 'PLATFORM_OWNER' || !propertiesLoaded || properties.length === 0) {
       return;
     }
 
-    const storedId = localStorage.getItem('hms_active_property_id');
+    const storedId = localStorage.getItem(propertyStorageKey);
     const storedProperty = storedId && properties.some((property) => property.id === storedId) ? storedId : null;
     const currentPropertyIsValid = selectedPropertyId && properties.some((property) => property.id === selectedPropertyId);
 
     if (requiresSelectedProperty(activePage) && !currentPropertyIsValid) {
       const nextPropertyId = storedProperty ?? properties[0].id;
       setSelectedPropertyId(nextPropertyId);
-      localStorage.setItem('hms_active_property_id', nextPropertyId);
+      localStorage.setItem(propertyStorageKey, nextPropertyId);
     }
   }, [activePage, properties, propertiesLoaded, selectedPropertyId, user]);
 
@@ -236,30 +270,33 @@ export function App() {
       return;
     }
     setPropertiesLoaded(false);
-    fetchAllPages<Property>('/properties')
+    const controller = new AbortController();
+    fetchAllPages<Property>('/properties', { signal: controller.signal })
       .then((props) => {
+        if (controller.signal.aborted) return;
         setProperties(props);
-        const storedId = localStorage.getItem('hms_active_property_id');
+        const storedId = localStorage.getItem(propertyStorageKey);
         if (storedId && props.some((p) => p.id === storedId)) {
           setSelectedPropertyId(storedId);
         } else if (storedId) {
-          localStorage.removeItem('hms_active_property_id');
+          localStorage.removeItem(propertyStorageKey);
           if (requiresSelectedProperty(activePage) && props.length > 0) {
             setSelectedPropertyId(props[0].id);
-            localStorage.setItem('hms_active_property_id', props[0].id);
+            localStorage.setItem(propertyStorageKey, props[0].id);
           } else {
             setSelectedPropertyId('');
           }
         } else if (requiresSelectedProperty(activePage) && props.length > 0) {
           setSelectedPropertyId(props[0].id);
-          localStorage.setItem('hms_active_property_id', props[0].id);
+          localStorage.setItem(propertyStorageKey, props[0].id);
         } else if (props.length === 1) {
           setSelectedPropertyId(props[0].id);
-          localStorage.setItem('hms_active_property_id', props[0].id);
+          localStorage.setItem(propertyStorageKey, props[0].id);
         }
       })
       .catch(() => {})
-      .finally(() => setPropertiesLoaded(true));
+      .finally(() => { if (!controller.signal.aborted) setPropertiesLoaded(true); });
+    return () => controller.abort();
   }, [activePage, user]);
 
   // Close dropdowns on outside click
@@ -322,11 +359,39 @@ export function App() {
   useEffect(() => {
     const scroller = pageScrollRef.current;
     setStoredActivePage(activePage);
-    if (scroller) scroller.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-  }, [activePage]);
+    if (!scroller) return;
+    const key = `${user?.id}:${previewDataEnabled}:${selectedPropertyId}:${activePage}`;
+    const target = scrollPositions.current.get(key) ?? 0;
+    let restoring = target > 0;
+    let lastPosition = target;
+    const remember = () => { if (!restoring) lastPosition = scroller.scrollTop; };
+    scroller.addEventListener('scroll', remember);
+    const restore = () => {
+      if (!restoring) return;
+      scroller.scrollTop = target;
+      if (scroller.scrollHeight - scroller.clientHeight >= target) { restoring = false; observer.disconnect(); }
+    };
+    const observer = new MutationObserver(restore);
+    if (restoring) observer.observe(scroller, { childList: true, subtree: true });
+    scroller.scrollTop = target;
+    const frame = requestAnimationFrame(restore);
+    const stop = () => { restoring = false; observer.disconnect(); };
+    scroller.addEventListener('wheel', stop, { passive: true });
+    scroller.addEventListener('touchstart', stop, { passive: true });
+    const timer = window.setTimeout(stop, 8000);
+    return () => {
+      scrollPositions.current.set(key, lastPosition);
+      scroller.removeEventListener('scroll', remember);
+      observer.disconnect(); cancelAnimationFrame(frame); clearTimeout(timer);
+      scroller.removeEventListener('wheel', stop); scroller.removeEventListener('touchstart', stop);
+    };
+  }, [activePage, selectedPropertyId, previewDataEnabled, user?.id]);
 
   function handlePageSelect(pageId: Page) {
+    setReportFolioGroupId(null);
+    setDashboardFocus(null);
+    if (isChannelWorkspacePage(pageId) && !supportsChannelWorkspace) pageId = 'setup';
+    if (pageId === 'support' && isVilla) pageId = 'dashboard';
     if (pageId === activePage) {
       setMobileNavOpen(false);
       return;
@@ -355,14 +420,14 @@ export function App() {
     let nextPropertyId = id;
 
     if (!nextPropertyId && requiresSelectedProperty(activePage)) {
-      const storedId = localStorage.getItem('hms_active_property_id');
+      const storedId = localStorage.getItem(propertyStorageKey);
       const storedPropertyIsValid = storedId && properties.some((property) => property.id === storedId);
       nextPropertyId = storedPropertyIsValid ? storedId : (selectedPropertyId || properties[0]?.id || '');
     }
 
     setSelectedPropertyId(nextPropertyId);
-    if (nextPropertyId) localStorage.setItem('hms_active_property_id', nextPropertyId);
-    else localStorage.removeItem('hms_active_property_id');
+    if (nextPropertyId) localStorage.setItem(propertyStorageKey, nextPropertyId);
+    else localStorage.removeItem(propertyStorageKey);
     setPropertyDropdownOpen(false);
   }
 
@@ -373,9 +438,6 @@ export function App() {
     setUserDropdownOpen(false);
     setUser(null);
   }
-
-  const selectedProperty = properties.find((p) => p.id === selectedPropertyId);
-  const collapseSidebar = activePage === 'setup';
 
   if (!user) return <LoginPage onLogin={setUser} />;
 
@@ -388,18 +450,17 @@ export function App() {
       {/* ── Sidebar ───────────────────────────────────────────────── */}
       <aside
         className={[
-          'flex flex-col flex-shrink-0 w-[232px] bg-[#eeede9] border-r border-black/[0.06] h-dvh min-h-dvh overflow-hidden z-30 transition-[width] duration-200 ease-out will-change-[width] motion-reduce:transition-none',
-          collapseSidebar ? 'lg:w-[64px]' : 'lg:w-[232px]',
+          'flex flex-col flex-shrink-0 w-[232px] bg-[#eeede9] border-r border-black/[0.06] h-dvh min-h-dvh overflow-hidden z-30',
           'fixed top-0 bottom-0 left-0 lg:sticky lg:top-0 lg:bottom-auto',
           mobileNavOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full lg:translate-x-0',
         ].join(' ')}
       >
         {/* Brand */}
-        <div className={`flex items-center gap-2.5 h-12 border-b border-black/[0.05] flex-shrink-0 ${collapseSidebar ? 'px-3.5 lg:justify-center lg:px-0' : 'px-3.5'}`}>
+        <div className="flex items-center gap-2.5 h-12 border-b border-black/[0.05] flex-shrink-0 px-3.5">
           <span className="w-6 h-6 rounded-md bg-slate-700 text-white flex items-center justify-center flex-shrink-0">
             <NavIcon name="brand" />
           </span>
-          <div className={`min-w-0 flex-1 ${collapseSidebar ? 'lg:hidden' : ''}`}>
+          <div className="min-w-0 flex-1">
             <h1 className="text-[13px] font-bold text-slate-800 tracking-tight leading-none">HMS Admin</h1>
             <p className="text-[10px] text-slate-400 font-medium mt-[3px] leading-none">
               {isPlatformOwner ? 'Platform console' : 'Hotel operations'}
@@ -421,9 +482,9 @@ export function App() {
           className="flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-none px-2 py-1 space-y-3"
           aria-label="Admin pages"
         >
-          {visibleNavGroups(user).map((group) => (
+          {visibleNavGroups(user, selectedProperty).map((group) => (
             <div key={group.section}>
-              <p className={`text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400 px-2.5 py-0.5 ${collapseSidebar ? 'lg:sr-only' : ''}`}>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400 px-2.5 py-0.5">
                 {group.section}
               </p>
               <div className="space-y-px">
@@ -434,11 +495,9 @@ export function App() {
                       key={page.id}
                       type="button"
                       onClick={() => handlePageSelect(page.id)}
-                      title={collapseSidebar ? page.label : undefined}
                       aria-label={page.label}
                       className={[
                         'flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-[12.5px] w-full text-left transition-colors duration-100',
-                        collapseSidebar ? 'lg:justify-center lg:px-0' : '',
                         isActive
                           ? 'bg-[#dddbd5] text-slate-900 font-semibold'
                           : 'text-slate-600 hover:bg-[#e4e3de] hover:text-slate-900 font-medium',
@@ -447,7 +506,7 @@ export function App() {
                       <span className="flex-shrink-0 text-slate-500">
                         <NavIcon name={page.icon} />
                       </span>
-                      <span className={collapseSidebar ? 'lg:hidden' : ''}>{page.label}</span>
+                      <span>{page.label}</span>
                     </button>
                   );
                 })}
@@ -458,11 +517,11 @@ export function App() {
 
         {/* Sidebar bottom — user mini */}
         <div className="border-t border-black/[0.05] p-2 flex-shrink-0">
-          <div className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-[#e4e3de] transition-colors cursor-default ${collapseSidebar ? 'lg:justify-center' : ''}`}>
+          <div className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-[#e4e3de] transition-colors cursor-default">
             <div className="w-6 h-6 rounded-full bg-slate-600 text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0 select-none">
               {user.name.charAt(0).toUpperCase()}
             </div>
-            <div className={`flex-1 min-w-0 ${collapseSidebar ? 'lg:hidden' : ''}`}>
+            <div className="flex-1 min-w-0">
               <p className="text-[11.5px] font-semibold text-slate-700 truncate leading-tight">{user.name}</p>
               <p className="text-[10px] text-slate-400 capitalize leading-tight mt-0.5">{user.role.replace(/_/g, ' ').toLowerCase()}</p>
             </div>
@@ -696,17 +755,29 @@ export function App() {
         <main
           ref={pageScrollRef}
           data-scroll-lock-root="true"
-          className={`flex-1 min-h-0 overscroll-contain scrollbar-none ${activePage === 'setup' ? 'overflow-hidden' : 'overflow-y-auto'}`}
+          className="flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-none"
         >
           <div key={pageKey} className="px-5 lg:px-8 py-6 lg:py-8 animate-page-in">
-            {activePage === 'dashboard'    && <DashboardPage previewDataEnabled={previewDataEnabled} />}
+            {activePage === 'dashboard'    && <DashboardPage
+              previewDataEnabled={previewDataEnabled}
+              activePropertyId={selectedPropertyId}
+              onNavigate={(page, focus) => {
+                if (page === 'reports') {
+                  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+                  setReportSelection({ preset: 'this_month', range: { from: `${today.slice(0, 7)}-01`, to: today }, property: selectedPropertyId || 'ALL' });
+                }
+                handlePageSelect(page);
+                setDashboardFocus(focus ?? null);
+              }}
+              onOpenFolio={(groupId) => { handlePageSelect('payments'); setFolioReturnPage('dashboard'); setReportFolioGroupId(groupId); }}
+            />}
             {isPlatformPage(activePage)     && <PlatformOwnerPage section={activePage} />}
             {activePage === 'org-users'    && <OrganizationUsersPage />}
             {activePage === 'notifications' && <NotificationsPage />}
-            {activePage === 'reports'      && <ReportsPage />}
+            {activePage === 'reports'      && <ReportsPage onOpenPayments={() => { handlePageSelect('payments'); setFolioReturnPage('reports'); setReportFolioGroupId(null); }} initialSelection={reportSelection} onSelectionChange={setReportSelection} onOpenFolio={(groupId) => { handlePageSelect('payments'); setFolioReturnPage('reports'); setReportFolioGroupId(groupId); }} />}
             {/* {activePage === 'graphs'       && <GraphInsightsPage />} */}
             {activePage === 'operations'   && <OperationsBoardPage previewDataEnabled={previewDataEnabled} />}
-            {activePage === 'setup'        && <PropertySetupPage onAddRooms={() => handlePageSelect('rooms')} onConfigureOta={() => handlePageSelect('mapping')} />}
+            {activePage === 'setup'        && <PropertyRoomSetupPage activePropertyId={selectedPropertyId} onPropertyChange={handlePropertySelect} onConfigureOta={() => handlePageSelect('mapping')} />}
             {activePage === 'availability' && (
               <AvailabilityPage
                 activePropertyId={selectedPropertyId}
@@ -724,19 +795,17 @@ export function App() {
                 propertiesLoaded={propertiesLoaded}
               />
             )}
-            {activePage === 'ota-email-ingestion' && <OtaEmailIngestionPage activePropertyId={selectedPropertyId} />}
-            {activePage === 'mapping'      && <OtaMappingPage onFullWorkspaceChange={setOtaMappingFullWorkspace} workspace={channelWorkspace} />}
+            {activePage === 'ota-email-ingestion' && <OtaEmailIngestionPage key={selectedPropertyId} activePropertyId={selectedPropertyId} />}
+            {activePage === 'mapping' && supportsChannelWorkspace && <OtaMappingPage onFullWorkspaceChange={setOtaMappingFullWorkspace} workspace={channelWorkspace} />}
             {activePage === 'rooms'        && <RoomsPage />}
-            {activePage === 'bookings'     && <BookingsPage previewDataEnabled={previewDataEnabled} />}
+            {activePage === 'bookings'     && <BookingsPage initialFocus={dashboardFocus} onReturn={() => handlePageSelect('dashboard')} previewDataEnabled={previewDataEnabled} />}
             {activePage === 'guests'       && <GuestsPage activePropertyId={selectedPropertyId} />}
-            {activePage === 'housekeeping' && <HousekeepingPage previewDataEnabled={previewDataEnabled} />}
-            {activePage === 'payments'     && <PaymentsPage previewDataEnabled={previewDataEnabled} />}
-            {activePage === 'expenses'     && <ExpensesPage activePropertyId={selectedPropertyId} />}
-            {activePage === 'webhooks'     && <WebhookSyncLogsPage workspace={channelWorkspace} />}
-            {activePage === 'api-testing'  && <ApiTestingPage />}
-            {activePage === 'support'      && <SupportConsolePage />}
+            {activePage === 'housekeeping' && <HousekeepingPage initialFocus={dashboardFocus} onReturn={() => handlePageSelect('dashboard')} previewDataEnabled={previewDataEnabled} />}
+            {activePage === 'payments'     && <PaymentsPage initialFocus={dashboardFocus} previewDataEnabled={reportFolioGroupId && folioReturnPage === 'reports' ? false : previewDataEnabled} initialFolioGroupId={reportFolioGroupId} returnLabel={!dashboardFocus && folioReturnPage === 'reports' ? 'Reports & Analytics' : 'Dashboard'} onReturn={dashboardFocus ? () => handlePageSelect('dashboard') : reportFolioGroupId ? () => handlePageSelect(folioReturnPage) : undefined} />}
+            {activePage === 'expenses'     && <ExpensesPage activePropertyId={selectedPropertyId} properties={properties} />}
+            {activePage === 'webhooks' && supportsChannelWorkspace && <WebhookSyncLogsPage workspace={channelWorkspace} />}
+            {activePage === 'support' && propertiesLoaded && !isVilla && <SupportConsolePage />}
             {activePage === 'audit'        && <AuditLogsPage />}
-            {activePage === 'whatsapp'     && <WhatsAppPage activePropertyId={selectedPropertyId} />}
           </div>
         </main>
       </div>
@@ -792,11 +861,7 @@ function GlobalSearch({
             onSubmit();
           }
         }}
-        className={[
-          'h-8 text-[12.5px] rounded-lg border border-slate-200 bg-white pl-8 pr-3 outline-none transition placeholder:text-slate-400',
-          focused ? 'border-indigo-300 ring-2 ring-indigo-500/15 text-slate-800' : 'text-slate-500 hover:border-slate-300',
-          'w-44',
-        ].join(' ')}
+        className={`${searchInputCls} !h-8 !w-44 pl-8 pr-3`}
       />
 
       {showResults && (
@@ -862,7 +927,6 @@ function NavIcon({ name }: { name: string }) {
     case 'activity':  return <svg {...p}><path d="M3 12h4l2.2-4 3.6 8 2.2-4H21"/><path d="M4 5h16"/><path d="M4 19h16"/></svg>;
     case 'bell':      return <svg {...p}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>;
     case 'shield':    return <svg {...p}><path d="m12 3 7 3v5c0 4.3-2.7 8.2-7 10-4.3-1.8-7-5.7-7-10V6Z"/></svg>;
-    case 'whatsapp':  return <svg {...p}><path d="M20 11.5a8 8 0 0 1-11.8 7L4 20l1.4-4.1A8 8 0 1 1 20 11.5Z"/><path d="M9.5 8.8c.2-.4.3-.5.6-.5h.5c.2 0 .4.1.5.4l.5 1.2c.1.3.1.5-.1.7l-.3.4c.5.9 1.2 1.6 2.2 2.1l.5-.4c.2-.2.4-.2.7-.1l1.1.5c.3.1.4.3.4.6v.4c0 .3-.1.5-.4.7-.5.3-1.2.4-2 .2-1.8-.5-4.1-2.5-4.8-4.4-.3-.8-.2-1.4.1-1.8Z"/></svg>;
     case 'menu':      return <svg {...p}><path d="M4 7h16M4 12h16M4 17h16"/></svg>;
     case 'close':     return <svg {...p}><path d="M6 6 18 18M18 6 6 18"/></svg>;
     case 'logout':    return <svg {...p}><path d="M14 7V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-2"/><path d="M10 12h10M17 8l4 4-4 4"/></svg>;
@@ -877,6 +941,7 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
   const [password, setPassword] = useState('Admin@12345');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [propertyName, setPropertyName] = useState('');
+  const [propertyType, setPropertyType] = useState<PropertyType>('HOTEL');
   const [propertyCode, setPropertyCode] = useState('');
   const [propertyPhone, setPropertyPhone] = useState('');
   const [propertyAddress, setPropertyAddress] = useState('');
@@ -906,6 +971,7 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
         ? await api.post<AuthResponse>('/auth/login', { email, password })
         : await api.post<AuthResponse>('/auth/signup-property', {
             property_name: propertyName,
+            property_type: propertyType,
             property_code: propertyCode || undefined,
             phone: propertyPhone || undefined,
             address: propertyAddress,
@@ -998,6 +1064,13 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
                       placeholder="Harbour Grand"
                       className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3.5 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10"
                     />
+                  </label>
+
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-semibold text-slate-600">Property type</span>
+                    <select value={propertyType} onChange={event => setPropertyType(event.target.value as PropertyType)} className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3.5 text-sm text-slate-950 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10">
+                      {PROPERTY_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
                   </label>
 
                   <div className="grid gap-4 sm:grid-cols-2">

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { Mail, ArrowRight } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
-import { ActionBtn, ErrorMsg, Panel, SectionHeading, StatCard, StatusBadge, inputCls } from './ui';
+import { ActionBtn, ErrorMsg, Panel, SectionHeading, StatCard, StatusBadge, inputCls, searchInputCls } from './ui';
 
 type Props = { activePropertyId?: string };
 
@@ -10,6 +11,7 @@ type EmailConnection = {
   status: string;
   email_address: string;
   last_sync_at: string | null;
+  last_error_message?: string | null;
   trusted_from_email: string | null;
   trusted_subject: string | null;
 };
@@ -75,7 +77,7 @@ type EmailActivity = {
 };
 
 type ActivityResponse = { data: EmailActivity[]; meta: { total: number } };
-type SyncResult = { fetched: number; new_emails: number; processed: number; duplicates: number; backfill_hours?: number | null; reason?: string };
+type SyncResult = { fetched: number; new_emails: number; processed: number; duplicates: number; backfill_hours?: number | null; reason?: string; failed?: number; needs_review?: number; ignored?: number };
 
 const emptySummary: EmailSummary = {
   connected: false,
@@ -92,14 +94,21 @@ const emptySummary: EmailSummary = {
 };
 
 export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
+  const requestVersion = useRef(0);
+  const [connectionChecked, setConnectionChecked] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [connections, setConnections] = useState<EmailConnection[]>([]);
   const [summary, setSummary] = useState<EmailSummary>(emptySummary);
   const [activity, setActivity] = useState<EmailActivity[]>([]);
-  const [subject, setSubject] = useState('');
-  const [fromEmail, setFromEmail] = useState('');
+  const [activityQuery, setActivityQuery] = useState({ subject: '', fromEmail: '', status: 'ALL', receivedAfter: '', page: 1 });
+  const { subject, fromEmail, status: filter, receivedAfter, page } = activityQuery;
+  const [activityTotal, setActivityTotal] = useState(0);
+  const activityPageSize = 25;
+  const setSubject = (value: string) => setActivityQuery(current => ({ ...current, subject: value, page: 1 }));
+  const setFromEmail = (value: string) => setActivityQuery(current => ({ ...current, fromEmail: value, page: 1 }));
+  const setFilter = (value: string) => setActivityQuery(current => ({ ...current, status: value, page: 1 }));
   const [syncSubject, setSyncSubject] = useState('');
   const [syncFromEmail, setSyncFromEmail] = useState('');
-  const [filter, setFilter] = useState('ALL');
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [backfillHours, setBackfillHours] = useState(24);
@@ -107,11 +116,13 @@ export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const activeConnection = connections.find((connection) => connection.status === 'CONNECTED') ?? connections[0] ?? null;
+  const activeConnection = connections.find((connection) => connection.status === 'CONNECTED') ?? connections.find(connection => connection.status !== 'DISCONNECTED') ?? connections[0] ?? null;
+  const mailboxAvailable = Boolean(activeConnection && ['CONNECTED', 'RECONNECTING', 'ERROR'].includes(activeConnection.status));
 
   useEffect(() => {
     if (activePropertyId) void refresh();
-  }, [activePropertyId, filter, subject, fromEmail]);
+    return () => { requestVersion.current += 1; };
+  }, [activePropertyId, activityQuery]);
 
   useEffect(() => {
     setSyncFromEmail(activeConnection?.trusted_from_email ?? '');
@@ -119,26 +130,43 @@ export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
   }, [activeConnection?.id, activeConnection?.trusted_from_email, activeConnection?.trusted_subject]);
 
   async function refresh() {
+    const version = ++requestVersion.current;
+    setRefreshing(true);
     setError(null);
     const params = new URLSearchParams();
     if (filter !== 'ALL') params.set('status', filter);
-    const search = [subject.trim(), fromEmail.trim()].filter(Boolean).join(' ');
-    if (search) params.set('search', search);
+    if (subject.trim()) params.set('subject', subject.trim());
+    if (fromEmail.trim()) params.set('from_email', fromEmail.trim());
+    if (receivedAfter) params.set('received_after', receivedAfter);
+    params.set('page', String(page));
+    params.set('limit', String(activityPageSize));
     const query = params.toString() ? `?${params.toString()}` : '';
     try {
-      const [connectionsRes, summaryRes, activityRes] = await Promise.all([
-        api.get<EmailConnection[]>(`/properties/${activePropertyId}/email-connections`),
+      const connectionsRes = await api.get<EmailConnection[]>(`/properties/${activePropertyId}/email-connections`);
+      if (version !== requestVersion.current) return;
+      setConnections(connectionsRes.data);
+      setConnectionChecked(true);
+      if (!connectionsRes.data.some(connection => ['CONNECTED', 'RECONNECTING', 'ERROR'].includes(connection.status))) {
+        setSummary(emptySummary);
+        setActivity([]);
+        setActivityTotal(0);
+        setSelectedEmailId(null);
+        setSyncResult(null);
+        return;
+      }
+      const [summaryRes, activityRes] = await Promise.all([
         api.get<EmailSummary>(`/properties/${activePropertyId}/email-automation/summary`),
         api.get<ActivityResponse>(`/properties/${activePropertyId}/email-automation/activity${query}`),
       ]);
-      setConnections(connectionsRes.data);
+      if (version !== requestVersion.current) return;
       setSummary(summaryRes.data);
       setActivity(activityRes.data.data);
-      if (!selectedEmailId && activityRes.data.data[0]) {
-        setSelectedEmailId(activityRes.data.data[0].id);
-      }
+      setActivityTotal(activityRes.data.meta.total);
+      setSelectedEmailId(current => activityRes.data.data.some(email => email.id === current) ? current : activityRes.data.data[0]?.id ?? null);
     } catch (err) {
-      setError(getApiErrorMessage(err));
+      if (version === requestVersion.current) setError(getApiErrorMessage(err));
+    } finally {
+      if (version === requestVersion.current) setRefreshing(false);
     }
   }
 
@@ -218,13 +246,21 @@ export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
     if (!activeConnection) return;
     setLoading(true);
     setError(null);
+    setSyncResult(null);
+    const syncedAfter = new Date(Date.now() - backfillHours * 60 * 60_000).toISOString();
     try {
       const res = await api.post<SyncResult>(`/properties/${activePropertyId}/email-connections/${activeConnection.id}/sync`, {
         backfill_hours: backfillHours,
+        from_email: syncFromEmail.trim(),
+        subject: syncSubject.trim(),
       });
       setSyncResult(res.data);
-      await refresh();
+      // A new query also refreshes when the same sync filters are used again.
+      setActivity([]);
+      setActivityTotal(0);
+      setActivityQuery({ subject: syncSubject.trim(), fromEmail: syncFromEmail.trim(), status: 'ALL', receivedAfter: syncedAfter, page: 1 });
     } catch (err) {
+      await refresh();
       setError(getApiErrorMessage(err));
     } finally {
       setLoading(false);
@@ -288,12 +324,32 @@ export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
           <h1 className="text-[22px] font-black text-slate-900 tracking-tight leading-none">Email Automation</h1>
           <p className="text-[12px] text-slate-400 mt-1">Connect a booking mailbox, ingest emails, and route confirmed data to review or enquiries.</p>
         </div>
-        <ActionBtn onClick={refresh} disabled={loading}>Refresh</ActionBtn>
+        {connectionChecked && mailboxAvailable && <ActionBtn onClick={refresh} disabled={loading || refreshing}>Refresh</ActionBtn>}
       </div>
 
       {error && <div className="px-5 lg:px-8 pb-3"><ErrorMsg>{error}</ErrorMsg></div>}
       {notice && <div className="px-5 lg:px-8 pb-3"><p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">{notice}</p></div>}
 
+      {!connectionChecked ? (
+        <div className="px-5 pb-6 lg:px-8 lg:pb-8">
+          <Panel className="max-w-xl p-6">
+            {error ? <><p className="mb-4 text-sm text-slate-600">We couldn’t check your Gmail connection. Please try again.</p><ActionBtn onClick={refresh} disabled={refreshing}>Try again</ActionBtn></> : <div role="status" className="flex items-center gap-3 text-sm text-slate-500"><span aria-hidden="true" className="h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-emerald-600" />Checking Gmail connection…</div>}
+          </Panel>
+        </div>
+      ) : !mailboxAvailable ? (
+        <div className="px-5 pb-6 lg:px-8 lg:pb-8">
+          <Panel className="max-w-xl p-6 sm:p-8">
+            <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600"><Mail size={24} aria-hidden="true" /></div>
+            <h2 className="text-xl font-bold tracking-tight text-slate-900">{activeConnection ? 'Reconnect your Gmail' : 'Connect your booking Gmail'}</h2>
+            <p className="mt-2 max-w-md text-sm leading-relaxed text-slate-500">{activeConnection ? 'Reconnect your mailbox to load booking emails and continue managing email activity.' : 'Connect the Gmail account that receives your OTA booking emails. Once connected, you can load emails, review bookings, and track activity here.'}</p>
+            {activeConnection && <p className="mt-3 break-all text-xs font-medium text-slate-600">{activeConnection.email_address}</p>}
+            <div className="mt-6 flex flex-wrap items-center gap-3">
+              <ActionBtn variant="primary" icon={<ArrowRight size={15} />} onClick={() => startProvider('google')} disabled={loading || refreshing}>{loading ? 'Connecting…' : activeConnection ? 'Reconnect Gmail' : 'Connect Gmail'}</ActionBtn>
+              <ActionBtn onClick={refresh} disabled={loading || refreshing}>{refreshing ? 'Checking…' : 'Check connection'}</ActionBtn>
+            </div>
+          </Panel>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 xl:grid-cols-[24rem_minmax(0,1fr)] gap-4 px-5 lg:px-8 pb-6 lg:pb-8">
         <div className="space-y-4">
           <Panel className="p-4">
@@ -307,30 +363,23 @@ export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
                   </div>
                   <StatusBadge label={activeConnection.status} />
                 </div>
+                {activeConnection.status === 'ERROR' && <p role="status" className="text-xs text-amber-700">The last sync failed. Try Sync now again.{activeConnection.last_error_message ? ` ${activeConnection.last_error_message}` : ''}</p>}
+                {activeConnection.status === 'RECONNECTING' && <p role="status" className="text-xs text-slate-500">Mailbox sync is in progress.</p>}
                 <div className="grid grid-cols-2 gap-2">
-                  <ActionBtn onClick={() => startProvider('google')} disabled={loading}>Connect Gmail</ActionBtn>
-                  <ActionBtn onClick={() => startProvider('microsoft')} disabled={loading}>Connect Outlook</ActionBtn>
                   <ActionBtn onClick={syncNow} disabled={loading}>Sync now</ActionBtn>
                   <ActionBtn onClick={disconnectMailbox} disabled={loading} variant="danger">Disconnect</ActionBtn>
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-2">
+              <div className="flex">
                 <ActionBtn onClick={() => startProvider('google')} disabled={loading}>Connect Gmail</ActionBtn>
-                <ActionBtn onClick={() => startProvider('microsoft')} disabled={loading}>Connect Outlook</ActionBtn>
               </div>
             )}
           </Panel>
 
-          <div className="grid grid-cols-2 gap-3">
-            <StatCard label="Emails processed" value={summary.today.emails_processed} />
-            <StatCard label="Needs review" value={summary.today.needs_review} />
-            <StatCard label="Enquiries" value={summary.today.enquiries_created} />
-            <StatCard label="Ignored" value={summary.today.ignored} />
-          </div>
-
           <Panel className="p-4">
-            <SectionHeading title="Load emails" eyebrow="Trusted mailbox filter" />
+            <SectionHeading title="Load emails" eyebrow="Mailbox filters" />
+            <p className="mb-3 text-xs leading-relaxed text-slate-500">Sync uses the filters below. Leave them blank to load all emails in the selected period. Save filters to use them for automatic sync too.</p>
             <div className="space-y-3">
               <input value={syncFromEmail} onChange={(event) => setSyncFromEmail(event.target.value)} className={inputCls} type="email" placeholder="Only from email" />
               <input value={syncSubject} onChange={(event) => setSyncSubject(event.target.value)} className={inputCls} placeholder="Only subject contains" />
@@ -345,12 +394,14 @@ export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
                 <option value={720}>Last 30 days</option>
               </select>
               <div className="flex flex-wrap gap-2">
-                <ActionBtn onClick={saveSyncFilters} disabled={loading || !activeConnection}>Save filter</ActionBtn>
+                <ActionBtn onClick={saveSyncFilters} disabled={loading || !activeConnection}>Save filters</ActionBtn>
                 <ActionBtn onClick={syncNow} disabled={loading || !activeConnection}>Sync mailbox</ActionBtn>
               </div>
               {syncResult && (
                 <p className="rounded-md bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">
                   Fetched {syncResult.fetched}, new {syncResult.new_emails}, processed {syncResult.processed}, duplicates {syncResult.duplicates}
+                  {` · Needs review ${syncResult.needs_review ?? 0} · Ignored ${syncResult.ignored ?? 0} · Failed ${syncResult.failed ?? 0}`}
+                  {syncResult.fetched === 0 ? ' · No emails matched these filters and dates.' : ''}
                   {syncResult.reason ? ` · ${syncResult.reason}` : ''}
                 </p>
               )}
@@ -359,11 +410,13 @@ export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
 
           <Panel className="p-4">
             <SectionHeading title="Find loaded emails" eyebrow="Activity filters" />
+            <p className="mb-3 text-xs leading-relaxed text-slate-500">Search sender and subject separately. Both must match when filled.</p>
+            {receivedAfter && <p className="mb-3 text-xs text-slate-500">Showing emails received since {formatDateTime(receivedAfter)}. Clear filters to see all loaded emails.</p>}
             <div className="space-y-3">
-              <input value={fromEmail} onChange={(event) => setFromEmail(event.target.value)} className={inputCls} type="email" placeholder="From email" />
-              <input value={subject} onChange={(event) => setSubject(event.target.value)} className={inputCls} placeholder="Subject contains" />
+              <input value={fromEmail} onChange={(event) => setFromEmail(event.target.value)} className={`${searchInputCls} px-3`} type="email" placeholder="From email" />
+              <input value={subject} onChange={(event) => setSubject(event.target.value)} className={`${searchInputCls} px-3`} placeholder="Subject contains" />
               <div className="flex flex-wrap gap-2">
-                <ActionBtn onClick={() => { setFromEmail(''); setSubject(''); }} disabled={loading || (!fromEmail && !subject)}>Clear filters</ActionBtn>
+                <ActionBtn onClick={() => setActivityQuery({ subject: '', fromEmail: '', status: 'ALL', receivedAfter: '', page: 1 })} disabled={loading || (!fromEmail && !subject && !receivedAfter && filter === 'ALL')}>Clear filters</ActionBtn>
               </div>
             </div>
           </Panel>
@@ -382,7 +435,7 @@ export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
           </Panel>
 
           <Panel className="p-4">
-            <SectionHeading title="Recent activity" eyebrow={`${activity.length} emails`}>
+            <SectionHeading title="Recent activity" eyebrow={`${activityTotal} matching emails`}>
               <select value={filter} onChange={(event) => setFilter(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 outline-none">
                 <option value="ALL">All</option>
                 <option value="NEEDS_REVIEW">Needs review</option>
@@ -392,7 +445,7 @@ export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
               </select>
             </SectionHeading>
             {activity.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center text-sm font-medium text-slate-400">No email activity yet.</p>
+              <p className="rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center text-sm font-medium text-slate-400">{refreshing ? 'Loading email activity…' : 'No emails match the current filters.'}</p>
             ) : (
               <div className="space-y-3">
                 {activity.map((email) => (
@@ -409,10 +462,18 @@ export function OtaEmailIngestionPage({ activePropertyId = '' }: Props) {
                 ))}
               </div>
             )}
+            {activityTotal > activityPageSize && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4 text-xs text-slate-500">
+              <span>Page {page} of {Math.ceil(activityTotal / activityPageSize)} · {activityTotal} emails</span>
+              <div className="flex gap-2">
+                <ActionBtn disabled={loading || refreshing || page <= 1} onClick={() => setActivityQuery(current => ({ ...current, page: current.page - 1 }))}>Previous</ActionBtn>
+                <ActionBtn disabled={loading || refreshing || page * activityPageSize >= activityTotal} onClick={() => setActivityQuery(current => ({ ...current, page: current.page + 1 }))}>Next</ActionBtn>
+              </div>
+            </div>}
           </Panel>
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

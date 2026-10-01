@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { searchInputCls } from '../ui';
 import { samplePlatformHealth } from './sampleData';
 import { DataPanel, HealthLine, HealthRow, Metric, Row, formatDate, formatLabel, formatLatency, formatUptime, propertyLabel } from './shared';
 import type { PlatformApiTrace, PlatformHealth, PlatformProperty } from './types';
@@ -214,7 +215,7 @@ function ApiTrafficMap({ health, traces, properties, sampleMode }: { health: Pla
                 }
               }}
               placeholder="Search route, user, property"
-              className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+              className={`${searchInputCls} px-3`}
             />
             {showPropertyMatches && (
               <div className="absolute left-0 right-0 top-11 z-20 max-h-64 overflow-y-auto rounded-md border border-slate-200 bg-white p-2 shadow-lg shadow-slate-200/80">

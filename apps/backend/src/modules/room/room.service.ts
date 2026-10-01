@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { AuditAction, BookingStatus, Prisma } from '@prisma/client';
+import { AuditAction, BookingStatus, Prisma, PropertyType } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginatedResponse, paginationParams } from '../../common/pagination/paginated-response';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -11,6 +11,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { CreateRoomOutOfServicePeriodDto } from './dto/create-room-out-of-service-period.dto';
 import { UpdateRoomDto } from './dto/update-room.dto';
+import { ensureVillaInventory, VILLA_INVENTORY_CODE } from '../property/villa-inventory';
 
 @Injectable()
 export class RoomService {
@@ -249,7 +250,11 @@ export class RoomService {
       }
       assertCanAccessProperty(user, existingRoom.propertyId);
 
-      await this.prisma.$transaction(async (tx) => {
+      if (existingRoom.roomNumber === VILLA_INVENTORY_CODE) {
+        throw new ConflictException('The whole-villa inventory unit cannot be deleted. Manage villa dates in Availability & Rates.');
+      }
+
+      const transferredToRoomId = await this.prisma.$transaction(async (tx) => {
         await this.inventoryService.acquireInventoryAllocationLock(
           tx,
           existingRoom.propertyId,
@@ -270,9 +275,24 @@ export class RoomService {
           );
         }
 
+        const property = await tx.property.findUniqueOrThrow({ where: { id: existingRoom.propertyId } });
+        let villaRoomId: string | null = null;
+        if (property.propertyType === PropertyType.RENTAL_VILLAS) {
+          const villa = await ensureVillaInventory(tx, existingRoom.propertyId);
+          villaRoomId = villa.room.id;
+          // Keep linked history and date blocks when retiring a legacy villa room.
+          await tx.reservationRoom.updateMany({ where: { roomId: id }, data: { roomId: villaRoomId } });
+          await tx.housekeepingTask.updateMany({ where: { roomId: id }, data: { roomId: villaRoomId } });
+          await tx.roomOutOfServicePeriod.updateMany({ where: { roomId: id }, data: { roomId: villaRoomId } });
+          if (existingRoom.status === 'MAINTENANCE') {
+            await tx.room.update({ where: { id: villaRoomId }, data: { status: 'MAINTENANCE' } });
+          }
+        }
+
         await tx.room.delete({
           where: { id },
         });
+        return villaRoomId;
       });
 
       await this.auditLogService.record({
@@ -281,6 +301,7 @@ export class RoomService {
         entityId: id,
         propertyId: existingRoom?.propertyId ?? user?.property_id ?? null,
         summary: `Deleted room ${existingRoom?.roomNumber ?? id}`,
+        metadata: { room_number: existingRoom.roomNumber, transferred_to_room_id: transferredToRoomId },
         user,
       });
 
@@ -292,6 +313,9 @@ export class RoomService {
 
       return { id, deleted: true };
     } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new ConflictException('This room is linked to reservation or housekeeping history and cannot be deleted.');
+      }
       this.handlePrismaError(error);
     }
   }
@@ -461,6 +485,7 @@ export class RoomService {
 
   private toPropertyResponse(property: {
     id: string;
+    propertyType: PropertyType;
     name: string;
     code: string;
     phone: string | null;
@@ -483,6 +508,7 @@ export class RoomService {
   }) {
     return {
       id: property.id,
+      property_type: property.propertyType,
       name: property.name,
       code: property.code,
       phone: property.phone,

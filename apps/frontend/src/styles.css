@@ -264,6 +264,50 @@
 }
 
 /* ── Animations ───────────────────────────────────────────────────── */
+@keyframes reservation-drawer-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes reservation-drawer-out {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+@keyframes reservation-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes reservation-backdrop-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.reservation-drawer {
+  animation: reservation-drawer-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.reservation-drawer-backdrop {
+  animation: reservation-backdrop-in 240ms ease-out both;
+}
+
+.reservation-drawer[data-closing='true'] {
+  animation: reservation-drawer-out 200ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.reservation-drawer-backdrop[data-closing='true'] {
+  animation: reservation-backdrop-out 200ms ease-in both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reservation-drawer,
+  .reservation-drawer-backdrop {
+    /* Preserve the completion event used to unmount the drawer. */
+    animation-duration: 1ms !important;
+  }
+}
+
 @keyframes spin-icon { to { transform: rotate(360deg); } }
 
 @keyframes shimmer {
@@ -312,6 +356,38 @@
   background: linear-gradient(90deg, #e2e8f0 0%, #f1f5f9 50%, #e2e8f0 100%);
   background-size: 200% 100%;
   animation: shimmer 1.4s ease-in-out infinite;
+}
+
+/* Keep report panels mounted while a new period loads. The short delay avoids
+   flashing a loading treatment for requests that finish almost immediately. */
+.workspace-results .workspace-panel {
+  position: relative;
+  isolation: isolate;
+}
+.workspace-results .workspace-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(100deg, rgb(241 245 249 / 72%) 20%, rgb(255 255 255 / 95%) 50%, rgb(241 245 249 / 72%) 80%);
+  background-size: 200% 100%;
+  transition: opacity 180ms ease-out;
+}
+.workspace-results[aria-busy='true'] .workspace-panel::after {
+  opacity: 1;
+  transition-delay: 120ms;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-results .workspace-panel::after,
+  .workspace-results[aria-busy='true'] .workspace-panel::after,
+  .workspace-skeleton .animate-shimmer {
+    animation: none;
+    transition: none;
+  }
 }
 .animate-page-in    { animation: page-in 200ms ease-out both; }
 .animate-fade-in    { animation: fade-in 180ms ease-out both; }

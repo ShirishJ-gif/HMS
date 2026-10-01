@@ -8,12 +8,14 @@ import {
   RoomStatus,
 } from '@prisma/client';
 import { BookingService } from './booking.service';
+import * as villaInventory from '../property/villa-inventory';
 
 describe('BookingService', () => {
   const originalZodomusEnvironment = process.env.ZODOMUS_ENVIRONMENT;
   const originalShowDetachedOtaReservationHistory = process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
 
   const tx = {
+    $queryRaw: jest.fn(),
     property: {
       findUnique: jest.fn(),
     },
@@ -26,6 +28,7 @@ describe('BookingService', () => {
     guest: {
       findUnique: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
     },
     reservationRoom: {
       create: jest.fn(),
@@ -34,6 +37,7 @@ describe('BookingService', () => {
       update: jest.fn(),
     },
     reservationGroup: {
+      findUnique: jest.fn(),
       findFirst: jest.fn(),
       create: jest.fn(),
       findUniqueOrThrow: jest.fn(),
@@ -59,6 +63,7 @@ describe('BookingService', () => {
 
   const prisma = {
     $transaction: jest.fn(),
+    property: tx.property,
   };
 
   const backgroundJobService = {
@@ -72,6 +77,7 @@ describe('BookingService', () => {
 
   const inventoryService = {
     allocateInventory: jest.fn(),
+    releaseInventory: jest.fn(),
     acquireInventoryAllocationLock: jest.fn(),
   };
 
@@ -250,6 +256,7 @@ describe('BookingService', () => {
     tx.billing.findUnique.mockResolvedValue(null);
     tx.billing.create.mockResolvedValue({
       id: 'billing-1',
+      extraCharges: [],
       reservationRoomId: reservationRoom.id,
       amount: new Prisma.Decimal('4200.00'),
       tax: new Prisma.Decimal('0.00'),
@@ -315,7 +322,7 @@ describe('BookingService', () => {
 
     expect(tx.billing.findUnique).toHaveBeenCalledWith({
       where: { reservationRoomId: reservationRoom.id },
-      include: { payments: true },
+      include: { payments: true, extraCharges: true },
     });
     expect(tx.billing.create).toHaveBeenCalledTimes(1);
     const billingCreatePayload = tx.billing.create.mock.calls[0][0];
@@ -340,6 +347,7 @@ describe('BookingService', () => {
     });
     tx.billing.findUnique.mockResolvedValue({
       id: 'billing-1',
+      extraCharges: [],
       reservationRoomId: reservationRoom.id,
       amount: new Prisma.Decimal('2500.00'),
       tax: new Prisma.Decimal('0'),
@@ -371,7 +379,7 @@ describe('BookingService', () => {
 
     expect(tx.billing.findUnique).toHaveBeenCalledWith({
       where: { reservationRoomId: reservationRoom.id },
-      include: { payments: true },
+      include: { payments: true, extraCharges: true },
     });
     expect(tx.billing.create).toHaveBeenCalledTimes(1);
     const billingCreatePayload = tx.billing.create.mock.calls[0][0];
@@ -386,6 +394,7 @@ describe('BookingService', () => {
   it('does not create a second invoice when one already exists at checkout', async () => {
     tx.billing.findUnique.mockResolvedValue({
       id: 'billing-1',
+      extraCharges: [],
       reservationRoomId: reservationRoom.id,
       tax: new Prisma.Decimal('0'),
       payments: [],
@@ -402,6 +411,30 @@ describe('BookingService', () => {
         paymentStatus: PaymentStatus.PENDING,
       },
     });
+  });
+
+  it.each(['checkin', 'checkout'])('preserves charges and refunds during %s', async (action) => {
+    if (action === 'checkin') {
+      tx.reservationRoom.findUnique.mockResolvedValue({ ...reservationRoom, status: BookingStatus.BOOKED, room: null });
+      tx.reservationRoom.update.mockResolvedValue({ ...reservationRoom, status: BookingStatus.CHECKED_IN });
+    }
+    tx.billing.findUnique.mockResolvedValue({
+      id: 'billing-1', amount: new Prisma.Decimal(4200), tax: new Prisma.Decimal(200),
+      total: new Prisma.Decimal(4400), paymentStatus: PaymentStatus.PAID,
+      extraCharges: [
+        { description: 'Dinner', amount: new Prisma.Decimal(2000) },
+        { description: 'OTA commission', amount: new Prisma.Decimal(900) },
+      ],
+      payments: [
+        { amount: new Prisma.Decimal(6400), status: PaymentTransactionStatus.SUCCEEDED },
+        { amount: new Prisma.Decimal(1000), status: PaymentTransactionStatus.REFUNDED },
+      ],
+    });
+    if (action === 'checkin') await service.checkInReservationRoom(reservationRoom.id, {});
+    else await service.checkOutReservationRoom(reservationRoom.id);
+    const { data } = tx.billing.update.mock.calls[0][0];
+    expect(data.total.toString()).toBe('6400');
+    expect(data.paymentStatus).toBe(PaymentStatus.PARTIAL);
   });
 
   it('builds reservation feed status filters with the prisma status field', () => {
@@ -559,6 +592,34 @@ describe('BookingService', () => {
     ).buildDirectReservationReference('HBR', new Date('2026-06-23T12:00:00.000Z'));
 
     expect(reference).toMatch(/^HBR-D-260623-[A-F0-9]{4}$/);
+  });
+
+  describe('walk-in ID proof', () => {
+    const input = {
+      property_id: 'property-1', room_category_id: 'category-1', rate_plan_id: 'rate-1',
+      check_in_date: '2026-06-25', check_out_date: '2026-06-27', room_count: 2,
+      guest: { name: 'Direct Guest', phone: '+911234567890', id_proof: 'Aadhaar Card', address: 'Marine Drive' },
+    };
+
+    it.each(['Aadhaar Card', 'Driver License', 'Passport'])('stores only %s when creating a guest', async (proofType) => {
+      await service.createDirectReservation({ ...input, guest: { ...input.guest, id_proof: proofType } });
+      expect(tx.guest.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ idProof: proofType }) }));
+    });
+
+    it('replaces the old combined proof value with only the selected type when editing', async () => {
+      tx.reservationGroup.findUnique.mockResolvedValue({ ...directReservationGroup, rawPayload: { mode: 'direct_reservation' } });
+      tx.guest.update.mockResolvedValue({ ...directGuest, idProof: 'Passport' });
+      await service.updateDirectReservation(directReservationGroup.id, { ...input, guest: { ...input.guest, id_proof: 'Passport' } });
+      expect(tx.guest.update).toHaveBeenCalledWith({ where: { id: directGuest.id }, data: expect.objectContaining({ idProof: 'Passport' }) });
+    });
+
+    it.each(['Aadhaar Card: 123456789012', 'Driver License: TEST123', 'Passport: TEST123'])('rejects an ID number on both create and edit: %s', async (proof) => {
+      const dto = { ...input, guest: { ...input.guest, id_proof: proof } };
+      await expect(service.createDirectReservation(dto)).rejects.toThrow('do not include an ID number');
+      await expect(service.updateDirectReservation(directReservationGroup.id, dto)).rejects.toThrow('do not include an ID number');
+      expect(tx.guest.create).not.toHaveBeenCalled();
+      expect(tx.guest.update).not.toHaveBeenCalled();
+    });
   });
 
   it('queues an owner notification when creating a direct reservation', async () => {
@@ -739,4 +800,72 @@ describe('BookingService', () => {
 
     expect(where).not.toHaveProperty('OR');
   });
+  describe('villa reservation pricing', () => {
+    const wholeRate = { id: 'villa-whole-rate', propertyId: 'property-1', roomCategoryId: 'category-1', code: 'HMS_WHOLE_VILLA', name: 'Whole villa', baseRate: new Prisma.Decimal(60000), currency: 'INR', isActive: true, pricingRules: [] };
+    const roomRate = { ...wholeRate, id: 'villa-room-rate', code: 'HMS_VILLA_ROOM', name: 'Per room', baseRate: new Prisma.Decimal(15000) };
+    const input = { property_id: 'property-1', check_in_date: '2026-09-25', check_out_date: '2026-09-27', guest_id: 'guest-1', source: 'WALK_IN' };
+
+    beforeEach(() => {
+      const property = { ...directReservationGroup.property, propertyType: 'RENTAL_VILLAS', villaTotalRooms: 4, villaMinRooms: 1, villaMaxRooms: 7 };
+      tx.property.findUnique.mockResolvedValue(property);
+      jest.spyOn(villaInventory, 'ensureVillaInventory').mockResolvedValue({
+        property, category: { id: 'category-1' }, ratePlan: wholeRate, roomRatePlan: roomRate,
+      } as never);
+      tx.ratePlan.findUnique.mockImplementation(({ where }) => Promise.resolve(where.id === roomRate.id ? roomRate : wholeRate));
+      pricingService.calculateStayPricing.mockImplementation(({ ratePlan, checkInDate, checkOutDate }) => Promise.resolve({
+        totalAmount: ratePlan.baseRate.mul((checkOutDate.getTime() - checkInDate.getTime()) / 86400000), currency: 'INR',
+      }));
+      tx.reservationRoom.create.mockReset().mockImplementation(({ data }) => Promise.resolve({ ...data, id: data.externalRoomReservationId }));
+      tx.reservationGroup.findUnique.mockResolvedValue({
+        ...directReservationGroup, property, rawPayload: { mode: 'direct_reservation', villa_booking_mode: 'WHOLE_VILLA' },
+        rooms: Array.from({ length: 4 }, (_, index) => ({ ...directReservationGroup.rooms[0], id: `villa-line-${index}` })),
+      });
+    });
+
+    afterEach(() => jest.restoreAllMocks());
+
+    it('charges 120000 for a two-night whole villa and reserves all four rooms', async () => {
+      await service.createDirectReservation({ ...input, villa_booking_mode: 'WHOLE_VILLA', advance_amount: '120000', advance_payment_provider: PaymentProvider.CASH });
+      expect(inventoryService.allocateInventory).toHaveBeenCalledWith(tx, expect.objectContaining({ roomCount: 4 }));
+      expect(tx.reservationGroup.create.mock.calls[0][0].data.totalAmount.toFixed(2)).toBe('120000.00');
+      expect(tx.reservationGroup.create.mock.calls[0][0].data.rawPayload.villa_booking_mode).toBe('WHOLE_VILLA');
+      expect(tx.reservationRoom.create.mock.calls.map(([arg]) => arg.data.totalAmount.toFixed(2))).toEqual(['30000.00', '30000.00', '30000.00', '30000.00']);
+      expect(paymentProviderService.collect.mock.calls.map(([arg]) => arg.amount)).toEqual(['30000.00', '30000.00', '30000.00', '30000.00']);
+    });
+
+    it('charges one night only for adjacent arrival and checkout dates', async () => {
+      await service.createDirectReservation({ ...input, check_out_date: '2026-09-26', villa_booking_mode: 'WHOLE_VILLA' });
+      expect(tx.reservationGroup.create.mock.calls[0][0].data.totalAmount.toFixed(2)).toBe('60000.00');
+    });
+
+    it('still multiplies the per-room rate for a room-count villa booking', async () => {
+      await service.createDirectReservation({ ...input, villa_booking_mode: 'ROOM_COUNT', room_count: 2 });
+      expect(tx.reservationGroup.create.mock.calls[0][0].data.totalAmount.toFixed(2)).toBe('60000.00');
+      expect(tx.reservationRoom.create.mock.calls.map(([arg]) => arg.data.totalAmount.toFixed(2))).toEqual(['30000.00', '30000.00']);
+      expect(inventoryService.allocateInventory).toHaveBeenCalledWith(tx, expect.objectContaining({ roomCount: 2 }));
+    });
+
+    it('allocates fractional paise without changing the villa total or collected payment', async () => {
+      tx.property.findUnique.mockResolvedValue({ propertyType: 'RENTAL_VILLAS', villaTotalRooms: 7 });
+      await service.createDirectReservation({ ...input, villa_booking_mode: 'WHOLE_VILLA', advance_amount: '120000' });
+      const amounts = tx.reservationRoom.create.mock.calls.map(([arg]) => arg.data.totalAmount as Prisma.Decimal);
+      expect(amounts).toHaveLength(7);
+      expect(amounts.reduce((sum, value) => sum.add(value), new Prisma.Decimal(0)).toFixed(2)).toBe('120000.00');
+      expect(amounts.map(value => value.toFixed(2))).toEqual(['17142.86', '17142.86', '17142.86', '17142.86', '17142.86', '17142.85', '17142.85']);
+      expect(paymentProviderService.collect.mock.calls.reduce((sum, [arg]) => sum.add(arg.amount), new Prisma.Decimal(0)).toFixed(2)).toBe('120000.00');
+    });
+
+    it('rejects an advance above the actual whole-villa total', async () => {
+      await expect(service.createDirectReservation({ ...input, villa_booking_mode: 'WHOLE_VILLA', advance_amount: '240000' })).rejects.toThrow('Advance payment amount exceeds reservation total');
+      expect(paymentProviderService.collect).not.toHaveBeenCalled();
+    });
+
+    it('keeps the whole-villa total correct when editing its dates', async () => {
+      await service.updateDirectReservation('group-direct-1', { ...input, check_out_date: '2026-09-28', villa_booking_mode: 'WHOLE_VILLA' });
+      expect(tx.reservationGroup.update.mock.calls[0][0].data.totalAmount.toFixed(2)).toBe('180000.00');
+      expect(tx.reservationRoom.update.mock.calls.map(([arg]) => arg.data.totalAmount.toFixed(2))).toEqual(['45000.00', '45000.00', '45000.00', '45000.00']);
+      expect(inventoryService.allocateInventory).toHaveBeenCalledWith(tx, expect.objectContaining({ roomCount: 4 }));
+    });
+  });
+
 });

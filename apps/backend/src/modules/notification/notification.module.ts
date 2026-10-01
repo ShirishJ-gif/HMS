@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { NotificationController } from './notification.controller';
 import { NotificationFeedService } from './notification-feed.service';
-import { WhatsAppNotificationService } from './whatsapp-notification.service';
+import { ReservationNotificationService } from './reservation-notification.service';
 
 @Module({
   controllers: [NotificationController],
-  providers: [NotificationFeedService, WhatsAppNotificationService],
-  exports: [WhatsAppNotificationService],
+  providers: [NotificationFeedService, ReservationNotificationService],
+  exports: [ReservationNotificationService],
 })
 export class NotificationModule {}

@@ -30,7 +30,6 @@ export class OperationsBoardService {
     const propertyWhere: Prisma.PropertyWhereInput = accessiblePropertyFilter ? { id: accessiblePropertyFilter } : {};
     const reservationGroupVisibilityWhere = this.reservationGroupVisibilityWhere();
     const reservationRoomVisibilityWhere = this.reservationRoomVisibilityWhere();
-    const lateArrivalStart = this.addDays(boardDate, -2);
 
     const operationalRoomWhere: Prisma.ReservationRoomWhereInput = {
       ...reservationRoomVisibilityWhere,
@@ -38,7 +37,6 @@ export class OperationsBoardService {
       OR: [
         {
           status: BookingStatus.BOOKED,
-          departureDate: { gte: lateArrivalStart },
         },
         { status: BookingStatus.CHECKED_IN },
         {
@@ -501,12 +499,6 @@ export class OperationsBoardService {
 
   private startOfDay(value: Date) {
     return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
-  }
-
-  private addDays(value: Date, days: number) {
-    const next = this.startOfDay(value);
-    next.setUTCDate(next.getUTCDate() + days);
-    return next;
   }
 
   private formatDate(value: Date) {

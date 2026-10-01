@@ -1,3 +1,4 @@
+import { recalculateBilling, billingPaymentState, lockBilling, lockFolioBillings } from '../billing/billing-calculations';
 import {
   BadRequestException,
   ConflictException,
@@ -313,7 +314,7 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
     return { email: processed, idempotent: email.createdAt.getTime() !== email.updatedAt.getTime() };
   }
 
-  async syncConnection(connectionId: string, options: { backfillHours?: number } = {}) {
+  async syncConnection(connectionId: string, options: { backfillHours?: number; fromEmail?: string; subject?: string } = {}) {
     const connection = await this.prisma.emailConnection.findUnique({ where: { id: connectionId }, include: { property: true } });
     if (!connection) throw new NotFoundException('Email connection not found');
     if (connection.status === EmailConnectionStatus.DISCONNECTED || connection.provider === EmailProviderType.MANUAL) {
@@ -339,12 +340,15 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
         ? new Date(Date.now() - options.backfillHours * 60 * 60_000).toISOString()
         : connection.providerCursor;
       const listed = await provider.listMessageIds(credential, cursor, {
-        fromEmail: connection.trustedFromEmail,
-        subject: connection.trustedSubject,
+        fromEmail: options.fromEmail ?? connection.trustedFromEmail,
+        subject: options.subject ?? connection.trustedSubject,
       });
       let newEmails = 0;
       let processed = 0;
       let duplicates = 0;
+      let needsReview = 0;
+      let ignored = 0;
+      const failures: Array<{ email_id: string; subject: string; message: string }> = [];
       for (const id of listed.ids.reverse()) {
         const existing = await this.prisma.incomingEmail.findUnique({
           where: {
@@ -361,15 +365,22 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
         }
         const providerEmail = await provider.fetchMessage(credential, id);
         const email = await this.persistProviderEmail(connection.id, connection.propertyId, connection.property.organizationId, providerEmail);
-        await this.processEmail(email.id);
+        const result = await this.processEmail(email.id);
         newEmails += 1;
-        processed += 1;
+        if (result.status === IncomingEmailStatus.FAILED) {
+          failures.push({ email_id: email.id, subject: providerEmail.subject, message: result.last_error_message ?? 'Email processing failed' });
+        } else {
+          processed += 1;
+          if (result.status === IncomingEmailStatus.NEEDS_REVIEW) needsReview += 1;
+          if (result.status === IncomingEmailStatus.IGNORED) ignored += 1;
+        }
       }
       await this.prisma.emailConnection.update({
         where: { id: connection.id },
         data: {
           status: EmailConnectionStatus.CONNECTED,
-          providerCursor: listed.nextCursor,
+          // A filtered test run must not advance the scheduled sync cursor.
+          ...(options.fromEmail == null && options.subject == null ? { providerCursor: listed.nextCursor } : {}),
           lastSyncAt: new Date(),
           lastSuccessAt: new Date(),
           lastErrorCode: null,
@@ -381,6 +392,10 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
         new_emails: newEmails,
         processed,
         duplicates,
+        needs_review: needsReview,
+        ignored,
+        failed: failures.length,
+        failures,
         backfill_hours: options.backfillHours ?? null,
       };
     } catch (error) {
@@ -459,6 +474,7 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
     });
     if (existingPayment) {
       const normalizedPayment = await this.prisma.$transaction(async (tx) => {
+        await lockBilling(tx, existingPayment.billingId);
         const payment = await tx.paymentTransaction.update({
           where: { id: existingPayment.id },
           data: {
@@ -473,9 +489,12 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
             }),
           },
         });
+        const current = await tx.billing.findUniqueOrThrow({
+          where: { id: existingPayment.billingId }, include: { payments: true, extraCharges: true },
+        });
+        const { total, paymentStatus } = recalculateBilling(current);
         const billing = await tx.billing.update({
-          where: { id: existingPayment.billingId },
-          data: { paymentStatus: PaymentStatus.PAID },
+          where: { id: existingPayment.billingId }, data: { total, paymentStatus },
         });
         return { payment, billing };
       });
@@ -495,12 +514,13 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
     if (!match) throw new NotFoundException('No matching reservation found for this payout email');
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockFolioBillings(tx, match.id);
       const group = await tx.reservationGroup.findUnique({
         where: { id: match.id },
         include: {
           primaryGuest: true,
           rooms: {
-            include: { billings: { include: { payments: true } } },
+            include: { billings: { include: { payments: true, extraCharges: true } } },
             orderBy: [{ departureDate: 'asc' }, { createdAt: 'asc' }],
           },
         },
@@ -510,9 +530,8 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
       const openBillings = group.rooms.flatMap((room) =>
         room.billings
           .map((billing) => {
-            const paidTotal = this.sumPayments(billing.payments, PaymentTransactionStatus.SUCCEEDED);
-            const refundedTotal = this.sumPayments(billing.payments, PaymentTransactionStatus.REFUNDED);
-            return { billing, paidTotal, remaining: billing.total.sub(paidTotal).add(refundedTotal) };
+            const roomTotal = billing.amount.add(billing.tax);
+            return { billing, remaining: billingPaymentState(roomTotal, billing.payments, roomTotal).balance };
           })
           .filter((entry) => entry.remaining.gt(0)),
       );
@@ -540,10 +559,10 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
             }),
           },
         });
-        const newPaidTotal = entry.paidTotal.add(allocation);
+        const { total, paymentStatus } = recalculateBilling({ ...entry.billing, payments: [...entry.billing.payments, payment] });
         await tx.billing.update({
           where: { id: entry.billing.id },
-          data: { paymentStatus: PaymentStatus.PAID },
+          data: { total, paymentStatus },
         });
         payments.push({ paymentId: payment.id, billingId: entry.billing.id, amount: allocation });
         remainingSettlement = remainingSettlement.sub(allocation);
@@ -688,34 +707,6 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
     assertCanAccessProperty(user, propertyId);
     const { page, limit, skip, take } = paginationParams(query);
     const search = query.search?.trim();
-    const usefulEmailFilters: Prisma.IncomingEmailWhereInput[] = [
-      {
-        extraction: {
-          is: {
-            category: EmailCategory.BOOKING_CONFIRMATION,
-            OR: [
-              { externalReservationId: { not: null } },
-              { guestName: { not: null } },
-              { checkIn: { not: null } },
-              { checkOut: { not: null } },
-            ],
-          },
-        },
-      },
-      {
-        extraction: {
-          is: {
-            category: EmailCategory.PAYMENT_NOTIFICATION,
-            OR: [
-              { totalAmount: { not: null } },
-              { taxAmount: { not: null } },
-              { externalReservationId: { not: null } },
-              { guestName: { not: null } },
-            ],
-          },
-        },
-      },
-    ];
     const searchFilter: Prisma.IncomingEmailWhereInput | null = search ? {
       OR: [
         { subject: { contains: search, mode: 'insensitive' } },
@@ -728,10 +719,10 @@ export class EmailAutomationService implements OnModuleInit, OnModuleDestroy {
       propertyId,
       ...(query.status ? { status: query.status } : {}),
       ...(query.connection_id ? { connectionId: query.connection_id } : {}),
-      AND: [
-        { OR: usefulEmailFilters },
-        ...(searchFilter ? [searchFilter] : []),
-      ],
+      ...(query.from_email?.trim() ? { fromEmail: { contains: query.from_email.trim(), mode: 'insensitive' } } : {}),
+      ...(query.subject?.trim() ? { subject: { contains: query.subject.trim(), mode: 'insensitive' } } : {}),
+      ...(query.received_after ? { receivedAt: { gte: new Date(query.received_after) } } : {}),
+      ...(searchFilter ? { AND: [searchFilter] } : {}),
     };
     const [emails, total] = await this.prisma.$transaction([
       this.prisma.incomingEmail.findMany({

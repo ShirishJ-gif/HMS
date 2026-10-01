@@ -32,12 +32,12 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
   const mappingBlocker = !selectedConnection
     ? 'Select a connection first.'
     : !catalogIsLoaded
-      ? 'Load Zodomus rooms and rates before mapping.'
+      ? 'Load provider rooms and rates before mapping.'
       : 'Ready for room and rate mapping.';
   const activationBlocker = !selectedConnection
     ? 'Select a connection first.'
     : !catalogIsLoaded
-      ? 'Load Zodomus rooms and rates first.'
+      ? 'Load provider rooms and rates first.'
       : !hasRoomMappings
         ? 'Save at least one room mapping first.'
         : !hasRateMappings
@@ -91,7 +91,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
       label: 'Activate rooms',
       done: roomsActivated,
       blocked: !hasRequiredMappings,
-      note: roomsActivated ? 'Mapped rooms activated in Zodomus.' : activationBlocker,
+      note: roomsActivated ? 'Mapped rooms activated with the provider.' : activationBlocker,
     },
     {
       key: 'check',
@@ -114,7 +114,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
       <PageHeader
         eyebrow="Integrations"
         title="Channel Manager"
-        subtitle="Connect OTA distribution through Zodomus, complete provider onboarding, and manage channel readiness from one workspace."
+        subtitle="Connect OTA distribution through a channel manager, complete provider onboarding, and manage channel readiness from one workspace."
       />
 
       {workspace.loading && <LoadingMsg>Loading channel data…</LoadingMsg>}
@@ -122,9 +122,9 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
       <FloatingSuccessToast message={workspace.status} onClose={workspace.clearStatus} />
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <SummaryTile label="Configured connections" value={workspace.zodomusConnections.length.toString()} detail="Saved OTA links in HMS" />
-        <SummaryTile label="Ready links" value={workspace.zodomusConnections.filter((c) => c.provider_config_summary?.setup_status.ready).length.toString()} detail="Connections ready for live sync" />
-        <SummaryTile label="Automation enabled" value={workspace.zodomusConnections.filter((c) => c.provider_config_summary?.automation?.enabled).length.toString()} detail="Connections with scheduled sync enabled" />
+        <SummaryTile label="Configured connections" value={workspace.channelManagerConnections.length.toString()} detail="Saved OTA links in HMS" />
+        <SummaryTile label="Ready links" value={workspace.channelManagerConnections.filter((c) => c.provider_config_summary?.setup_status.ready).length.toString()} detail="Connections ready for live sync" />
+        <SummaryTile label="Automation enabled" value={workspace.channelManagerConnections.filter((c) => c.provider_config_summary?.automation?.enabled).length.toString()} detail="Connections with scheduled sync enabled" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[22rem_minmax(0,1fr)] xl:grid-cols-[24rem_minmax(0,1fr)] gap-5 items-start">
@@ -142,15 +142,15 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
             </label>
             <label className={labelCls}>
               <span>OTA</span>
-              <CustomSelect onChange={(v) => workspace.setZodomusOtaKey(v as typeof workspace.zodomusOtaKey)} options={workspace.zodomusOtaOptions.map((o) => ({ label: o.label, value: o.key }))} value={workspace.zodomusOtaKey} />
+              <CustomSelect onChange={(v) => workspace.setProviderOtaKey(v as typeof workspace.providerOtaKey)} options={workspace.providerOtaOptions.map((o) => ({ label: o.label, value: o.key }))} value={workspace.providerOtaKey} />
             </label>
             <label className={labelCls}>
               <span>Price model</span>
-              <CustomSelect onChange={workspace.setZodomusPriceModelId} options={workspace.priceModelOptions.map((m) => ({ label: `${m.id} - ${m.model}`, value: String(m.id) }))} value={workspace.zodomusPriceModelId} />
+              <CustomSelect onChange={workspace.setProviderPriceModelId} options={workspace.priceModelOptions.map((m) => ({ label: `${m.id} - ${m.model}`, value: String(m.id) }))} value={workspace.providerPriceModelId} />
             </label>
             <label className={labelCls}>
-              <span>Zodomus property ID</span>
-              <input className={inputCls} onChange={(e) => workspace.setZodomusPropertyId(e.target.value)} placeholder="999999" required value={workspace.zodomusPropertyId} />
+              <span>Provider property ID</span>
+              <input className={inputCls} onChange={(e) => workspace.setProviderPropertyId(e.target.value)} placeholder="999999" required value={workspace.providerPropertyId} />
             </label>
             <button className={primaryBtn} disabled={workspace.pendingAction === 'create-connection'} type="submit">{workspace.pendingAction === 'create-connection' ? 'Saving…' : 'Save connection'}</button>
           </form>
@@ -163,7 +163,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
             </div>
             <label className={labelCls}>
               <span>OTA connection</span>
-              <CustomSelect disabled={workspace.zodomusConnections.length === 0} onChange={workspace.selectConnection} options={workspace.zodomusConnections.map((c) => ({ label: formatConnectionLabel(c), value: c.id }))} placeholder="Select connection" value={workspace.selectedConnectionId} />
+              <CustomSelect disabled={workspace.channelManagerConnections.length === 0} onChange={workspace.selectConnection} options={workspace.channelManagerConnections.map((c) => ({ label: formatConnectionLabel(c), value: c.id }))} placeholder="Select connection" value={workspace.selectedConnectionId} />
             </label>
             {workspace.selectedConnection ? (
               <div className="space-y-3">
@@ -174,7 +174,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                   <h4 className="text-sm font-bold text-slate-900">{formatConnectionLabel(workspace.selectedConnection)}</h4>
                   <p className="text-xs text-slate-500">{workspace.selectedConnection.property.name}</p>
                   <dl className="space-y-1.5 mt-2">
-                    {[['OTA', workspace.selectedConnection.provider_config_summary?.ota_name ?? '—'], ['Zodomus property ID', workspace.selectedConnection.external_hotel_id ?? '—'], ['Mapped', `${workspace.selectedConnection.room_mappings.length} rooms / ${workspace.selectedConnection.rate_mappings.length} rates`], ['Readiness', workspace.persistedSetupStatus?.ready ? 'Ready for sync' : 'Setup pending']].map(([dt, dd]) => (
+                    {[['OTA', workspace.selectedConnection.provider_config_summary?.ota_name ?? '—'], ['Provider property ID', workspace.selectedConnection.external_hotel_id ?? '—'], ['Mapped', `${workspace.selectedConnection.room_mappings.length} rooms / ${workspace.selectedConnection.rate_mappings.length} rates`], ['Readiness', workspace.persistedSetupStatus?.ready ? 'Ready for sync' : 'Setup pending']].map(([dt, dd]) => (
                       <div key={String(dt)} className="flex items-center gap-8 text-xs">
                         <dt className="text-slate-400 w-32 flex-shrink-0">{dt}</dt>
                         <dd className="text-slate-700 font-medium">{dd}</dd>
@@ -260,7 +260,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-0.5">Setup order</p>
-                    <h3 className="text-base font-bold text-slate-900">Zodomus onboarding path</h3>
+                    <h3 className="text-base font-bold text-slate-900">Provider onboarding path</h3>
                     <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-lg">Each action unlocks the next one so catalog loading, mapping, activation, property check, and automation happen in the right order.</p>
                   </div>
                   <span className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold ${connectionReady ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{connectionReady ? 'Ready for sync' : 'Needs setup'}</span>
@@ -322,13 +322,13 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                 <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:gap-4">
                   <label className={labelCls + ' w-full xl:flex-1 xl:max-w-[28rem]'}>
                     <span>Price model</span>
-                    <CustomSelect disabled={!workspace.selectedConnection || workspace.providerPriceModelsLoading} onChange={workspace.setZodomusPriceModelId} options={workspace.priceModelOptions.map((m) => ({ label: `${m.id} - ${m.model}`, value: String(m.id) }))} value={workspace.zodomusPriceModelId} />
+                    <CustomSelect disabled={!workspace.selectedConnection || workspace.providerPriceModelsLoading} onChange={workspace.setProviderPriceModelId} options={workspace.priceModelOptions.map((m) => ({ label: `${m.id} - ${m.model}`, value: String(m.id) }))} value={workspace.providerPriceModelId} />
                   </label>
                   <div className="flex flex-wrap gap-2 xl:flex-1 xl:justify-start">
-                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors" disabled={!workspace.canLoadCatalog || workspace.pendingAction === 'load-provider-catalog'} onClick={() => void workspace.loadProviderCatalog()} title={workspace.canLoadCatalog ? 'Fetch provider room and rate IDs for mapping.' : catalogBlocker} type="button">{workspace.pendingAction === 'load-provider-catalog' ? 'Loading…' : 'Load Zodomus rooms & rates'}</button>
+                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors" disabled={!workspace.canLoadCatalog || workspace.pendingAction === 'load-provider-catalog'} onClick={() => void workspace.loadProviderCatalog()} title={workspace.canLoadCatalog ? 'Fetch provider room and rate IDs for mapping.' : catalogBlocker} type="button">{workspace.pendingAction === 'load-provider-catalog' ? 'Loading…' : 'Load provider rooms & rates'}</button>
                     <button className="inline-flex items-center justify-center px-4 py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors" disabled={!canRunFinalPropertyCheck || workspace.pendingAction === 'property-check'} onClick={() => void workspace.runPropertyCheck()} title={propertyCheckBlocker} type="button">Run final property check</button>
                     <button className="inline-flex items-center justify-center px-4 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors" disabled={!workspace.selectedConnection || workspace.pendingAction === 'property-activate'} onClick={() => void workspace.reactivateProperty()} type="button">Re-activate property</button>
-                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors" disabled={!workspace.canActivateMappedRooms || workspace.pendingAction === 'activate-mapped-rooms'} onClick={() => void workspace.activateMappedRooms()} title={activationBlocker} type="button">Activate mapped rooms in Zodomus</button>
+                    <button className="inline-flex items-center justify-center px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors" disabled={!workspace.canActivateMappedRooms || workspace.pendingAction === 'activate-mapped-rooms'} onClick={() => void workspace.activateMappedRooms()} title={activationBlocker} type="button">Activate mapped rooms</button>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
@@ -508,7 +508,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                   </div>
 
                   <div className="space-y-2">
-                    <p className="text-[11px] text-slate-400">Use full sync after Booking/Zodomus confirms the channel-manager connection, or for deliberate long-range repair.</p>
+                    <p className="text-[11px] text-slate-400">Use full sync after the OTA confirms the channel-manager connection, or for deliberate long-range repair.</p>
                     <div className="flex gap-2">
                       <button className="inline-flex flex-1 items-center justify-center bg-sky-50 hover:bg-sky-100 border border-sky-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-sky-800 font-bold text-xs px-3 py-2.5 rounded-lg transition-colors" disabled={!workspace.selectedConnection || !workspace.persistedSetupStatus?.ready || workspace.pendingAction === 'full-inventory-sync'} onClick={() => void workspace.runFullInventorySync()} type="button">{workspace.pendingAction === 'full-inventory-sync' ? 'Queueing…' : `Full ${workspace.fullSyncWindowDays}-day inventory sync`}</button>
                       <button className="inline-flex flex-1 items-center justify-center bg-violet-50 hover:bg-violet-100 border border-violet-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed text-violet-800 font-bold text-xs px-3 py-2.5 rounded-lg transition-colors" disabled={!workspace.selectedConnection || !workspace.persistedSetupStatus?.ready || workspace.pendingAction === 'full-rates-sync'} onClick={() => void workspace.runFullRatesSync()} type="button">{workspace.pendingAction === 'full-rates-sync' ? 'Queueing…' : `Full ${workspace.fullSyncWindowDays}-day rates sync`}</button>
@@ -537,7 +537,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                   ['Room mappings', String(workspace.selectedConnection.room_mappings.length)],
                   ['Rate mappings', String(workspace.selectedConnection.rate_mappings.length)],
                   ['Property', workspace.selectedConnection.property.code],
-                  ['Zodomus ID', workspace.selectedConnection.external_hotel_id ?? '—'],
+                  ['Provider ID', workspace.selectedConnection.external_hotel_id ?? '—'],
                 ].map(([label, value]) => (
                   <div key={label} className="bg-slate-50 border border-slate-100 rounded-lg p-3">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">{label}</span>
@@ -573,7 +573,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
               <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-1">Disconnect OTA connection</p>
               <h3 className="text-lg font-extrabold text-slate-900">Disconnect {formatConnectionLabel(workspace.selectedConnection)}?</h3>
               <p className="text-sm text-slate-500 mt-2 leading-relaxed">
-                This asks Zodomus to disconnect the remote property link and pauses the HMS connection. Mappings, sync logs, and imported reservation history remain in HMS.
+                This asks the provider to disconnect the remote property link and pauses the HMS connection. Mappings, sync logs, and imported reservation history remain in HMS.
               </p>
             </div>
             <div className="p-5 space-y-3">
@@ -582,7 +582,7 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
                   ['Current status', workspace.selectedConnection.status],
                   ['Readiness', workspace.persistedSetupStatus?.ready ? 'Ready' : 'Not ready'],
                   ['OTA', workspace.selectedConnection.provider_config_summary?.ota_name ?? workspace.selectedConnection.provider],
-                  ['Zodomus ID', workspace.selectedConnection.external_hotel_id ?? '—'],
+                  ['Provider ID', workspace.selectedConnection.external_hotel_id ?? '—'],
                 ].map(([label, value]) => (
                   <div key={label} className="bg-slate-50 border border-slate-100 rounded-lg p-3">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">{label}</span>
@@ -616,9 +616,9 @@ export function ChannelManagerPage({ workspace }: { workspace: ChannelWorkspace 
           <div className="w-full max-w-lg bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden">
             <div className="p-5 border-b border-slate-100">
               <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-500 mb-1">Go-live backfill</p>
-              <h3 className="text-lg font-extrabold text-slate-900">Backfill future Zodomus reservations?</h3>
+              <h3 className="text-lg font-extrabold text-slate-900">Backfill future provider reservations?</h3>
               <p className="text-sm text-slate-500 mt-2 leading-relaxed">
-                This queues a one-time import from the Zodomus reservations summary for future stays that existed before HMS became the channel manager.
+                This queues a one-time import from the provider reservations summary for future stays that existed before HMS became the channel manager.
               </p>
             </div>
             <div className="p-5 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">

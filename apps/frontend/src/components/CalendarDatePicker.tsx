@@ -14,10 +14,10 @@ type PickerProps = {
   value: string;
 };
 
-export function CalendarDatePickerField({ align = 'left', invalid = false, label, onChange, open, setOpen, value }: PickerProps & { invalid?: boolean; label: string }) {
+export function CalendarDatePickerField({ align = 'left', invalid = false, label, labelClassName, onChange, open, setOpen, value }: PickerProps & { invalid?: boolean; label: string; labelClassName?: string }) {
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400">{label}</span>
+      <span className={labelClassName ?? "text-[10.5px] font-bold uppercase tracking-wider text-slate-400"}>{label}</span>
       <CalendarDatePicker
         align={align}
         buttonClassName={invalid
@@ -140,7 +140,7 @@ function CalendarDatePicker({
   );
 }
 
-function CalendarGrid({ calendarClassName, onSelect, selectedDate }: { calendarClassName?: string; onSelect: (date: Date) => void; selectedDate?: Date }) {
+export function CalendarGrid({ calendarClassName, onSelect, selectedDate, min, max }: { calendarClassName?: string; onSelect: (date: Date) => void; selectedDate?: Date; min?: string; max?: string }) {
   const [viewDate, setViewDate] = useState(() => selectedDate ?? new Date());
   const monthStart = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1);
   const gridStart = startOfWeek(monthStart);
@@ -168,12 +168,15 @@ function CalendarGrid({ calendarClassName, onSelect, selectedDate }: { calendarC
           return (
             <button
               className={[
-                'pricing-calendar__day',
+                'pricing-calendar__day disabled:cursor-not-allowed disabled:opacity-30',
                 date.getMonth() === monthStart.getMonth() ? '' : 'pricing-calendar__day--muted',
                 value === todayValue ? 'pricing-calendar__day--today' : '',
                 value === selectedValue ? 'pricing-calendar__day--selected' : '',
               ].filter(Boolean).join(' ')}
               key={value}
+              disabled={Boolean((min && value < min) || (max && value > max))}
+              aria-label={date.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
+              aria-pressed={value === selectedValue}
               onClick={() => onSelect(date)}
               type="button"
             >
@@ -190,14 +193,14 @@ export function formatDatePickerLabel(value: string) {
   return parseDateValue(value)?.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) ?? value;
 }
 
-function parseDateValue(value: string) {
+export function parseDateValue(value: string) {
   if (!value) return undefined;
   const [year, month, day] = value.split('-').map(Number);
   if (!year || !month || !day) return undefined;
   return new Date(year, month - 1, day);
 }
 
-function dateToInputValue(value: Date) {
+export function dateToInputValue(value: Date) {
   const year = value.getFullYear();
   const month = String(value.getMonth() + 1).padStart(2, '0');
   const day = String(value.getDate()).padStart(2, '0');

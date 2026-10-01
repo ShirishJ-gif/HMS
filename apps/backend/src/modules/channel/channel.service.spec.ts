@@ -1,6 +1,11 @@
 import { BookingStatus, ChannelProvider, ChannelSyncStatus, ChannelSyncType, Prisma, RoomStatus } from '@prisma/client';
 import { BadRequestException } from '@nestjs/common';
 import { ChannelService } from './channel.service';
+import { ChannelProviderService } from './channel-provider.service';
+
+function createProviderLayerMock(overrides: Record<string, unknown> = {}) {
+  return Object.assign(new ChannelProviderService(), overrides);
+}
 
 describe('ChannelService sync outcome resolution', () => {
   const service = Object.create(ChannelService.prototype) as ChannelService;
@@ -270,7 +275,7 @@ describe('ChannelService provider reservation creation', () => {
         create: jest.fn().mockResolvedValue(fallbackSyncLog),
       },
     };
-    const providerService = {
+    const providerService = createProviderLayerMock({
       createTestReservation: jest.fn().mockResolvedValue({
         provider: ChannelProvider.ZODOMUS,
         response: {
@@ -281,7 +286,7 @@ describe('ChannelService provider reservation creation', () => {
         },
       }),
       getReservation: jest.fn(),
-    };
+    });
     const backgroundJobService = {
       enqueue: jest.fn().mockResolvedValue(undefined),
     };
@@ -362,9 +367,9 @@ describe('ChannelService provider reservation creation', () => {
   });
 
   it('rejects placeholder reservation ids before sending provider cancellation events', async () => {
-    const providerService = {
+    const providerService = createProviderLayerMock({
       createTestReservation: jest.fn(),
-    };
+    });
     const service = new ChannelService(
       {} as never,
       providerService as never,
@@ -486,7 +491,7 @@ describe('ChannelService Zodomus readiness gate', () => {
       externalHotelId: string;
       credentials: Prisma.InputJsonObject;
     };
-    providerService?: Record<string, jest.Mock>;
+    providerService?: Record<string, unknown>;
   }) {
     const prisma = {
       channelConnection: {
@@ -497,7 +502,7 @@ describe('ChannelService Zodomus readiness gate', () => {
         findMany: jest.fn().mockResolvedValue([]),
       },
     };
-    const providerService = {
+    const providerService = createProviderLayerMock({
       checkProperty: jest.fn().mockResolvedValue(readyCheckResponse),
       activateRooms: jest.fn().mockResolvedValue({
         response: {
@@ -516,7 +521,7 @@ describe('ChannelService Zodomus readiness gate', () => {
         },
       }),
       ...(input.providerService ?? {}),
-    };
+    });
     const auditLogService = {
       record: jest.fn().mockResolvedValue(undefined),
     };
@@ -745,7 +750,7 @@ describe('ChannelService Zodomus room activation payload', () => {
     };
     const service = new ChannelService(
       prisma as never,
-      {} as never,
+      createProviderLayerMock() as never,
       {} as never,
       {} as never,
       {} as never,
@@ -893,7 +898,7 @@ describe('ChannelService reservation summary backfill', () => {
     };
     const service = new ChannelService(
       prisma as never,
-      {} as never,
+      createProviderLayerMock() as never,
       {} as never,
       {} as never,
       backgroundJobService as never,
@@ -995,7 +1000,7 @@ describe('ChannelService reservation summary backfill', () => {
     };
     const service = new ChannelService(
       prisma as never,
-      {} as never,
+      createProviderLayerMock() as never,
       {} as never,
       {} as never,
       backgroundJobService as never,
@@ -1035,7 +1040,7 @@ describe('ChannelService reservation summary backfill', () => {
     };
     const service = new ChannelService(
       prisma as never,
-      {} as never,
+      createProviderLayerMock() as never,
       {} as never,
       {} as never,
       {} as never,
@@ -1110,7 +1115,7 @@ describe('ChannelService mapping saves', () => {
     };
     const service = new ChannelService(
       prisma as never,
-      {} as never,
+      createProviderLayerMock() as never,
       auditLogService as never,
       {} as never,
       backgroundJobService as never,
@@ -1229,7 +1234,7 @@ describe('ChannelService connection removal cleanup', () => {
     };
     const service = new ChannelService(
       prisma as never,
-      {} as never,
+      createProviderLayerMock() as never,
       auditLogService as never,
       {} as never,
       backgroundJobService as never,

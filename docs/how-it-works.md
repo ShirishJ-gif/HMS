@@ -367,7 +367,7 @@ So it acts like an integrations command center.
 
 ## Notifications flow
 
-The system can send operational WhatsApp-style notifications such as:
+The system can send operational reservation notifications such as:
 
 - booking confirmation
 - owner notification

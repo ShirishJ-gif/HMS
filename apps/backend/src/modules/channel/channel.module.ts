@@ -8,12 +8,11 @@ import { MetricsModule } from '../metrics/metrics.module';
 import { PricingModule } from '../pricing/pricing.module';
 import { RoomOutOfServiceModule } from '../room-out-of-service/room-out-of-service.module';
 import { ChannelProviderService } from './channel-provider.service';
+import { ChannelReservationImportService } from './channel-reservation-import.service';
 import { ChannelController } from './channel.controller';
 import { ChannelService } from './channel.service';
 import { InventorySyncPayloadService } from './inventory-sync-payload.service';
 import { RateSyncPayloadService } from './rate-sync-payload.service';
-import { ZodomusAliasController } from './zodomus-alias.controller';
-import { ZodomusReservationImportService } from './zodomus-reservation-import.service';
 
 @Module({
   imports: [
@@ -25,14 +24,14 @@ import { ZodomusReservationImportService } from './zodomus-reservation-import.se
     PricingModule,
     RoomOutOfServiceModule,
   ],
-  controllers: [ChannelController, ZodomusAliasController],
+  controllers: [ChannelController],
   providers: [
     IdempotencyService,
     ChannelService,
     ChannelProviderService,
+    ChannelReservationImportService,
     InventorySyncPayloadService,
     RateSyncPayloadService,
-    ZodomusReservationImportService,
   ],
   exports: [ChannelService],
 })

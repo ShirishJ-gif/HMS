@@ -7,7 +7,7 @@ Production-ready MVP structure for a Hotel Management System using NestJS, Prism
 Implemented MVP:
 
 - NestJS backend with Prisma, PostgreSQL, modular services, validation, and unit tests
-- REST APIs for properties, room categories, rate plans, rooms, guests, reservation groups, billing, payments, channel mappings, dashboard metrics, and mock WhatsApp notifications
+- REST APIs for properties, room categories, rate plans, rooms, guests, reservation groups, billing, payments, channel mappings, dashboard metrics, and mock reservation notifications
 - Dynamic pricing rules for weekend, date-range/festival, and occupancy-based surcharges
 - Audit-log API for sensitive operational actions, including booking lifecycle, room changes, payments, and channel syncs
 - JWT authentication with `SUPER_ADMIN`, `ADMIN`, and `STAFF` roles
@@ -24,7 +24,7 @@ Implemented MVP:
 - Reservation-group and reservation-room persistence for imported multi-room OTA stays
 - Zodomus provider adapter with property check, property activation, provider catalog fetch, availability sync, rate sync, reservation queue polling, reservation detail fetch, and reservation import
 - Local image uploads for property and room-category photos
-- WhatsApp notifications queued through background jobs, with mock or WhatsApp Cloud API delivery mode
+- Reservation notifications queued through background jobs, with mock or Telegram delivery mode
 - Docker Compose PostgreSQL, Prisma schema, SQL schema, and sample seed data
 - API examples in [docs/api-examples.http](/Users/cronberry/Hms/docs/api-examples.http)
 - Implemented feature inventory in [docs/implemented-features.md](/Users/cronberry/Hms/docs/implemented-features.md)
@@ -132,8 +132,8 @@ GET /metrics/summary
 - The active reservation domain is `ReservationGroup` plus `ReservationRoom`, with OTA/channel import as the only supported intake path.
 - Zodomus is the first real external channel adapter in the backend. Availability sync, rate sync, reservation queue polling, reservation detail fetch, and reservation import are implemented behind the channel module.
 - Zodomus onboarding supports provider catalog fetch, room/rate mapping, provider-side `rooms-activate`, property check, inventory sync, rate sync, reservation polling, reservation detail fetch, and reservation import.
-- Notification automation is isolated behind `WhatsAppNotificationService`, so WhatsApp Cloud API, Telegram, Twilio, or Gupshup can replace the mock sender without changing booking logic.
-- Imported reservation intake notifies the guest and also notifies the hotel owner using the property phone number. Set `NOTIFICATION_PROVIDER=cloud_api`, `WABA_ACCESS_TOKEN`, and `WABA_PHONE_NUMBER_ID` to send through WhatsApp Cloud API; set `NOTIFICATION_PROVIDER=telegram`, `TELEGRAM_BOT_TOKEN`, and `TELEGRAM_DEFAULT_CHAT_ID` to send mock/demo notifications to Telegram. For two-account Telegram testing, use `TELEGRAM_OWNER_CHAT_ID` for owner alerts and `TELEGRAM_GUEST_CHAT_ID` for guest confirmations/reminders; use comma-separated `TELEGRAM_OWNER_CHAT_IDS` or `TELEGRAM_GUEST_CHAT_IDS` to send the same demo message to multiple chats. Otherwise mock logs are used.
+- Notification automation is isolated behind `ReservationNotificationService`, with mock logging and optional Telegram delivery.
+- Imported reservation intake notifies the guest and also notifies the hotel owner using the property phone number. Set `NOTIFICATION_PROVIDER=telegram`, `TELEGRAM_BOT_TOKEN`, and `TELEGRAM_DEFAULT_CHAT_ID` to send mock/demo notifications to Telegram. For two-account Telegram testing, use `TELEGRAM_OWNER_CHAT_ID` for owner alerts and `TELEGRAM_GUEST_CHAT_ID` for guest confirmations/reminders; use comma-separated `TELEGRAM_OWNER_CHAT_IDS` or `TELEGRAM_GUEST_CHAT_IDS` to send the same demo message to multiple chats. Otherwise mock logs are used.
 - Payments are isolated behind a provider service. The current provider is mock/local, but the boundary is ready for Razorpay, Stripe, or terminal/cash workflows with webhook reconciliation.
 - Webhook foundations are available through `POST /webhooks/:domain/:provider` with HMAC verification using `PAYMENT_WEBHOOK_SECRET` and `CHANNEL_WEBHOOK_SECRET`, but live provider-specific signature formats and event handlers still need to be implemented.
 - Accepted webhooks and channel sync requests enqueue background jobs that can be inspected through `GET /background-jobs` and retried from dead-letter state through `POST /background-jobs/:id/retry`.

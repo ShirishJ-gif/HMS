@@ -4,8 +4,8 @@ import { CustomSelect } from '../components/CustomSelect';
 import { PageHeader, NoteStrip, labelCls, primaryBtn, secondaryBtn, ErrorMsg, FloatingSuccessToast, LoadingMsg } from './ui';
 
 export function OtaMappingPage({ workspace }: { workspace: ChannelWorkspace }) {
-  const totalRoomMappings = workspace.zodomusConnections.reduce((total, connection) => total + connection.room_mappings.length, 0);
-  const totalRateMappings = workspace.zodomusConnections.reduce((total, connection) => total + connection.rate_mappings.length, 0);
+  const totalRoomMappings = workspace.channelManagerConnections.reduce((total, connection) => total + connection.room_mappings.length, 0);
+  const totalRateMappings = workspace.channelManagerConnections.reduce((total, connection) => total + connection.rate_mappings.length, 0);
   const roomCompletion = workspace.mappingHealth.localRoomCategories > 0
     ? Math.round(((workspace.mappingHealth.localRoomCategories - workspace.mappingHealth.unmappedRoomCategories.length) / workspace.mappingHealth.localRoomCategories) * 100)
     : 0;
@@ -18,7 +18,7 @@ export function OtaMappingPage({ workspace }: { workspace: ChannelWorkspace }) {
       <PageHeader
         eyebrow="Commercial"
         title="OTA Mapping"
-        subtitle="Map HMS room categories and rate plans to Zodomus provider IDs so OTA inventory and rates can sync correctly."
+        subtitle="Map HMS room categories and rate plans to channel-manager provider IDs so OTA inventory and rates can sync correctly."
       />
 
       <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 max-w-xs">
@@ -36,7 +36,7 @@ export function OtaMappingPage({ workspace }: { workspace: ChannelWorkspace }) {
               <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-100 text-slate-600">{workspace.selectedConnection.external_hotel_id ?? 'No property ID'}</span>
             </div>
           ) : (
-            <p className="text-xs text-slate-400">Choose a saved Zodomus connection to start mapping rooms and rates.</p>
+            <p className="text-xs text-slate-400">Choose a saved channel-manager connection to start mapping rooms and rates.</p>
           )}
         </div>
 
@@ -45,7 +45,7 @@ export function OtaMappingPage({ workspace }: { workspace: ChannelWorkspace }) {
       <FloatingSuccessToast message={workspace.status} onClose={workspace.clearStatus} />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <SummaryTile label="Configured connections" value={workspace.zodomusConnections.length.toString()} detail="Saved OTA links in HMS" />
+        <SummaryTile label="Configured connections" value={workspace.channelManagerConnections.length.toString()} detail="Saved OTA links in HMS" />
         <SummaryTile label="Room mappings" value={totalRoomMappings.toString()} detail="Mapped HMS room categories" />
         <SummaryTile label="Rate mappings" value={totalRateMappings.toString()} detail="Mapped HMS rate plans" />
       </div>
@@ -54,7 +54,7 @@ export function OtaMappingPage({ workspace }: { workspace: ChannelWorkspace }) {
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 text-center">
           <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-1">Mapping workspace</p>
           <h3 className="text-base font-bold text-slate-900">Select an OTA connection</h3>
-          <p className="text-sm text-slate-500 mt-1">Choose a saved Zodomus connection before loading provider IDs or creating mappings.</p>
+          <p className="text-sm text-slate-500 mt-1">Choose a saved channel-manager connection before loading provider IDs or creating mappings.</p>
         </div>
       ) : (
         <div className="space-y-5">
@@ -156,7 +156,7 @@ export function OtaMappingPage({ workspace }: { workspace: ChannelWorkspace }) {
               {workspace.mappingHealth.needsMoreRatePlans && (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm">
                   <strong className="text-amber-800 block mb-1">More HMS rate plans are needed.</strong>
-                  <span className="text-amber-700">Zodomus exposes {workspace.mappingHealth.providerRates} products, but HMS only has {workspace.mappingHealth.localRatePlans} local rate plans.</span>
+                  <span className="text-amber-700">The provider exposes {workspace.mappingHealth.providerRates} products, but HMS only has {workspace.mappingHealth.localRatePlans} local rate plans.</span>
                 </div>
               )}
               {workspace.mappingHealth.unmappedRatePlans.length > 0 && (

@@ -1,3 +1,5 @@
+import { DatePickerInput } from '../components/DatePickerInput';
+import { FocusBanner, type DashboardFocus } from '../components/WorkspaceUI';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { HousekeepingPriority, HousekeepingStatus, HousekeepingTask, Property, Room, RoomCategory } from '../api/types';
@@ -88,14 +90,15 @@ function getLocalDate() {
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
-export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEnabled?: boolean }) {
+export function HousekeepingPage({ previewDataEnabled = false, initialFocus, onReturn }: { previewDataEnabled?: boolean; initialFocus?: DashboardFocus | null; onReturn?: () => void }) {
+  const [focus, setFocus] = useState(initialFocus);
   const [showModal,    setShowModal]    = useState(false);
   const [form,         setForm]         = useState(defaultForm);
   const [submitting,   setSubmitting]   = useState(false);
   const [pendingId,    setPendingId]    = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [errorMsg,     setErrorMsg]     = useState<string | null>(null);
-  const [showOos,      setShowOos]      = useState(false);
+  const [showOos,      setShowOos]      = useState(Boolean(initialFocus));
   const [taskOverrides, setTaskOverrides] = useState<Record<string, Partial<HousekeepingTask>>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All categories');
@@ -129,6 +132,7 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
   const filteredTasks = useMemo(() => {
     const normalized = searchQuery.trim().toLowerCase();
     return tasks
+      .filter(t => !focus || ((!focus.propertyId || t.property_id === focus.propertyId) && !t.completed_at && ['DIRTY', 'CLEANING', 'OUT_OF_SERVICE'].includes(t.status) && t.due_date && t.due_date < focus.date))
       .filter(t => categoryFilter === 'All categories' || t.room.room_category.name === categoryFilter)
       .filter(t => !dueTodayOnly || t.due_date === today || t.completed_at?.slice(0, 10) === today)
       .filter(t => {
@@ -148,7 +152,7 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
         ].join(' ').toLowerCase().includes(normalized);
       })
       .sort((a, b) => priorityRank[a.priority] - priorityRank[b.priority] || a.room.room_number.localeCompare(b.room.room_number));
-  }, [categoryFilter, dueTodayOnly, priorityFilter, searchQuery, tasks, today]);
+  }, [categoryFilter, dueTodayOnly, priorityFilter, searchQuery, tasks, today, focus]);
   const activeTasks  = filteredTasks.filter(t => !t.completed_at);
   const completedTodayTasks = filteredTasks.filter(t => t.completed_at?.slice(0, 10) === today);
   const oosTasks     = activeTasks.filter(t => t.status === 'OUT_OF_SERVICE');
@@ -248,8 +252,6 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
             onChange={setSearchQuery}
             placeholder="Search room, category, reservation, note"
             className="relative w-full max-w-[380px]"
-            iconClassName="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none"
-            inputClassName="h-10 w-full rounded-lg bg-white border border-black/[0.07] pl-9 pr-3 text-[12px] text-slate-800 placeholder-slate-400 outline-none"
           />
           <div className="w-[190px] max-w-full">
             <CustomSelect
@@ -281,6 +283,8 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
           )}
         </div>
       </div>
+
+      {focus && <div className="px-5 lg:px-8"><FocusBanner focus={focus} clear={() => setFocus(null)} onReturn={onReturn} /></div>}
 
       {/* ── Stats cards ── */}
       <div className="px-5 lg:px-8 pb-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
@@ -354,13 +358,13 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
           <div className="flex min-w-0 flex-col">
             <button type="button" onClick={() => setShowOos(v => !v)}
               className="bg-slate-500 rounded-t-2xl px-4 py-3 flex items-center justify-between hover:bg-slate-600 transition-colors flex-shrink-0">
-              <p className="text-[12px] font-bold text-white">Out of Service</p>
+              <p className="text-[12px] font-bold text-white leading-tight">Out of Service</p>
               <span className="text-[14px] font-black text-white/80">{oosTasks.length}</span>
             </button>
-            <div className={`flex-1 bg-slate-100/70 rounded-b-2xl ${showOos ? `p-2 space-y-2 overflow-y-auto ${oosTasks.length > 6 ? 'max-h-[520px]' : ''}` : ''}`}>
+            <div className={`flex-1 bg-slate-100/70 rounded-b-2xl p-2 ${showOos ? `space-y-2 overflow-y-auto ${oosTasks.length > 6 ? 'max-h-[520px]' : ''}` : ''}`}>
               {!showOos ? (
                 <button type="button" onClick={() => setShowOos(true)}
-                  className="w-full h-12 text-[10.5px] text-slate-400 hover:text-slate-600 transition-colors">
+                  className="block w-full py-8 text-center text-[11px] text-slate-400 hover:text-slate-600 transition-colors">
                   {oosTasks.length} room{oosTasks.length !== 1 ? 's' : ''} — tap to view
                 </button>
               ) : oosTasks.map(task => (
@@ -478,8 +482,8 @@ export function HousekeepingPage({ previewDataEnabled = false }: { previewDataEn
                 {/* Due date */}
                 <div>
                   <ModalLabel>Due date (optional)</ModalLabel>
-                  <input type="date" value={form.due_date}
-                    onChange={e => setF('due_date', e.target.value)}
+                  <DatePickerInput label="Due date" value={form.due_date}
+                    onChange={value => setF('due_date', value)}
                     className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[13px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/30" />
                 </div>
 

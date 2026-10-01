@@ -27,8 +27,8 @@ Implemented modules:
 - Property and room-category image uploads
 - Health check
 - Dashboard metrics
-- Mock WhatsApp notifications
-- WhatsApp reservation confirmations, hotel-owner notifications, and check-in reminders through mock or Cloud API mode
+- Mock reservation notifications
+- Reservation confirmations, hotel-owner notifications, and check-in reminders through mock or Telegram mode
 - Dynamic pricing rules for weekend, date-range/festival, and occupancy-based surcharges
 - Pricing-rule admin lifecycle: create, list, update, disable/enable, and delete
 - Generic signed webhook ingestion and webhook-event logging
@@ -349,12 +349,12 @@ Dashboard returns:
 
 Today-based dashboard metrics use Asia/Kolkata day boundaries.
 
-## Mock WhatsApp Integration
+## Reservation notifications
 
 The mock notification service is implemented in:
 
 ```text
-apps/backend/src/modules/notification/whatsapp-notification.service.ts
+apps/backend/src/modules/notification/reservation-notification.service.ts
 ```
 
 Current triggers:
@@ -363,7 +363,7 @@ Current triggers:
 - Booking created: sends hotel-owner notification to the property phone with quick-reply options.
 - Check-in reminder route: sends mock reminder.
 
-Set `WHATSAPP_PROVIDER=cloud_api`, `WABA_ACCESS_TOKEN`, and `WABA_PHONE_NUMBER_ID` to use WhatsApp Cloud API. The default `mock` provider logs outgoing messages.
+Set `NOTIFICATION_PROVIDER=telegram`, `TELEGRAM_BOT_TOKEN`, and the appropriate Telegram chat IDs for Telegram delivery. The default `mock` provider logs outgoing messages. The WhatsApp/Baileys integration has been removed; its four database tables and associated enum types are removed by migration `20260924120000_remove_whatsapp`.
 
 ## Frontend Context
 
@@ -521,5 +521,5 @@ When last started:
 
 - Add live OTA/channel manager integrations behind the existing channel adapter dispatch.
 - Keep external channel IDs in mapping tables, not on core booking/room/rate tables.
-- Replace mock WhatsApp sender with Twilio, Gupshup, or WhatsApp Business Cloud API provider adapter.
+- Configure Telegram delivery when reservation notifications are required.
 - Add e2e property-scope tests before exposing this as a real multi-tenant SaaS platform.

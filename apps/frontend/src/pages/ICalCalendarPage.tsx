@@ -1,4 +1,6 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { DatePickerInput } from '../components/DatePickerInput';
+import { Check, Copy, ExternalLink, Share2, X } from 'lucide-react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { Property, RoomCategory } from '../api/types';
@@ -6,6 +8,7 @@ import { useAsync } from '../hooks/useAsync';
 import { ActionBtn, ErrorMsg, Panel, SectionHeading, StatCard, inputCls } from './ui';
 
 type CalendarFeed = {
+  propertyId?: string;
   id: string;
   name: string;
   url: string;
@@ -62,6 +65,7 @@ type InventoryBlock = {
   blocked_rooms: number;
   reason: string;
   source: string;
+  source_name?: string | null;
   google_calendar_id: string | null;
   google_calendar_event_id: string | null;
   google_calendar_html_link: string | null;
@@ -111,6 +115,7 @@ export function ICalCalendarPage({
   const [showWindowClosedBlocks, setShowWindowClosedBlocks] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null);
+  const [syncingFeedId, setSyncingFeedId] = useState<string | null>(null);
   const [blockingDates, setBlockingDates] = useState(false);
   const [inventoryBlocks, setInventoryBlocks] = useState<InventoryBlock[]>([]);
   const [inventoryBlocksLoading, setInventoryBlocksLoading] = useState(false);
@@ -124,6 +129,15 @@ export function ICalCalendarPage({
   const [selectingGoogleCalendar, setSelectingGoogleCalendar] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const shareDialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    if (shareOpen) shareDialogRef.current?.showModal();
+    else shareDialogRef.current?.close();
+  }, [shareOpen]);
   const [selectedDate, setSelectedDate] = useState(() => dateKey(new Date()));
   const [monthCursor, setMonthCursor] = useState(() => startOfMonth(new Date()));
   const categoriesState = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), []);
@@ -158,7 +172,13 @@ export function ICalCalendarPage({
   }, [blockForm.room_category_id, roomCategories]);
 
   const selectedProperty = properties.find((property) => property.id === propertyId) ?? null;
+  const isVilla = selectedProperty?.property_type === 'RENTAL_VILLAS';
   const shareLink = propertyId ? buildPropertyICalLink(propertyId) : '';
+
+  useEffect(() => {
+    setShareCopied(false);
+    setShareError(null);
+  }, [shareLink, shareOpen]);
   const activeGoogleConnection = googleConnections.find((connection) => connection.status === 'CONNECTED') ?? null;
 
   useEffect(() => {
@@ -183,13 +203,14 @@ export function ICalCalendarPage({
   }, [activeGoogleConnection?.id, propertyId]);
 
   const importedEvents = useMemo(
-    () => feeds.flatMap((feed) => parseICalEvents(feed.text, feed)),
+    () => feeds.filter(feed => !feed.propertyId).flatMap((feed) => parseICalEvents(feed.text, feed)),
     [feeds],
   );
   const hmsBlockEvents = useMemo(
     () => inventoryBlocks.map(inventoryBlockToEvent),
     [inventoryBlocks],
   );
+  const manualInventoryBlocks = inventoryBlocks.filter(block => !block.source.startsWith('ICAL_IMPORT:'));
   const events = useMemo(
     () => [...hmsBlockEvents, ...hmsReservationEvents, ...importedEvents],
     [hmsBlockEvents, hmsReservationEvents, importedEvents],
@@ -230,7 +251,7 @@ export function ICalCalendarPage({
     setLoading(true);
     try {
       const response = await api.post<FetchICalCalendarResponse>('/ical-calendar/fetch', { url: icalUrl.trim() });
-      addOrReplaceFeed({
+      await addOrReplaceFeed({
         name: feedName.trim() || inferFeedName(response.data.url),
         url: response.data.url,
         text: response.data.content,
@@ -245,25 +266,32 @@ export function ICalCalendarPage({
     }
   }
 
-  function addPastedFeed() {
+  async function addPastedFeed() {
     setError(null);
     if (!icalText.trim()) {
       setError('Paste iCal content first.');
       return;
     }
-    addOrReplaceFeed({
-      name: feedName.trim() || 'Pasted iCal feed',
-      url: icalUrl.trim(),
-      text: icalText,
-      availabilityWindowDays: parseAvailabilityWindowDays(availabilityWindowDays),
-    });
-    setFeedName('');
-    setIcalText('');
-    setManualPasteOpen(false);
+    setLoading(true);
+    try {
+      await addOrReplaceFeed({
+        name: feedName.trim() || 'Pasted iCal feed',
+        url: icalUrl.trim(),
+        text: icalText,
+        availabilityWindowDays: parseAvailabilityWindowDays(availabilityWindowDays),
+      });
+      setFeedName('');
+      setIcalText('');
+      setManualPasteOpen(false);
+    } catch (error) {
+      setError(getApiErrorMessage(error));
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function refreshFeed(feed: CalendarFeed) {
-    if (!feed.url) {
+    if (!feed.url && !isVilla && !feed.propertyId) {
       setError('This feed was pasted without a URL, so it cannot be refreshed.');
       return;
     }
@@ -271,12 +299,18 @@ export function ICalCalendarPage({
     setError(null);
     setRefreshingFeedId(feed.id);
     try {
-      const response = await api.post<FetchICalCalendarResponse>('/ical-calendar/fetch', { url: feed.url });
+      const content = feed.url
+        ? (await api.post<FetchICalCalendarResponse>('/ical-calendar/fetch', { url: feed.url })).data.content
+        : feed.text;
+      const targetPropertyId = feed.propertyId || (isVilla ? propertyId : undefined);
+      const refreshed = { ...feed, propertyId: targetPropertyId, text: content, importedAt: new Date().toISOString() };
+      if (targetPropertyId) await syncFeedInventory(refreshed, targetPropertyId);
       updateFeeds(feeds.map((item) => (
         item.id === feed.id
-          ? { ...item, url: response.data.url, text: response.data.content, importedAt: new Date().toISOString() }
+          ? refreshed
           : item
       )));
+      setNotice(targetPropertyId ? 'Calendar and villa availability synced.' : 'Calendar refreshed.');
     } catch (loadError) {
       setError(getApiErrorMessage(loadError));
     } finally {
@@ -284,7 +318,16 @@ export function ICalCalendarPage({
     }
   }
 
-  function addOrReplaceFeed(input: { name: string; url: string; text: string; availabilityWindowDays: number | null }) {
+  function syncFeedInventory(feed: CalendarFeed, targetPropertyId: string, remove = false) {
+    return api.post('/ical-calendar/sync-inventory', {
+      property_id: targetPropertyId,
+      feed_key: feed.url || feed.id,
+      name: feed.name,
+      content: remove ? 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR' : feed.text,
+    }).then(async () => { await loadInventoryBlocks(targetPropertyId); });
+  }
+
+  async function addOrReplaceFeed(input: { name: string; url: string; text: string; availabilityWindowDays: number | null }) {
     const parsed = parseICalEvents(input.text, {
       id: 'preview',
       name: input.name,
@@ -296,8 +339,9 @@ export function ICalCalendarPage({
       return;
     }
 
-    const existingIndex = input.url ? feeds.findIndex((feed) => feed.url === input.url) : -1;
+    const existingIndex = input.url ? feeds.findIndex((feed) => feed.url === input.url && feed.propertyId === (isVilla ? propertyId : undefined)) : -1;
     const nextFeed: CalendarFeed = {
+      propertyId: isVilla ? propertyId : undefined,
       id: existingIndex >= 0 ? feeds[existingIndex].id : createFeedId(),
       name: input.name,
       url: input.url,
@@ -310,6 +354,7 @@ export function ICalCalendarPage({
       ? feeds.map((feed, index) => (index === existingIndex ? nextFeed : feed))
       : [...feeds, nextFeed];
 
+    if (nextFeed.propertyId) await syncFeedInventory(nextFeed, nextFeed.propertyId);
     updateFeeds(nextFeeds);
     const firstUpcoming = parsed.find((event) => event.start >= startOfDay(new Date())) ?? parsed[0];
     if (firstUpcoming) {
@@ -318,8 +363,16 @@ export function ICalCalendarPage({
     }
   }
 
-  function removeFeed(feedId: string) {
-    updateFeeds(feeds.filter((feed) => feed.id !== feedId));
+  async function removeFeed(feedId: string) {
+    const feed = feeds.find(item => item.id === feedId);
+    if (!feed) return;
+    setSyncingFeedId(feedId);
+    setError(null);
+    try {
+      if (feed.propertyId) await syncFeedInventory(feed, feed.propertyId, true);
+      updateFeeds(feeds.filter((item) => item.id !== feedId));
+    } catch (error) { setError(getApiErrorMessage(error)); }
+    finally { setSyncingFeedId(null); }
   }
 
   function updateFeedAvailabilityWindow(feedId: string, value: string) {
@@ -330,14 +383,22 @@ export function ICalCalendarPage({
     )));
   }
 
-  function clearCalendar() {
-    setFeedName('');
-    setIcalUrl('');
-    setIcalText('');
-    setAvailabilityWindowDays('90');
-    setManualPasteOpen(false);
-    setError(null);
-    updateFeeds([]);
+  async function clearCalendar() {
+    setLoading(true);
+    try {
+      const clearedFeeds = feeds.filter(feed => !feed.propertyId || feed.propertyId === propertyId);
+      for (const feed of clearedFeeds) {
+        if (feed.propertyId) await syncFeedInventory(feed, feed.propertyId, true);
+      }
+      setFeedName('');
+      setIcalUrl('');
+      setIcalText('');
+      setAvailabilityWindowDays('90');
+      setManualPasteOpen(false);
+      setError(null);
+      updateFeeds(feeds.filter(feed => !clearedFeeds.includes(feed)));
+    } catch (error) { setError(getApiErrorMessage(error)); }
+    finally { setLoading(false); }
   }
 
   async function createDateBlock(event: FormEvent) {
@@ -348,7 +409,7 @@ export function ICalCalendarPage({
       setError('Select a property before blocking dates.');
       return;
     }
-    if (!blockForm.room_category_id) {
+    if (!isVilla && !blockForm.room_category_id) {
       setError('No room type is configured for this property.');
       return;
     }
@@ -357,7 +418,7 @@ export function ICalCalendarPage({
     try {
       const blockResponse = await api.post<InventoryBlock>('/inventory/block', {
         property_id: propertyId,
-        room_category_id: blockForm.room_category_id,
+        room_category_id: isVilla ? undefined : blockForm.room_category_id,
         from_date: blockForm.from_date,
         to_date: blockForm.to_date,
         blocked_rooms: 1,
@@ -365,7 +426,7 @@ export function ICalCalendarPage({
         source: 'ICAL_MANUAL',
       });
 
-      if (!blockForm.create_google_event) {
+      if (isVilla || !blockForm.create_google_event) {
         await loadInventoryBlocks(propertyId);
         await loadHmsReservationEvents(propertyId);
         setNotice('Dates blocked in HMS inventory. Google, Airbnb, or MakeMyTrip calendars subscribed to the HMS block link will show the block after their next refresh.');
@@ -417,7 +478,7 @@ export function ICalCalendarPage({
     setInventoryBlocksLoading(true);
     try {
       const response = await api.get<InventoryBlock[]>('/inventory/blocks', {
-        params: { property_id: nextPropertyId, source: 'ICAL_MANUAL' },
+        params: { property_id: nextPropertyId },
       });
       setInventoryBlocks(response.data);
     } catch (loadError) {
@@ -473,11 +534,13 @@ export function ICalCalendarPage({
 
   async function copyShareLink() {
     if (!shareLink) return;
+    setShareError(null);
+    setShareCopied(false);
     try {
       await navigator.clipboard.writeText(shareLink);
-      setNotice('Calendar link copied.');
+      setShareCopied(true);
     } catch {
-      setError('Copy failed. Select and copy the link manually.');
+      setShareError('Copy failed. Select and copy the link manually.');
     }
   }
 
@@ -553,6 +616,35 @@ export function ICalCalendarPage({
 
   return (
     <div className="-mx-5 lg:-mx-8 -my-6 lg:-my-8 flex min-h-screen flex-col">
+      <dialog
+        ref={shareDialogRef}
+        aria-labelledby="ical-share-title"
+        onClose={() => setShareOpen(false)}
+        onClick={event => { if (event.target === event.currentTarget) setShareOpen(false); }}
+        className="m-auto w-[calc(100%-2rem)] max-w-lg rounded-lg border border-slate-200 bg-white p-0 text-slate-900 shadow-xl backdrop:bg-slate-900/40"
+      >
+        <div className="p-5 sm:p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h2 id="ical-share-title" className="text-base font-bold">Share calendar</h2>
+              <p className="mt-1 break-words text-xs text-slate-500">{selectedProperty?.name || 'Selected property'}</p>
+            </div>
+            <button type="button" autoFocus onClick={() => setShareOpen(false)} aria-label="Close share calendar" title="Close" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-400"><X size={18} /></button>
+          </div>
+          <label className="mt-5 block">
+            <span className="mb-2 block text-xs font-semibold text-slate-600">HMS iCal link</span>
+            <input readOnly value={shareLink} className={`${inputCls} font-mono text-xs`} onFocus={event => event.currentTarget.select()} />
+          </label>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+            {shareLink && <a href={shareLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900"><ExternalLink size={14} />Open .ics</a>}
+            <ActionBtn onClick={copyShareLink} disabled={!shareLink} icon={shareCopied ? <Check size={15} /> : <Copy size={15} />}>{shareCopied ? 'Copied' : 'Copy link'}</ActionBtn>
+          </div>
+          <div role="status" aria-live="polite" className="mt-3 text-xs">
+            {shareCopied && <p className="text-emerald-700">Calendar link copied.</p>}
+            {shareError && <p className="text-rose-700">{shareError}</p>}
+          </div>
+        </div>
+      </dialog>
       <div className="flex items-start justify-between gap-4 px-5 lg:px-8 pt-6 lg:pt-8 pb-4">
         <div>
           <p className="text-[10.5px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Calendar</p>
@@ -561,7 +653,7 @@ export function ICalCalendarPage({
             Add Booking.com, Airbnb, or other OTA iCal feeds and view all imported blocks on one merged calendar.
           </p>
         </div>
-        <ActionBtn onClick={clearCalendar} disabled={feeds.length === 0 && !icalUrl && !icalText}>Clear all</ActionBtn>
+        <ActionBtn onClick={clearCalendar} disabled={loading || Boolean(syncingFeedId) || (feeds.length === 0 && !icalUrl && !icalText)}>Clear all</ActionBtn>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[22rem_minmax(0,1fr)] gap-4 px-5 lg:px-8 pb-6 lg:pb-8">
@@ -642,10 +734,10 @@ export function ICalCalendarPage({
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-3">
+          {/* <div className="grid grid-cols-2 gap-3">
             <StatCard label="Feeds" value={feeds.length} />
             <StatCard label="Visible events" value={displayEvents.length} sub={hiddenWindowClosedCount > 0 ? `${hiddenWindowClosedCount} window-closed hidden` : undefined} />
-          </div>
+          </div> */}
 
           <Panel className="p-4">
             <SectionHeading title="Display" eyebrow="Calendar" />
@@ -685,19 +777,20 @@ export function ICalCalendarPage({
               <div className="grid grid-cols-2 gap-2">
                 <label className="block">
                   <span className="mb-1 block text-xs font-semibold text-slate-600">From</span>
-                  <input
-                    type="date"
+                  <DatePickerInput
+                    label="From"
                     value={blockForm.from_date}
-                    onChange={(event) => setBlockForm((current) => ({ ...current, from_date: event.target.value }))}
+                    onChange={(value) => setBlockForm((current) => ({ ...current, from_date: value, to_date: current.to_date < value ? value : current.to_date }))}
                     className={inputCls}
                   />
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-xs font-semibold text-slate-600">To</span>
-                  <input
-                    type="date"
+                  <DatePickerInput
+                    label="To"
+                    min={blockForm.from_date}
                     value={blockForm.to_date}
-                    onChange={(event) => setBlockForm((current) => ({ ...current, to_date: event.target.value }))}
+                    onChange={(value) => setBlockForm((current) => ({ ...current, to_date: value }))}
                     className={inputCls}
                   />
                 </label>
@@ -714,7 +807,7 @@ export function ICalCalendarPage({
                   className={inputCls}
                 />
               </label>
-              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2.5">
+              {!isVilla && <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2.5">
                 <span>
                   <span className="block text-sm font-bold text-slate-800">Create Google busy event</span>
                   <span className="block text-xs font-medium text-slate-500">
@@ -728,8 +821,8 @@ export function ICalCalendarPage({
                   disabled={!activeGoogleConnection}
                   className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                 />
-              </label>
-              <ActionBtn type="submit" variant="primary" disabled={blockingDates || !propertyId || !blockForm.room_category_id}>
+              </label>}
+              <ActionBtn type="submit" variant="primary" disabled={blockingDates || !propertyId || (!isVilla && !blockForm.room_category_id)}>
                 {blockingDates ? 'Blocking...' : 'Block dates'}
               </ActionBtn>
             </form>
@@ -747,14 +840,14 @@ export function ICalCalendarPage({
                 Loading blocks...
               </p>
             )}
-            {!inventoryBlocksLoading && inventoryBlocks.length === 0 && (
+            {!inventoryBlocksLoading && manualInventoryBlocks.length === 0 && (
               <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-center text-xs font-medium leading-relaxed text-slate-500">
-                No iCal blocks for this property.
+                No manual blocks for this property.
               </p>
             )}
-            {!inventoryBlocksLoading && inventoryBlocks.length > 0 && (
+            {!inventoryBlocksLoading && manualInventoryBlocks.length > 0 && (
               <div className="space-y-2">
-                {inventoryBlocks.map((block) => (
+                {manualInventoryBlocks.map((block) => (
                   <div key={block.id} className="rounded-lg border border-slate-100 bg-slate-50/60 p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -837,35 +930,6 @@ export function ICalCalendarPage({
           </Panel>
 
           <Panel className="p-4">
-            <SectionHeading title="Publish blocks" eyebrow="HMS iCal link" />
-            <p className="mb-2 text-xs font-medium leading-relaxed text-slate-500">
-              Add this URL in Google Calendar with "From URL", or in Airbnb/MakeMyTrip calendar import if that account supports iCal import. Existing OTA iCal links are read-only, so this publishes a separate block feed.
-            </p>
-            <input
-              readOnly
-              value={shareLink || 'Select a property to generate the iCal link'}
-              className={`${inputCls} font-mono text-xs`}
-              onFocus={(event) => event.currentTarget.select()}
-            />
-            <div className="mt-3 flex flex-wrap gap-2">
-              <ActionBtn size="sm" onClick={copyShareLink} disabled={!shareLink}>Copy link</ActionBtn>
-              {shareLink && (
-                <a
-                  href={shareLink}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50"
-                >
-                  Open .ics
-                </a>
-              )}
-            </div>
-            {selectedProperty && (
-              <p className="mt-2 text-[11px] font-semibold text-slate-400">Sharing {selectedProperty.name}</p>
-            )}
-          </Panel>
-
-          <Panel className="p-4">
             <SectionHeading title="Merged feeds" eyebrow="OTA calendars" />
             {feeds.length === 0 ? (
               <p className="rounded-lg border border-dashed border-slate-200 px-4 py-6 text-center text-sm font-medium text-slate-400">
@@ -873,13 +937,13 @@ export function ICalCalendarPage({
               </p>
             ) : (
               <div className="space-y-2">
-                {feeds.map((feed) => {
+                {feeds.filter(feed => !feed.propertyId || feed.propertyId === propertyId).map((feed) => {
                   const feedEventCount = parseICalEvents(feed.text, feed).length;
                   return (
                     <div key={feed.id} className="rounded-lg border border-slate-100 bg-slate-50/60 p-2.5">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <span className={`inline-flex rounded-md border px-2 py-0.5 text-[10px] font-bold ${feedSwatches[feed.color]}`}>
+                          <span className={`inline-flex rounded-md border px-2 py-0.5 text-[10px] font-bold ${feedSwatches[feed.name.toLowerCase().includes('airbnb') ? 'rose' : feed.color]}`}>
                             {feed.name}
                           </span>
                           <p className="mt-1.5 truncate text-xs font-medium text-slate-500">{feed.url || 'Pasted feed'}</p>
@@ -902,10 +966,10 @@ export function ICalCalendarPage({
                           </label>
                         </div>
                         <div className="flex flex-shrink-0 flex-col gap-1 sm:flex-row xl:flex-col">
-                          <ActionBtn size="sm" onClick={() => refreshFeed(feed)} disabled={!feed.url || refreshingFeedId === feed.id}>
-                            {refreshingFeedId === feed.id ? 'Refreshing' : 'Refresh'}
+                          <ActionBtn size="sm" onClick={() => refreshFeed(feed)} disabled={loading || (!feed.url && !isVilla && !feed.propertyId) || Boolean(refreshingFeedId) || Boolean(syncingFeedId)}>
+                            {refreshingFeedId === feed.id ? 'Refreshing...' : 'Refresh'}
                           </ActionBtn>
-                          <ActionBtn size="sm" variant="danger" onClick={() => removeFeed(feed.id)}>Remove</ActionBtn>
+                          <ActionBtn size="sm" variant="danger" onClick={() => removeFeed(feed.id)} disabled={loading || Boolean(syncingFeedId) || Boolean(refreshingFeedId)}>Remove</ActionBtn>
                         </div>
                       </div>
                     </div>
@@ -922,7 +986,8 @@ export function ICalCalendarPage({
           <Panel className="p-4">
             <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <SectionHeading title={formatMonth(monthCursor)} eyebrow="Merged month view" />
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                <ActionBtn size="sm" icon={<Share2 size={14} />} onClick={() => setShareOpen(true)} disabled={!shareLink}>Share</ActionBtn>
                 <ActionBtn size="sm" onClick={() => setMonthCursor(addMonths(monthCursor, -1))}>Previous</ActionBtn>
                 <ActionBtn size="sm" onClick={() => setMonthCursor(startOfMonth(new Date()))}>Today</ActionBtn>
                 <ActionBtn size="sm" onClick={() => setMonthCursor(addMonths(monthCursor, 1))}>Next</ActionBtn>
@@ -940,6 +1005,7 @@ export function ICalCalendarPage({
               {monthCells.map((cell) => {
                 const key = dateKey(cell.date);
                 const dayEvents = eventsByDate.get(key) ?? [];
+                const daySources = Array.from(new Set(dayEvents.map(event => event.feedName)));
                 const active = key === selectedDate;
                 const isCurrentMonth = cell.date.getMonth() === monthCursor.getMonth();
                 return (
@@ -959,22 +1025,22 @@ export function ICalCalendarPage({
                         'absolute right-2 top-2 inline-flex max-w-[68%] truncate rounded-full px-2 py-0.5 text-[10px] font-bold leading-tight text-white',
                         dayEvents[0].availabilityWindowClosed ? 'bg-amber-500' : 'bg-emerald-600',
                       ].join(' ')}>
-                        {dayEvents[0].availabilityWindowClosed ? 'Availability closed' : 'Booked'}
+                        {dayEvents[0].availabilityWindowClosed ? 'Availability closed' : dayEvents.every(event => event.uid.startsWith('hms-block-')) ? 'Blocked' : 'Booked'}
                       </span>
                     )}
                     <div className="absolute left-3 right-3 top-10 space-y-1">
-                      {dayEvents.slice(0, 3).map((event) => (
+                      {daySources.slice(0, 3).map((sourceName) => (
                         <span
-                          key={`${event.feedId}-${event.uid}`}
+                          key={sourceName}
                           className="block"
                         >
-                          <span className={`inline-flex max-w-full truncate rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide leading-tight shadow-sm ${getProviderPillClass(event.feedName)}`}>
-                            {event.feedName}
+                          <span className={`inline-flex max-w-full truncate rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide leading-tight shadow-sm ${getProviderPillClass(sourceName)}`}>
+                            {sourceName}
                           </span>
                         </span>
                       ))}
-                      {dayEvents.length > 3 && (
-                        <span className="block text-[10px] font-semibold text-slate-400">+{dayEvents.length - 3} more</span>
+                      {daySources.length > 3 && (
+                        <span className="block text-[10px] font-semibold text-slate-400">+{daySources.length - 3} more sources</span>
                       )}
                     </div>
                   </button>
@@ -1006,7 +1072,7 @@ function EventList({ title, events, empty }: { title: string; events: ICalEvent[
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="mb-3 flex flex-wrap items-center gap-2">
-                    <span className={`inline-flex rounded-md border px-2.5 py-1 text-[11px] font-bold ${feedSwatches[event.color]}`}>
+                    <span className={`inline-flex rounded-md border px-2.5 py-1 text-[11px] font-bold ${feedSwatches[event.feedName.toLowerCase().includes('airbnb') ? 'rose' : event.color]}`}>
                       {event.feedName}
                     </span>
                   </div>
@@ -1195,6 +1261,7 @@ function readPersistedFeeds(): CalendarFeed[] {
           feedColors.includes(feed.color),
         ))
         .map((feed) => ({
+          propertyId: typeof feed.propertyId === 'string' ? feed.propertyId : undefined,
           id: String(feed.id),
           name: String(feed.name),
           url: feed.url ? String(feed.url) : '',
@@ -1267,6 +1334,8 @@ function buildPropertyICalLink(propertyId: string) {
 }
 
 function inventoryBlockToEvent(block: InventoryBlock): ICalEvent {
+  const imported = block.source.startsWith('ICAL_IMPORT:');
+  const sourceName = imported ? block.source_name?.trim() || 'Imported calendar' : 'HMS Manual';
   const title = `Blocked${block.room_category_name ? ` - ${block.room_category_name}` : ''}`;
   return {
     uid: `hms-block-${block.id}`,
@@ -1276,9 +1345,9 @@ function inventoryBlockToEvent(block: InventoryBlock): ICalEvent {
     allDay: true,
     location: '',
     description: block.reason,
-    feedId: 'hms-inventory-blocks',
-    feedName: 'HMS Blocks',
-    color: 'indigo',
+    feedId: imported ? block.source : 'hms-inventory-blocks',
+    feedName: sourceName,
+    color: sourceName.toLowerCase().includes('airbnb') ? 'rose' : 'indigo',
     availabilityWindowClosed: false,
   };
 }
@@ -1391,6 +1460,7 @@ function formatDateLabel(key: string) {
 }
 
 function formatBlockCalendarLabel(block: InventoryBlock, googleConnections: GoogleCalendarConnection[]) {
+  if (block.source.startsWith('ICAL_IMPORT:')) return block.source_name?.trim() || 'Imported calendar';
   if (block.google_calendar_id) {
     const matchingConnection = googleConnections.find((connection) => connection.calendar_id === block.google_calendar_id);
     const summary = matchingConnection?.calendar_summary?.trim();
@@ -1400,6 +1470,7 @@ function formatBlockCalendarLabel(block: InventoryBlock, googleConnections: Goog
 }
 
 function sourceLabel(source: string) {
+  if (source.startsWith('ICAL_IMPORT:')) return 'Imported iCal calendar';
   const labels: Record<string, string> = {
     ICAL_MANUAL: 'HMS iCal manual block',
     MANUAL: 'HMS manual block',

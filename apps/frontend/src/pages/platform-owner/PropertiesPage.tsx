@@ -140,7 +140,7 @@ export function Properties({
             onChange={setPropertySearch}
             placeholder="Search name or code"
             icon={false}
-            inputClassName="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-slate-400 lg:w-64"
+            className="w-full lg:w-64"
           />
         </div>
         <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">

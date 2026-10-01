@@ -1,0 +1,28 @@
+--- a/apps/frontend/src/pages/BookingsPage.tsx
++++ b/apps/frontend/src/pages/BookingsPage.tsx
+@@ -930,6 +930,8 @@
+ 
+   /* Room rows come from real room inventory; unassigned bookings stay in dedicated TBD lanes until check-in assigns a room. */
+   const villaPropertyIds = new Set(reservationProperties.filter(property => property.property_type === 'RENTAL_VILLAS').map(property => property.id));
++  const timelineProperties = reservationProperties.filter(property => propertyFilter === 'ALL' || property.id === propertyFilter);
++  const isVillaTimeline = !previewDataEnabled && timelineProperties.length > 0 && timelineProperties.every(property => villaPropertyIds.has(property.id));
+   const roomRows = sortRoomRows([
+     ...buildRoomRows(allRooms.filter(room => !villaPropertyIds.has(room.property.id)), propertyFilter),
+     ...reservationProperties.filter(property => villaPropertyIds.has(property.id) && (propertyFilter === 'ALL' || propertyFilter === property.id)).map(property => ({ roomKey: property.id, roomNum: 'Villa', category: 'Rental villas', propertyName: property.name, propertyId: property.id, isVilla: true })),
+@@ -1115,14 +1117,14 @@
+           </div>
+ 
+           {/* ── Tape chart ── */}
+-          <div className="relative bg-white rounded-xl border border-black/[0.06] flex flex-col overflow-hidden" style={{ maxHeight: 'calc(100vh - 240px)', minHeight: 720 }}>
++          <div className="relative bg-white rounded-xl border border-black/[0.06] flex flex-col overflow-hidden" style={{ maxHeight: 'calc(100vh - 240px)', minHeight: isVillaTimeline ? undefined : 720 }}>
+             {showTimelineLoader && allLoading && !previewData && (
+               <div className="absolute inset-0 z-30 flex items-center justify-center bg-white/65 backdrop-blur-[1px]">
+                 <Spinner size="lg" />
+               </div>
+             )}
+ 
+-              <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none">
++              <div className={`${isVillaTimeline ? 'flex-auto' : 'flex-1'} min-h-0 overflow-y-auto scrollbar-none`}>
+                 {roomRows.length === 0 && unassignedRows.length === 0 && blockedRows.length === 0 ? (
+                   <div className="py-16 text-center">
+                     <p className="text-[13px] font-semibold text-slate-500">No rooms found for the selected filters.</p>

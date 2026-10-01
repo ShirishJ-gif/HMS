@@ -1,9 +1,11 @@
-import { type FormEvent, useEffect, useState } from 'react';
+import { ArrowUpRight, CalendarDays, Building2, ChevronDown, ChevronLeft, ChevronRight, Mail, MapPin, Phone, Plus, Users, X } from 'lucide-react';
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api, getApiErrorMessage } from '../api/client';
 import { Property } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
 import { DelayedSpinnerOverlay } from '../components/Spinner';
-import { ActionBtn, ErrorMsg, SearchInput, StatCard, inputCls, labelCls } from './ui';
+import { ActionBtn, ErrorMsg, SearchInput, inputCls, labelCls } from './ui';
 
 type DisplayGuest = {
   id: string; property_id: string; name: string; phone: string; email: string | null;
@@ -61,26 +63,6 @@ function initials(name: string) {
   return name.split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase();
 }
 
-/* ── Detail field ── */
-const FIELD_ICONS: Record<string, JSX.Element> = {
-  phone: <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.07 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 9.91a16 16 0 0 0 5.9 5.9l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>,
-  email: <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>,
-  id:    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><rect width="18" height="14" x="3" y="5" rx="2"/><path d="M8 10h.01M8 14h.01M12 10h4M12 14h4"/></svg>,
-  map:   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>,
-};
-
-function GuestDetailField({ icon, label, value, mono }: { icon: string; label: string; value: string; mono: boolean }) {
-  return (
-    <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
-      <div className="flex items-center gap-1.5 mb-1.5 text-slate-400">
-        {FIELD_ICONS[icon]}
-        <span className="text-[9.5px] font-bold uppercase tracking-wider">{label}</span>
-      </div>
-      <p className={`text-[12.5px] font-semibold text-slate-700 leading-snug ${mono ? 'font-mono text-[11.5px]' : ''}`}>{value}</p>
-    </div>
-  );
-}
-
 /* ══ Main page ══ */
 export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: string }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -100,8 +82,6 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
   const properties = directory?.properties ?? [];
   const guests = directory?.guests ?? [];
   const meta = directory?.meta ?? { limit: guestPageLimit, page: 1, total: 0, total_pages: 1 };
-  const summary = directory?.summary ?? { reservation_feed: 0, repeat_guests: 0, total_guests: 0, with_email: 0 };
-  const selected = guests.find(g => g.id === selectedId) ?? null;
   const guestIds = guests.map(g => g.id).join('|');
 
   useEffect(() => {
@@ -160,7 +140,7 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
 
   useEffect(() => {
     if (selectedId && guests.some(g => g.id === selectedId)) return;
-    setSelectedId(guests[0]?.id ?? null);
+    setSelectedId(null);
   }, [guestIds, selectedId]);
 
   async function createGuest(event: FormEvent) {
@@ -210,64 +190,60 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
   }
 
   return (
-    <div className="relative min-h-screen -mx-5 lg:-mx-8 -my-6 lg:-my-8 bg-[#f5f5f3] flex flex-col">
+    <div className="relative min-h-screen -mx-5 lg:-mx-8 -my-6 lg:-my-8 bg-[#f5f5f3] flex flex-col tracking-normal [&_*]:tracking-normal">
       <DelayedSpinnerOverlay loading={loading} />
       {/* ── Header ── */}
       <div className="px-5 lg:px-8 pt-6 lg:pt-8 pb-4 flex items-start justify-between gap-4 flex-shrink-0">
         <div>
           <p className="text-[10.5px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Operations</p>
           <h1 className="text-[22px] font-black text-slate-900 tracking-tight leading-none">Guests</h1>
-          <p className="text-[12px] text-slate-400 mt-1">Search guest contacts, IDs, and reservation-linked profiles across properties</p>
+          <p className="text-[12px] text-slate-400 mt-1">Guest directory</p>
         </div>
         <ActionBtn variant="primary" onClick={() => {
           setGuestForm(current => ({ ...current, property_id: activePropertyId || (propertyFilter !== 'ALL' ? propertyFilter : current.property_id) }));
-          setShowAddGuest(open => !open);
+          setGuestFormError(null);
+          setShowAddGuest(true);
         }}>
-          {showAddGuest ? 'Close' : 'Add guest'}
+          <Plus size={15} />
+          Add guest
         </ActionBtn>
       </div>
 
       <div className="px-5 lg:px-8 py-5 flex flex-col gap-4">
         {showAddGuest && (
-          <form onSubmit={createGuest} className="rounded-xl border border-black/[0.06] bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-600">Manual guest</p>
-                <h2 className="text-base font-bold text-slate-900">Add guest details</h2>
+          <AddGuestDialog busy={guestSubmitting} onClose={() => setShowAddGuest(false)}>
+            <form onSubmit={createGuest}>
+              <fieldset disabled={guestSubmitting} className="space-y-4 p-5">
+                {guestFormError && <ErrorMsg>{guestFormError}</ErrorMsg>}
+                {!activePropertyId && propertyFilter === 'ALL' ? (
+                  <label className={labelCls}>
+                    <span>Property</span>
+                    <select required className={inputCls} value={guestForm.property_id} onChange={event => setGuestForm(current => ({ ...current, property_id: event.target.value }))}>
+                      <option value="">Select property</option>
+                      {properties.map(property => <option key={property.id} value={property.id}>{property.name}</option>)}
+                    </select>
+                  </label>
+                ) : <p className="text-xs text-slate-500">{properties.find(property => property.id === (activePropertyId || propertyFilter))?.name}</p>}
+                <label className={labelCls}>
+                  <span>Name <span className="text-rose-500">*</span></span>
+                  <input autoFocus required autoComplete="name" className={inputCls} value={guestForm.name} onChange={event => setGuestForm(current => ({ ...current, name: event.target.value }))} />
+                </label>
+                <label className={labelCls}>
+                  <span>Phone <span className="text-rose-500">*</span></span>
+                  <input required type="tel" autoComplete="tel" className={inputCls} value={guestForm.phone} onChange={event => setGuestForm(current => ({ ...current, phone: event.target.value }))} />
+                </label>
+                <label className={labelCls}>
+                  <span>Email <span className="font-normal text-slate-400">(optional)</span></span>
+                  <input className={inputCls} type="email" autoComplete="email" value={guestForm.email} onChange={event => setGuestForm(current => ({ ...current, email: event.target.value }))} />
+                </label>
+              </fieldset>
+              <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
+                <ActionBtn disabled={guestSubmitting} onClick={() => setShowAddGuest(false)}>Cancel</ActionBtn>
+                <ActionBtn type="submit" variant="primary" disabled={guestSubmitting}>{guestSubmitting ? 'Saving...' : 'Save guest'}</ActionBtn>
               </div>
-              <ActionBtn type="submit" variant="primary" disabled={guestSubmitting}>
-                {guestSubmitting ? 'Saving...' : 'Save guest'}
-              </ActionBtn>
-            </div>
-            {guestFormError && <div className="mb-3"><ErrorMsg>{guestFormError}</ErrorMsg></div>}
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-              <label className={labelCls}>
-                <span>Name</span>
-                <input className={inputCls} value={guestForm.name} onChange={event => setGuestForm(current => ({ ...current, name: event.target.value }))} />
-              </label>
-              <label className={labelCls}>
-                <span>Phone</span>
-                <input className={inputCls} value={guestForm.phone} onChange={event => setGuestForm(current => ({ ...current, phone: event.target.value }))} />
-              </label>
-              <label className={labelCls}>
-                <span>Email</span>
-                <input className={inputCls} type="email" value={guestForm.email} onChange={event => setGuestForm(current => ({ ...current, email: event.target.value }))} />
-              </label>
-            </div>
-          </form>
+            </form>
+          </AddGuestDialog>
         )}
-
-        {/* ── KPI strip ── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {([
-            ['Total guests',     summary.total_guests],
-            ['Reservation feed', summary.reservation_feed],
-            ['Repeat guests',    summary.repeat_guests],
-            ['With email',       summary.with_email],
-          ] as [string, number][]).map(([label, val]) => (
-            <StatCard key={label} label={label} value={val} />
-          ))}
-        </div>
 
         {/* ── Filter row ── */}
         <div className="flex items-center gap-2.5 flex-wrap">
@@ -276,8 +252,6 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
             onChange={setSearch}
             placeholder="Name, phone, email…"
             className="relative w-64"
-            iconClassName="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none"
-            inputClassName="w-full h-10 pl-9 pr-3 rounded-lg bg-white border border-black/[0.07] text-[12.5px] text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-indigo-200 transition-all"
           />
           <div className="w-[220px] max-w-full">
             <CustomSelect
@@ -298,182 +272,145 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
           )}
         </div>
 
-        {/* ── Split panel ── */}
-        <div className="flex gap-3" style={{ height: 580 }}>
-
-          {/* Guest list */}
-          <div className="flex flex-col bg-white rounded-xl border border-black/[0.06] overflow-hidden flex-shrink-0" style={{ width: 340 }}>
-            <div className="flex-shrink-0 px-4 py-2.5 border-b border-slate-100">
-              <p className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wider">{meta.total} guest{meta.total !== 1 ? 's' : ''}</p>
-            </div>
-            <div className="flex-1 overflow-y-auto scrollbar-none">
-              {error && <div className="px-4 py-4"><ErrorMsg>{error}</ErrorMsg></div>}
-              {!loading && guests.length === 0 && (
-                <div className="px-4 py-10 text-center">
-                  <p className="text-[13px] font-medium text-slate-400">No guests match your filters</p>
-                </div>
-              )}
-              {guests.map(g => {
-                const isSel = g.id === selectedId;
-                return (
-                  <button key={g.id} onClick={() => setSelectedId(g.id)}
-                    className={`w-full text-left px-4 py-3.5 border-b border-slate-50 flex items-start gap-3 transition-colors ${isSel ? 'bg-slate-100' : 'hover:bg-slate-50/70'}`}>
-                    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-extrabold flex-shrink-0 ${avatarColor(g.id)}`}>
-                      {initials(g.name)}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className={`text-[13px] font-bold leading-tight truncate ${isSel ? 'text-slate-900' : 'text-slate-800'}`}>{g.name}</p>
-                        {g.import_blocked && (
-                          <span className="flex-shrink-0 w-4 h-4 rounded-full bg-rose-100 flex items-center justify-center" title="Import blocked">
-                            <svg className="w-2.5 h-2.5 text-rose-500" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01"/>
-                            </svg>
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-0.5">{g.phone}</p>
-                      <div className="flex items-center gap-1.5 mt-1.5">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[9.5px] font-bold ${g.source === 'GUEST_REGISTRY' ? 'bg-indigo-50 text-indigo-700' : 'bg-sky-50 text-sky-700'}`}>
-                          {g.source === 'GUEST_REGISTRY' ? 'Registry' : 'Feed'}
-                        </span>
-                        {g.property?.code && <span className="text-[9.5px] text-slate-400 font-medium">{g.property.code}</span>}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-            {meta.total_pages > 1 && (
-              <div className="flex flex-shrink-0 items-center justify-between gap-2 border-t border-slate-100 px-3 py-2">
-                <button
-                  type="button"
-                  disabled={loading || meta.page <= 1}
-                  onClick={() => setPage(current => Math.max(current - 1, 1))}
-                  className="h-8 rounded-lg border border-slate-200 px-3 text-[11px] font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Prev
-                </button>
-                <span className="text-[11px] font-semibold text-slate-400">
-                  {meta.page} / {meta.total_pages}
-                </span>
-                <button
-                  type="button"
-                  disabled={loading || meta.page >= meta.total_pages}
-                  onClick={() => setPage(current => Math.min(current + 1, meta.total_pages))}
-                  className="h-8 rounded-lg border border-slate-200 px-3 text-[11px] font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Next
-                </button>
-              </div>
-            )}
+        <div className="flex items-center justify-between gap-3 pt-2">
+          <h2 className="text-sm font-semibold text-slate-800">Guest profiles <span className="ml-2 text-slate-400 font-normal">{meta.total.toLocaleString()}</span></h2>
+          {meta.total > 0 && <p className="text-xs text-slate-500">{(meta.page - 1) * meta.limit + 1}-{Math.min(meta.page * meta.limit, meta.total)} of {meta.total}</p>}
+        </div>
+        {error && <ErrorMsg>{error}</ErrorMsg>}
+        {!loading && !error && guests.length === 0 && (
+          <div className="py-16 text-center border-y border-slate-200">
+            <Users size={32} className="mx-auto mb-3 text-slate-400" />
+            <h3 className="text-sm font-semibold text-slate-700">No guests found</h3>
+            <button type="button" onClick={() => { setSearch(''); setSourceFilter('ALL'); setPropertyFilter(activePropertyId || 'ALL'); }} className="mt-3 text-sm font-semibold text-slate-600 hover:text-slate-900">Clear filters</button>
           </div>
-
-          {/* Detail panel */}
-          {selected ? (
-            <div className="flex-1 bg-white rounded-xl border border-black/[0.06] overflow-hidden flex flex-col min-w-0">
-              {/* Header */}
-              <div className="flex-shrink-0 px-6 py-5 border-b border-slate-100" style={{ background: '#f9f8f6' }}>
-                <div className="flex items-start gap-4">
-                  <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-[16px] font-extrabold flex-shrink-0 ${avatarColor(selected.id)}`}>
-                    {initials(selected.name)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h2 className="text-[20px] font-bold text-slate-900 tracking-tight leading-tight">{selected.name}</h2>
-                      {selected.import_blocked && (
-                        <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">Blocked</span>
-                      )}
-                    </div>
-                    <p className="text-[12.5px] text-slate-500 mt-0.5">{selected.property?.name ?? '—'}</p>
-                    <div className="flex items-center gap-2 mt-2 flex-wrap">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold ${selected.source === 'GUEST_REGISTRY' ? 'bg-indigo-50 text-indigo-700' : 'bg-sky-50 text-sky-700'}`}>
-                        {selected.source === 'GUEST_REGISTRY' ? 'Registry' : 'Reservation feed'}
+        )}
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,290px),1fr))] items-start gap-4" aria-busy={loading}>
+          {guests.map(g => {
+            const expanded = selectedId === g.id;
+            return (
+              <article key={g.id} className={`min-w-0 overflow-hidden rounded-lg border bg-white transition-[transform,border-color,box-shadow] duration-200 hover:-translate-y-1 hover:border-slate-300 hover:shadow-lg hover:shadow-slate-900/5 focus-within:border-slate-300 focus-within:shadow-md motion-reduce:hover:translate-y-0 motion-reduce:transition-none ${expanded ? 'border-slate-300' : 'border-black/[0.06]'}`}>
+                <button type="button" className="group/guest block w-full rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-slate-400" aria-expanded={expanded} aria-controls={`guest-details-${g.id}`} aria-label={`${expanded ? 'Close' : 'View'} profile for ${g.name}`} onClick={() => setSelectedId(expanded ? null : g.id)}>
+                  <div className="relative h-[76px] border-b border-black/[0.04] bg-[#f5f5f3] px-5 pt-4">
+                    <div className="flex justify-end">
+                      <span className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-[10px] font-semibold ${g.source === 'GUEST_REGISTRY' ? 'bg-white text-slate-600' : 'bg-sky-50 text-sky-700'}`}>
+                        <span className={`h-1.5 w-1.5 rounded-full ${g.source === 'GUEST_REGISTRY' ? 'bg-slate-400' : 'bg-sky-500'}`} />
+                        {g.source === 'GUEST_REGISTRY' ? 'Registry' : 'Reservation feed'}
                       </span>
                     </div>
+                    <div className={`absolute left-5 top-9 flex h-16 w-16 items-center justify-center rounded-full border-4 border-white text-lg font-bold shadow-sm transition-transform duration-200 group-hover/guest:scale-105 motion-reduce:transition-none ${avatarColor(g.id)}`}>{initials(g.name)}</div>
                   </div>
-                </div>
-              </div>
-
-              {/* Body */}
-              <div className="flex-1 overflow-y-auto scrollbar-none p-6 space-y-5">
-
-                {/* Contact */}
-                <div>
-                  <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-3">Contact</p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <GuestDetailField icon="phone" label="Phone"    value={selected.phone}            mono={false} />
-                    <GuestDetailField icon="email" label="Email"    value={selected.email ?? '—'}     mono={false} />
-                    <GuestDetailField icon="id"    label="ID proof" value={selected.id_proof}         mono />
-                    <GuestDetailField icon="map"   label="Address"  value={selected.address}          mono={false} />
-                  </div>
-                </div>
-
-                {/* Stay summary */}
-                <div>
-                  <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-3">Stay history</p>
-                  <div className="flex gap-3">
-                    <div className="flex-1 bg-slate-50 rounded-xl p-3.5 border border-slate-100">
-                      <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-1">Total stays</p>
-                      <p className="text-[22px] font-extrabold text-slate-900 leading-none">{selected.reservation_ids.length}</p>
+                  <div className="px-5 pb-4 pt-9">
+                    <div className="flex items-center gap-2">
+                      <h3 className="min-w-0 flex-1 truncate text-base font-bold text-slate-900" title={g.name}>{g.name}</h3>
+                      {g.import_blocked && <span className="shrink-0 rounded bg-rose-50 px-2 py-1 text-[10px] font-semibold text-rose-700">Blocked</span>}
+                      {!g.import_blocked && g.reservation_ids.length > 1 && <span className="shrink-0 rounded bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700">Repeat guest</span>}
                     </div>
-                    <div className="flex-1 bg-slate-50 rounded-xl p-3.5 border border-slate-100">
-                      <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-1">Source</p>
-                      <p className="text-[12px] font-bold text-slate-700 leading-none mt-1">
-                        {selected.source === 'GUEST_REGISTRY' ? 'Manual registry' : 'Reservation feed'}
-                      </p>
+                    <p className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500"><Building2 size={13} className="shrink-0" /><span className="truncate" title={g.property?.name}>{g.property?.name || 'No property assigned'}</span></p>
+                    <div className="mt-5 space-y-3 text-xs text-slate-600">
+                      <p className="flex items-center gap-2.5"><Phone size={14} className="shrink-0 text-slate-400" /><span className="truncate">{g.phone || 'No phone provided'}</span></p>
+                      <p className="flex items-center gap-2.5"><Mail size={14} className="shrink-0 text-slate-400" /><span className="truncate" title={g.email || undefined}>{g.email || 'No email provided'}</span></p>
                     </div>
-                    <div className="flex-1 bg-slate-50 rounded-xl p-3.5 border border-slate-100">
-                      <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-1">Property</p>
-                      <p className="text-[12px] font-bold text-slate-700 leading-none mt-1">{selected.property?.code ?? '—'}</p>
+                    <div className="relative mt-5 h-[64px] border-t border-slate-100">
+                      <div className="absolute inset-0 flex items-center justify-between gap-3 transition-opacity duration-150 motion-reduce:transition-none [@media(hover:hover)]:group-hover/guest:invisible [@media(hover:hover)]:group-hover/guest:opacity-0 group-focus-visible/guest:invisible group-focus-visible/guest:opacity-0">
+                        <div className="flex items-center gap-2.5">
+                          <CalendarDays size={18} strokeWidth={1.5} className="text-slate-400" />
+                          <span className="text-[11px] leading-4 text-slate-500">Linked<br />reservations</span>
+                        </div>
+                        <span className="text-2xl font-bold tabular-nums text-slate-900">{String(g.reservation_ids.length).padStart(2, '0')}</span>
+                      </div>
+                      <div className="invisible absolute inset-0 flex items-center gap-2.5 opacity-0 transition-opacity duration-150 motion-reduce:transition-none [@media(hover:hover)]:group-hover/guest:visible [@media(hover:hover)]:group-hover/guest:opacity-100 group-focus-visible/guest:visible group-focus-visible/guest:opacity-100">
+                        <MapPin size={18} strokeWidth={1.5} className="shrink-0 text-slate-400" />
+                        <div className="min-w-0">
+                          <p className="mb-1 text-[10px] font-semibold text-slate-400">Address</p>
+                          <p className="line-clamp-2 break-words text-xs text-slate-600">{g.address && g.address !== 'Not provided' ? g.address : 'Not provided'}</p>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </div>
-
-                {/* Reservation IDs */}
-                {selected.reservation_ids.length > 0 && (
-                  <div>
-                    <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-2">Reservation IDs</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {selected.reservation_ids.map(rid => (
-                        <span key={rid} className="font-mono text-[10.5px] bg-slate-100 border border-slate-200 px-2 py-0.5 rounded text-slate-600">{rid}</span>
-                      ))}
-                    </div>
+                  <div className={`flex h-12 items-center justify-between border-t px-5 text-xs font-semibold transition-colors duration-200 motion-reduce:transition-none ${expanded ? 'border-zinc-600 bg-zinc-600 text-white' : 'border-slate-100 bg-slate-50/60 text-slate-600 group-hover/guest:border-zinc-600 group-hover/guest:bg-zinc-600 group-hover/guest:text-white group-focus-visible/guest:bg-zinc-600 group-focus-visible/guest:text-white'}`}>
+                    <span>{expanded ? 'Close profile' : 'View profile'}</span>
+                    {expanded ? <ChevronDown size={16} className="rotate-180" /> : <ArrowUpRight size={17} className="transition-transform duration-200 group-hover/guest:translate-x-0.5 group-hover/guest:-translate-y-0.5 motion-reduce:transition-none" />}
                   </div>
-                )}
-
-                {/* Blocked warning */}
-                {selected.import_blocked && (
-                  <div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 flex gap-2.5">
-                    <svg className="w-4 h-4 text-rose-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-                      <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
-                    </svg>
-                    <div>
-                      <p className="text-[11px] font-bold text-rose-700 uppercase tracking-wider mb-0.5">Import blocked</p>
-                      <p className="text-[12px] text-rose-600 font-medium leading-relaxed">
-                        {selected.import_error ?? 'This guest came from a blocked OTA provider reservation. Review the channel manager for details.'}
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="flex-1 bg-white rounded-xl border border-black/[0.06] flex items-center justify-center min-w-0">
-              <div className="text-center">
-                <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-4">
-                  <svg className="w-7 h-7 text-slate-400" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z"/>
-                  </svg>
-                </div>
-                <p className="text-[13px] font-semibold text-slate-600">Select a guest to view details</p>
-                <p className="text-[11px] text-slate-400 mt-1">{meta.total} profile{meta.total !== 1 ? 's' : ''} available</p>
-              </div>
-            </div>
-          )}
+                </button>
+                {expanded && <GuestProfileDialog guest={g} onClose={() => setSelectedId(null)} />}
+              </article>
+            );
+          })}
         </div>
+        {meta.total_pages > 1 && (
+          <div className="flex items-center justify-between gap-3 border-t border-slate-200 py-4">
+            <p className="text-xs text-slate-500">Page {meta.page} of {meta.total_pages}</p>
+            <div className="flex gap-2">
+              <button type="button" title="Previous page" aria-label="Previous page" disabled={loading || meta.page <= 1} onClick={() => setPage(current => Math.max(current - 1, 1))} className="grid h-[34px] w-[34px] place-items-center rounded-md border border-slate-200 bg-white text-slate-700 enabled:hover:bg-slate-50 enabled:hover:border-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"><ChevronLeft size={16} /></button>
+              <button type="button" title="Next page" aria-label="Next page" disabled={loading || meta.page >= meta.total_pages} onClick={() => setPage(current => Math.min(current + 1, meta.total_pages))} className="grid h-[34px] w-[34px] place-items-center rounded-md border border-slate-200 bg-white text-slate-700 enabled:hover:bg-slate-50 enabled:hover:border-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"><ChevronRight size={16} /></button>
+            </div>
+          </div>
+        )}
       </div>
-
     </div>
+  );
+}
+
+function GuestProfileDialog({ guest, onClose }: { guest: DisplayGuest; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const trigger = document.activeElement;
+    dialog?.showModal();
+    return () => {
+      dialog?.close();
+      if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus({ preventScroll: true });
+    };
+  }, []);
+
+  return createPortal(
+    <dialog ref={dialogRef} id={`guest-details-${guest.id}`} aria-labelledby="guest-profile-title"
+      onCancel={event => { event.preventDefault(); onClose(); }}
+      onClick={event => { if (event.target === event.currentTarget) {
+        const bounds = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose();
+      } }}
+      className="m-auto max-h-[85dvh] w-[calc(100%_-_2rem)] max-w-md overflow-y-auto rounded-lg border border-slate-200 bg-white p-0 text-slate-900 shadow-xl backdrop:bg-black/30 motion-safe:animate-page-in">
+      <header className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4">
+        <div className="min-w-0"><p className="text-xs text-slate-500">Guest profile</p><h2 id="guest-profile-title" className="mt-1 break-words text-base font-semibold">{guest.name}</h2></div>
+        <button type="button" aria-label="Close guest profile" title="Close guest profile" onClick={onClose} className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-slate-500 hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-400"><X size={18} /></button>
+      </header>
+      <div className="space-y-4 p-5">
+        <section><h3 className="text-xs font-semibold">Linked reservations <span className="text-slate-400">({guest.reservation_ids.length})</span></h3>
+          {guest.reservation_ids.length ? <ul className="mt-3 space-y-2">{guest.reservation_ids.map(id => <li key={id} className="break-all font-mono text-xs text-slate-500">{id}</li>)}</ul> : <p className="mt-3 text-xs text-slate-400">No linked reservations</p>}
+        </section>
+        {guest.import_blocked && <div className="break-words border-l-2 border-rose-400 pl-3 text-xs text-rose-700"><p className="mb-1 font-semibold">Import blocked</p>{guest.import_error || 'Review the channel manager for details.'}</div>}
+      </div>
+    </dialog>, document.body,
+  );
+}
+
+function AddGuestDialog({ children, busy, onClose }: { children: ReactNode; busy: boolean; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const trigger = document.activeElement;
+    dialog?.showModal();
+    return () => {
+      dialog?.close();
+      if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus({ preventScroll: true });
+    };
+  }, []);
+
+  return createPortal(
+    <dialog ref={dialogRef} aria-labelledby="add-guest-title" aria-describedby="add-guest-description" aria-busy={busy}
+      onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}
+      onClick={event => {
+        if (busy || event.target !== event.currentTarget) return;
+        const bounds = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose();
+      }}
+      className="m-auto max-h-[90dvh] w-[calc(100%_-_2rem)] max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-0 text-slate-900 shadow-xl backdrop:bg-black/30">
+      <header className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+        <div><h2 id="add-guest-title" className="text-base font-semibold">Add guest</h2><p id="add-guest-description" className="mt-1 text-xs text-slate-500">Create a guest profile for your property.</p></div>
+        <button type="button" aria-label="Close add guest" disabled={busy} onClick={onClose} className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-slate-500 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 disabled:opacity-40"><X size={18} /></button>
+      </header>
+      {children}
+    </dialog>, document.body,
   );
 }

@@ -1,8 +1,10 @@
+import { FormDialog } from '../components/FormDialog';
+import { VillaRateSettings } from '../components/VillaRateSettings';
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import '@daypicker/react/style.css';
 import { api, getApiErrorMessage } from '../api/client';
 import { getStoredAuthUser } from '../api/session';
-import { PricingRule, PricingRuleType, Property, RatePlan, Room, RoomCategory } from '../api/types';
+import { PricingRule, PricingRuleType, Property, PropertyType, PROPERTY_TYPE_OPTIONS, RatePlan, Room, RoomCategory } from '../api/types';
 import { CalendarDatePickerField, formatDatePickerLabel, InlineCalendarDatePicker } from '../components/CalendarDatePicker';
 import { CustomSelect } from '../components/CustomSelect';
 import { formatPropertyTime, TimePolicyPicker } from '../components/TimePolicyPicker';
@@ -68,7 +70,7 @@ function computeSetup(p: Property, cats: RoomCategory[], rps: RatePlan[], rules:
   return {
     property:     true,
     roomTypes:    hasRoomTypes,
-    ratePlans:    hasRatePlans,
+    ratePlans:    p.property_type === 'RENTAL_VILLAS' ? rps.some(r => r.property_id === p.id && r.code === 'HMS_WHOLE_VILLA' && r.is_active && r.base_rate > 0) : hasRatePlans,
     pricingRules: hasPricingRules,
     media:        hasMedia,
     physicalRooms: hasPhysicalRooms,
@@ -238,7 +240,7 @@ const TIMEZONE_OPTIONS = [
   // { label: 'America/New_York', value: 'America/New_York' },
   // { label: 'America/Los_Angeles', value: 'America/Los_Angeles' },
 ];
-const defaultPropertyForm    = { name: '', code: '', phone: '', email: '', address: '', timezone: 'Asia/Kolkata', default_check_in_time: '12:00', default_check_out_time: '11:00' };
+const defaultPropertyForm    = { property_type: 'HOTEL' as PropertyType, name: '', code: '', phone: '', email: '', address: '', timezone: 'Asia/Kolkata', default_check_in_time: '12:00', default_check_out_time: '11:00' };
 const defaultCategoryForm    = { property_id: '', name: '', code: '', description: '', max_occupancy: '2' };
 const defaultRatePlanForm    = { property_id: '', room_category_id: '', name: '', code: '', base_rate: '', currency: 'INR' };
 const defaultPricingRuleForm = { property_id: '', rate_plan_id: '', name: '', type: 'WEEKEND', adjustment_percent: '', start_date: '', end_date: '', occupancy_threshold: '' };
@@ -285,6 +287,7 @@ export function PropertySetupPage({
   const [editingProperty, setEditingProperty] = useState(false);
 
   /* ── form state ── */
+  const [newVillaNightlyRate, setNewVillaNightlyRate] = useState('');
   const [propertyForm,    setPropertyForm]    = useState(defaultPropertyForm);
   const [propertyEditForm, setPropertyEditForm] = useState(defaultPropertyForm);
   const [categoryForm,    setCategoryForm]    = useState(defaultCategoryForm);
@@ -321,7 +324,10 @@ export function PropertySetupPage({
   }
 
   function startAddingProperty() {
+    setActionError(null);
+    setNewVillaNightlyRate('');
     setPropertyForm(defaultPropertyForm);
+    setEditingProperty(false);
     setAddingProperty(true);
   }
 
@@ -360,6 +366,7 @@ export function PropertySetupPage({
 
   /* ── derived / per-property ── */
   const selectedProperty    = properties.find((p) => p.id === selectedPropertyId) ?? null;
+  const isVilla = selectedProperty?.property_type === 'RENTAL_VILLAS';
   const selectedIndex       = properties.findIndex((p) => p.id === selectedPropertyId);
   const selectedColor       = getColor(selectedIndex >= 0 ? selectedIndex : 0);
   const selectedCategories  = categories.filter((c) => c.property_id === selectedPropertyId);
@@ -380,6 +387,7 @@ export function PropertySetupPage({
   useEffect(() => {
     if (!selectedProperty || editingProperty) return;
     setPropertyEditForm({
+      property_type: selectedProperty.property_type,
       name: selectedProperty.name,
       code: selectedProperty.code,
       phone: selectedProperty.phone ?? '',
@@ -407,8 +415,9 @@ export function PropertySetupPage({
   /* ── action handlers (preserved from original) ── */
   async function submitProperty(event: FormEvent) {
     event.preventDefault();
+    if (pendingAction) return;
     await runAction('create-property', async () => {
-      const { data } = await api.post<Property>('/properties', { ...propertyForm, phone: propertyForm.phone || undefined, email: propertyForm.email || undefined });
+      const { data } = await api.post<Property>('/properties', { ...propertyForm, nightly_rate: propertyForm.property_type === 'RENTAL_VILLAS' && newVillaNightlyRate ? Number(newVillaNightlyRate) : undefined, phone: propertyForm.phone || undefined, email: propertyForm.email || undefined });
       setPropertyForm(defaultPropertyForm); setAddingProperty(false);
       setActionStatus('Property created.'); reload();
       selectPropertyId(data.id);
@@ -435,7 +444,10 @@ export function PropertySetupPage({
     });
   }
   function startEditingProperty(property: Property) {
+    setActionError(null);
+    setAddingProperty(false);
     setPropertyEditForm({
+      property_type: property.property_type,
       name: property.name,
       code: property.code,
       phone: property.phone ?? '',
@@ -447,11 +459,18 @@ export function PropertySetupPage({
     });
     setEditingProperty(true);
   }
+  function closePropertyDialog() {
+    if (pendingAction) return;
+    setAddingProperty(false);
+    setEditingProperty(false);
+    setActionError(null);
+  }
   async function submitPropertyEdit(event: FormEvent) {
     event.preventDefault();
-    if (!selectedProperty) return;
+    if (!selectedProperty || pendingAction) return;
     await runAction(`update-property:${selectedProperty.id}`, async () => {
       await api.patch(`/properties/${selectedProperty.id}`, {
+        property_type: propertyEditForm.property_type,
         name: propertyEditForm.name,
         phone: propertyEditForm.phone || undefined,
         email: propertyEditForm.email || undefined,
@@ -643,10 +662,10 @@ export function PropertySetupPage({
 
   /* ── render ── */
   return (
-    <div className={embedded ? 'flex h-full min-h-0 overflow-hidden' : '-mx-5 lg:-mx-8 -my-6 lg:-my-8 flex h-[calc(100dvh-3rem)] overflow-hidden'}>
+    <div className={embedded ? 'flex h-full min-h-0 overflow-hidden' : 'min-w-0'}>
 
       {/* ══ Left rail ══════════════════════════════════════════════ */}
-      <aside className={`${embedded ? 'w-[292px] bg-[#eeede9] border-r border-black/[0.06]' : 'w-[268px] bg-[#eeede9] border-r border-black/[0.06]'} flex-shrink-0 flex flex-col h-full overflow-hidden`}>
+      {embedded && <aside className={`${embedded ? 'w-[292px] bg-[#eeede9] border-r border-black/[0.06]' : 'w-[268px] bg-[#eeede9] border-r border-black/[0.06]'} flex-shrink-0 flex flex-col h-full overflow-hidden`}>
 
         {/* Rail header */}
         <div className="px-4 pt-5 pb-4 flex items-center justify-between flex-shrink-0 border-b border-black/[0.06]">
@@ -670,8 +689,9 @@ export function PropertySetupPage({
           {!isLoadingProperties && properties.map((p, idx) => {
             const col   = getColor(idx);
             const setup = computeSetup(p, categories, ratePlans, pricingRules, rooms);
-            const done  = SETUP_STEPS.filter((s) => isSetupStepComplete(setup, s.key)).length;
-            const total = SETUP_STEPS.length;
+            const steps = p.property_type === 'RENTAL_VILLAS' ? SETUP_STEPS.filter(step => ['property', 'ratePlans'].includes(step.key)) : SETUP_STEPS;
+            const done  = steps.filter((s) => isSetupStepComplete(setup, s.key)).length;
+            const total = steps.length;
             const active = p.id === selectedPropertyId;
             return (
               <button key={p.id} type="button" onClick={() => selectPropertyId(p.id)}
@@ -686,7 +706,7 @@ export function PropertySetupPage({
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="flex gap-0.5">
-                      {SETUP_STEPS.map((step) => (
+                      {steps.map((step) => (
                         <div key={step.key} className={`w-3.5 h-1 rounded-full ${isSetupStepComplete(setup, step.key) ? SETUP_PROGRESS_COLOR.bar : 'bg-slate-200'}`} />
                       ))}
                     </div>
@@ -722,41 +742,32 @@ export function PropertySetupPage({
             </div>
           ))}
         </div>
-      </aside>
+      </aside>}
 
       {/* ══ Right panel ════════════════════════════════════════════ */}
-      <div ref={rightPanelRef} className="h-full min-w-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-6 scrollbar-none lg:p-8">
-
+      <div ref={rightPanelRef} className={embedded ? 'h-full min-w-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-6 scrollbar-none lg:p-8' : 'min-w-0 space-y-4'}>
         <FloatingSuccessToast message={actionStatus} onClose={() => setActionStatus(null)} />
-        {actionError  && <ErrorMsg>{actionError}</ErrorMsg>}
+        {actionError && !addingProperty && !editingProperty && <ErrorMsg>{actionError}</ErrorMsg>}
         {loadError    && <ErrorMsg>{loadError}</ErrorMsg>}
 
         {isLoading && (
           <LoadingMsg>Loading property data…</LoadingMsg>
         )}
 
-        {!isLoading && embedded && addingProperty && (
-          <form className="rounded-xl border border-slate-200 bg-white p-4" onSubmit={submitProperty}>
-            <div className="mb-4 flex items-start justify-between gap-4">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-600">New property</p>
-                <h3 className="mt-0.5 text-[15px] font-bold text-slate-900">Add property details</h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <button className="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60" disabled={pendingAction === 'create-property'} type="submit">
-                  {pendingAction === 'create-property' ? 'Creating…' : 'Create property'}
-                </button>
-                {properties.length > 0 && (
-                  <button className="text-[11.5px] font-semibold text-slate-500 transition hover:text-slate-800" onClick={() => setAddingProperty(false)} type="button">
-                    Cancel
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        {!isLoading && addingProperty && (
+          <FormDialog title="Add property" description="Enter your property details and arrival policy."
+            busy={pendingAction === 'create-property'} error={actionError} onClose={closePropertyDialog}
+            onSubmit={submitProperty} submitLabel="Create property" busyLabel="Creating…">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className={labelCls}><span>Property name</span>
-                <input className={inputCls} value={propertyForm.name} onChange={(e) => setPropertyForm({ ...propertyForm, name: e.target.value })} placeholder="Harbour Residency" required />
+                <input autoFocus className={inputCls} value={propertyForm.name} onChange={(e) => setPropertyForm({ ...propertyForm, name: e.target.value })} placeholder="Harbour Residency" required />
               </label>
+              <label className={labelCls}><span>Property type</span>
+                <CustomSelect value={propertyForm.property_type} onChange={value => setPropertyForm({ ...propertyForm, property_type: value as PropertyType })} options={PROPERTY_TYPE_OPTIONS} />
+              </label>
+              {propertyForm.property_type === 'RENTAL_VILLAS' && <label className={labelCls}><span>Whole-villa nightly rate (INR)</span>
+                <input className={inputCls} type="number" min="0.01" max="99999999.99" step="0.01" required value={newVillaNightlyRate} onChange={event => setNewVillaNightlyRate(event.target.value)} placeholder="Enter nightly rate" />
+              </label>}
               <label className={labelCls}><span>Code</span>
                 <input className={inputCls} value={propertyForm.code} onChange={(e) => setPropertyForm({ ...propertyForm, code: e.target.value })} placeholder="HARBOUR" required />
               </label>
@@ -774,19 +785,19 @@ export function PropertySetupPage({
               <label className={labelCls}><span>Checkout by</span>
                 <TimePolicyPicker value={propertyForm.default_check_out_time} onChange={(default_check_out_time) => setPropertyForm({ ...propertyForm, default_check_out_time })} />
               </label>
-              <div className="md:col-span-3">
-                <label className={`${labelCls} w-full max-w-lg`}><span>Address</span>
-                  <textarea className={`${inputCls} min-h-28 resize-none py-3`} value={propertyForm.address} onChange={(e) => setPropertyForm({ ...propertyForm, address: e.target.value })} placeholder="Mumbai, Maharashtra" required />
+              <div className="sm:col-span-2">
+                <label className={`${labelCls} w-full`}><span>Address</span>
+                  <textarea className={`${inputCls} min-h-20 resize-none py-3`} value={propertyForm.address} onChange={(e) => setPropertyForm({ ...propertyForm, address: e.target.value })} placeholder="Mumbai, Maharashtra" required />
                 </label>
               </div>
             </div>
-          </form>
+          </FormDialog>
         )}
 
-        {!isLoading && !(embedded && addingProperty) && !selectedProperty && (
+        {!isLoading && !selectedProperty && (
           <div className="flex flex-col items-center justify-center py-32 text-center">
             <p className="text-[14px] font-semibold text-slate-500 mb-1">No property selected</p>
-            <p className="text-[12px] text-slate-400">{embedded ? 'Use the Add property button in the sidebar to create your first property.' : 'Use the + button in the sidebar to create your first property.'}</p>
+            <p className="text-[12px] text-slate-400">{embedded ? 'Use the Add property button in the sidebar to create your first property.' : 'Use Add property below to create your first property.'}</p>
           </div>
         )}
 
@@ -806,7 +817,7 @@ export function PropertySetupPage({
                     </span>
                   </div>
                   <p className="text-[12px] text-slate-500">
-                    {selectedProperty.address ?? 'No address'} · {selectedProperty.timezone} · Check-in from {formatPropertyTime(selectedProperty.default_check_in_time)} · Checkout by {formatPropertyTime(selectedProperty.default_check_out_time)}
+                    {PROPERTY_TYPE_OPTIONS.find(option => option.value === selectedProperty.property_type)?.label} · {selectedProperty.address ?? 'No address'} · {selectedProperty.timezone} · Check-in from {formatPropertyTime(selectedProperty.default_check_in_time)} · Checkout by {formatPropertyTime(selectedProperty.default_check_out_time)}
                   </p>
                 </div>
               </div>
@@ -832,37 +843,21 @@ export function PropertySetupPage({
             </div>
 
             {editingProperty && (
-              <form onSubmit={submitPropertyEdit} className="rounded-xl border border-slate-200 bg-white px-5 py-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Property details</p>
-                    <p className="mt-0.5 text-[12px] text-slate-500">Update the hotel profile, address, timezone, and arrival policy.</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="submit"
-                      disabled={pendingAction === `update-property:${selectedProperty.id}`}
-                      className="h-8 rounded-lg bg-slate-900 px-3 text-[11.5px] font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
-                    >
-                      {pendingAction === `update-property:${selectedProperty.id}` ? 'Saving…' : 'Save'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditingProperty(false)}
-                      className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-[11.5px] font-semibold text-slate-600 transition hover:bg-slate-50"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <FormDialog title="Edit property" description="Update your property profile, contact details and arrival policy."
+                busy={pendingAction === `update-property:${selectedProperty.id}`} error={actionError} onClose={closePropertyDialog}
+                onSubmit={submitPropertyEdit} submitLabel="Save changes" busyLabel="Saving…">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <label className={labelCls}><span>Hotel/property name</span>
                     <input
+                      autoFocus
                       className={inputCls}
                       value={propertyEditForm.name}
                       onChange={(event) => setPropertyEditForm({ ...propertyEditForm, name: event.target.value })}
                       required
                     />
+                  </label>
+                  <label className={labelCls}><span>Property type</span>
+                    <CustomSelect value={propertyEditForm.property_type} onChange={value => setPropertyEditForm({ ...propertyEditForm, property_type: value as PropertyType })} options={PROPERTY_TYPE_OPTIONS} />
                   </label>
                   <label className={labelCls}><span>Phone</span>
                     <input
@@ -881,17 +876,17 @@ export function PropertySetupPage({
                       placeholder="hotel@example.com"
                     />
                   </label>
-                  <div className="md:col-span-3">
+                  <div className="sm:col-span-2">
                     <label className={`${labelCls} w-full`}><span>Address</span>
                       <textarea
-                        className={`${inputCls} min-h-24 resize-none py-3`}
+                        className={`${inputCls} min-h-20 resize-none py-3`}
                         value={propertyEditForm.address}
                         onChange={(event) => setPropertyEditForm({ ...propertyEditForm, address: event.target.value })}
                         required
                       />
                     </label>
                   </div>
-                  <label className={labelCls}><span>Timezone</span>
+                  <label className={`${labelCls} sm:col-span-2`}><span>Timezone</span>
                     <CustomSelect
                       value={propertyEditForm.timezone}
                       onChange={(timezone) => setPropertyEditForm({ ...propertyEditForm, timezone })}
@@ -912,11 +907,11 @@ export function PropertySetupPage({
                     />
                   </label>
                 </div>
-              </form>
+              </FormDialog>
             )}
 
             {/* Setup progress bar */}
-            <SetupBar setup={selectedSetup} />
+            {isVilla ? <VillaRateSettings key={selectedProperty.id} propertyId={selectedProperty.id} onSaved={reload} /> : <SetupBar setup={selectedSetup} />}
 
             {/* Lifecycle action */}
             {/* <div className="flex items-center justify-between gap-3 rounded-xl border border-black/[0.06] bg-white px-5 py-3">
@@ -935,6 +930,7 @@ export function PropertySetupPage({
               </button>
             </div> */}
 
+            {!isVilla && <>
             {/* ── Room types ── */}
             <SectionCard
               eyebrow="Inventory"
@@ -1258,8 +1254,9 @@ export function PropertySetupPage({
               }
             </SectionCard>
 
+            </>}
             {/* ── Media ── */}
-            <SectionCard
+            {!isVilla && <SectionCard
               eyebrow="Media"
               title={allMediaImages.length > 0 ? `${allMediaImages.length} photos` : 'No photos yet'}
               badge={selectedSetup.media ? '✓ Uploaded' : 'Optional'}
@@ -1304,7 +1301,7 @@ export function PropertySetupPage({
                   )}
                 </div>
                 {/* Room type photos */}
-                <div className="border border-black/[0.06] rounded-xl overflow-hidden">
+                {!isVilla && <div className="border border-black/[0.06] rounded-xl overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-3 bg-slate-50/60">
                     <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Room type photos</p>
                     <button type="button" onClick={() => setAddingRoomImage((v) => !v)}
@@ -1328,84 +1325,30 @@ export function PropertySetupPage({
                       </button>
                     </form>
                   )}
-                </div>
+                </div>}
               </div>
-            </SectionCard>
+            </SectionCard>}
 
             {/* ── Rooms / OTA gate ── */}
-            {selectedSetup.physicalRooms
+            {!isVilla && (selectedSetup.physicalRooms
               ? <OtaGate onConfigureOta={onConfigureOta} setup={selectedSetup} colorBg={selectedColor.bg} />
-              : <RoomsGate onAddRooms={onAddRooms ?? (() => {})} roomCount={selectedRooms.length} setup={selectedSetup} colorBg={selectedColor.bg} />
+              : <RoomsGate onAddRooms={onAddRooms ?? (() => {})} roomCount={selectedRooms.length} setup={selectedSetup} colorBg={selectedColor.bg} />)
             }
           </>
         )}
+
+        {!embedded && !isLoading && (
+          <div className="flex min-h-32 items-center justify-center py-8">
+            <button type="button" onClick={startAddingProperty} disabled={addingProperty}
+              className="inline-flex items-center gap-2.5 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:opacity-50">
+              <span aria-hidden="true" className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-50 text-lg font-normal leading-none text-emerald-600">+</span>
+              Add property
+            </button>
+          </div>
+        )}
       </div>
 
-      {addingProperty && !embedded && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6 backdrop-blur-[2px]">
-          <button
-            aria-label="Close create property dialog"
-            className="absolute inset-0 cursor-default"
-            onClick={() => setAddingProperty(false)}
-            type="button"
-          />
-          <form
-            onSubmit={submitProperty}
-            className="relative w-full max-w-[34rem] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/20"
-          >
-            <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">New property</p>
-                <h3 className="mt-1 text-lg font-bold tracking-tight text-slate-900">Create property</h3>
-                <p className="mt-1 text-sm leading-relaxed text-slate-500">Add the hotel profile first, then configure room types, rates, and OTA readiness.</p>
-              </div>
-              <button
-                aria-label="Close"
-                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-                onClick={() => setAddingProperty(false)}
-                type="button"
-              >
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} viewBox="0 0 24 24">
-                  <path d="M18 6 6 18M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
 
-            <div className="grid grid-cols-1 gap-4 px-6 py-5 sm:grid-cols-2">
-              <label className={`${labelCls} sm:col-span-2`}><span>Property name</span>
-                <input className={inputCls} value={propertyForm.name} onChange={(e) => setPropertyForm({ ...propertyForm, name: e.target.value })} placeholder="Harbour Residency" required />
-              </label>
-              <label className={labelCls}><span>Code</span>
-                <input className={inputCls} value={propertyForm.code} onChange={(e) => setPropertyForm({ ...propertyForm, code: e.target.value })} placeholder="HARBOUR" required />
-              </label>
-              <label className={labelCls}><span>Timezone</span>
-                <CustomSelect
-                  value={propertyForm.timezone}
-                  onChange={(timezone) => setPropertyForm({ ...propertyForm, timezone })}
-                  options={TIMEZONE_OPTIONS}
-                  placeholder="Select timezone"
-                />
-              </label>
-              <label className={labelCls}><span>Check-in from</span>
-                <TimePolicyPicker value={propertyForm.default_check_in_time} onChange={(default_check_in_time) => setPropertyForm({ ...propertyForm, default_check_in_time })} />
-              </label>
-              <label className={labelCls}><span>Checkout by</span>
-                <TimePolicyPicker value={propertyForm.default_check_out_time} onChange={(default_check_out_time) => setPropertyForm({ ...propertyForm, default_check_out_time })} />
-              </label>
-              <label className={`${labelCls} sm:col-span-2`}><span>Address</span>
-                <textarea className={`${inputCls} min-h-32 resize-none py-3`} value={propertyForm.address} onChange={(e) => setPropertyForm({ ...propertyForm, address: e.target.value })} placeholder="Mumbai, Maharashtra" required />
-              </label>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 border-t border-slate-100 bg-slate-50/70 px-6 py-4">
-              <button className={secondaryBtn} onClick={() => setAddingProperty(false)} type="button">Cancel</button>
-              <button className={primaryBtn} disabled={pendingAction === 'create-property'} type="submit">
-                {pendingAction === 'create-property' ? 'Creating…' : 'Create property'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
     </div>
   );
 }

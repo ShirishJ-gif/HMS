@@ -27,10 +27,22 @@ import { UpdatePropertyDto } from './dto/update-property.dto';
 import { UpdatePropertyStatusDto } from './dto/update-property-status.dto';
 import { UpdateRoomCategoryDto } from './dto/update-room-category.dto';
 import { PropertyService } from './property.service';
+import { UpdateVillaRateDto } from './dto/update-villa-rate.dto';
 
 @Controller()
 export class PropertyController {
   constructor(private readonly propertyService: PropertyService) {}
+
+  @Get('properties/:id/villa')
+  getVillaSettings(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.propertyService.getVillaSettings(id, user);
+  }
+
+  @Patch('properties/:id/villa/rate')
+  @Roles(UserRole.PLATFORM_OWNER, UserRole.ORG_OWNER, UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  updateVillaRate(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateVillaRateDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.propertyService.updateVillaRate(id, dto, user);
+  }
 
   @Post('properties')
   @Roles(UserRole.PLATFORM_OWNER, UserRole.ORG_OWNER)

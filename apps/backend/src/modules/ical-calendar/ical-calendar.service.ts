@@ -1,6 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { BookingStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { createHash } from 'node:crypto';
+import { AuthenticatedUser } from '../auth/auth.guard';
+import { assertCanAccessProperty } from '../auth/property-scope';
+import { ensureVillaInventory } from '../property/villa-inventory';
+import { InventoryService } from '../inventory/inventory.service';
+import { SyncICalCalendarDto } from './dto/sync-ical-calendar.dto';
+import { parseCalendarBlocks } from './import-calendar';
 
 const maxICalBytes = 2 * 1024 * 1024;
 const fetchTimeoutMs = 12_000;
@@ -8,7 +15,30 @@ const blockedHostnames = new Set(['localhost', '0.0.0.0', '127.0.0.1', '::1']);
 
 @Injectable()
 export class ICalCalendarService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly inventory: InventoryService) {}
+
+  async syncInventory(dto: SyncICalCalendarDto, user?: AuthenticatedUser) {
+    assertCanAccessProperty(user, dto.property_id);
+    const blocks = parseCalendarBlocks(dto.content);
+    const source = `ICAL_IMPORT:${createHash('sha256').update(dto.feed_key).digest('hex').slice(0, 28)}`;
+    return this.prisma.$transaction(async tx => {
+      const villa = await ensureVillaInventory(tx, dto.property_id);
+      await this.inventory.acquireInventoryAllocationLock(tx, dto.property_id, villa.category.id);
+      await tx.inventoryBlock.deleteMany({ where: { propertyId: dto.property_id, source } });
+      if (blocks.length) await tx.inventoryBlock.createMany({ data: blocks.map(block => ({
+        propertyId: dto.property_id,
+        roomCategoryId: villa.category.id,
+        fromDate: block.fromDate,
+        toDate: block.toDate,
+        blockedRooms: 1,
+        reason: `${dto.name}: ${block.title}`.slice(0, 180),
+        source,
+        sourceName: dto.name,
+        createdByUserId: user?.sub ?? null,
+      })) });
+      return { imported_blocks: blocks.length };
+    });
+  }
 
   async fetchCalendar(url: string) {
     const parsedUrl = this.validateUrl(url);
@@ -74,6 +104,7 @@ export class ICalCalendarService {
       this.prisma.inventoryBlock.findMany({
         where: {
           propertyId,
+          NOT: { source: { startsWith: 'ICAL_IMPORT:' } },
           toDate: { gte: today },
           fromDate: { lte: horizon },
         },

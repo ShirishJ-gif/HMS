@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { AuditLogModule } from '../audit-log/audit-log.module';
 import { ChannelProviderService } from '../channel/channel-provider.service';
+import { ChannelReservationImportService } from '../channel/channel-reservation-import.service';
 import { InventorySyncPayloadService } from '../channel/inventory-sync-payload.service';
-import { ZodomusReservationImportService } from '../channel/zodomus-reservation-import.service';
 import { InventoryModule } from '../inventory/inventory.module';
 import { MetricsModule } from '../metrics/metrics.module';
 import { NotificationModule } from '../notification/notification.module';
@@ -21,7 +21,12 @@ import { BackgroundJobService } from './background-job.service';
     RoomOutOfServiceModule,
   ],
   controllers: [BackgroundJobController],
-  providers: [BackgroundJobService, ChannelProviderService, InventorySyncPayloadService, ZodomusReservationImportService],
+  providers: [
+    BackgroundJobService,
+    ChannelProviderService,
+    ChannelReservationImportService,
+    InventorySyncPayloadService,
+  ],
   exports: [BackgroundJobService],
 })
 export class BackgroundJobModule {}

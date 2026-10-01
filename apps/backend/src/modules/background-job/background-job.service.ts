@@ -28,16 +28,16 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty, propertyIdFilter } from '../auth/property-scope';
 import { ChannelProviderService } from '../channel/channel-provider.service';
+import { ChannelReservationImportService } from '../channel/channel-reservation-import.service';
 import { InventorySyncPayloadService } from '../channel/inventory-sync-payload.service';
-import { ZodomusReservationImportService } from '../channel/zodomus-reservation-import.service';
 import { MetricsService } from '../metrics/metrics.service';
 import {
   CheckInReminderPayload,
   OwnerReservationChangePayload,
   OwnerReservationNotificationPayload,
   ReservationConfirmationPayload,
-  WhatsAppNotificationService,
-} from '../notification/whatsapp-notification.service';
+  ReservationNotificationService,
+} from '../notification/reservation-notification.service';
 
 type EnqueueJobInput = {
   type: BackgroundJobType;
@@ -71,9 +71,9 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     private readonly auditLogService: AuditLogService,
     private readonly channelProviderService: ChannelProviderService,
     private readonly inventorySyncPayloadService: InventorySyncPayloadService,
-    private readonly zodomusReservationImportService: ZodomusReservationImportService,
+    private readonly channelReservationImportService: ChannelReservationImportService,
     private readonly metricsService: MetricsService,
-    private readonly whatsappNotificationService: WhatsAppNotificationService,
+    private readonly reservationNotificationService: ReservationNotificationService,
   ) {}
 
   onModuleInit() {
@@ -154,6 +154,7 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
         propertyId,
         provider: ChannelProvider.ZODOMUS,
         status: ChannelConnectionStatus.ACTIVE,
+        property: { propertyType: { not: 'RENTAL_VILLAS' } },
         ...(options.sourceConnectionId ? { id: { not: options.sourceConnectionId } } : {}),
       },
       include: {
@@ -554,6 +555,7 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
       where: {
         provider: ChannelProvider.ZODOMUS,
         status: ChannelConnectionStatus.ACTIVE,
+        property: { propertyType: { not: 'RENTAL_VILLAS' } },
         ...(providerPropertyId ? { externalHotelId: providerPropertyId } : {}),
       },
     });
@@ -685,14 +687,19 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
     });
 
     const finalResponsePayload =
-      connection.provider === ChannelProvider.ZODOMUS && log.syncType === ChannelSyncType.BOOKINGS
+      log.syncType === ChannelSyncType.BOOKINGS
         ? await (async () => {
-            const importSummary = await this.zodomusReservationImportService.importFromSync({
+            const importSummary = await this.channelReservationImportService.importFromSync({
+              provider: connection.provider,
               channelConnectionId: connection.id,
               channelSyncLogId: log.id,
               propertyId: connection.propertyId,
               responsePayload: responsePayload as unknown as Prisma.JsonValue,
             });
+            if (!importSummary) {
+              return responsePayload;
+            }
+
             await this.finalizeImportedReservationImport({
               sourceConnectionId: connection.id,
               propertyId: connection.propertyId,
@@ -934,27 +941,27 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
 
     switch (template) {
       case 'reservation_confirmation':
-        await this.whatsappNotificationService.sendReservationConfirmation(
+        await this.reservationNotificationService.sendReservationConfirmation(
           this.readBookingConfirmationPayload(payload),
         );
         break;
       case 'owner_reservation_notification':
-        await this.whatsappNotificationService.sendOwnerReservationNotification(
+        await this.reservationNotificationService.sendOwnerReservationNotification(
           this.readOwnerBookingNotificationPayload(payload),
         );
         break;
       case 'owner_reservation_modified':
-        await this.whatsappNotificationService.sendOwnerReservationModifiedNotification(
+        await this.reservationNotificationService.sendOwnerReservationModifiedNotification(
           this.readOwnerReservationChangePayload(payload),
         );
         break;
       case 'owner_reservation_cancelled':
-        await this.whatsappNotificationService.sendOwnerReservationCancelledNotification(
+        await this.reservationNotificationService.sendOwnerReservationCancelledNotification(
           this.readOwnerReservationChangePayload(payload),
         );
         break;
       case 'check_in_reminder':
-        await this.whatsappNotificationService.sendCheckInReminder(
+        await this.reservationNotificationService.sendCheckInReminder(
           this.readCheckInReminderPayload(payload),
         );
         break;
@@ -1176,6 +1183,7 @@ export class BackgroundJobService implements OnModuleInit, OnModuleDestroy {
       where: {
         provider: ChannelProvider.ZODOMUS,
         status: ChannelConnectionStatus.ACTIVE,
+        property: { propertyType: { not: 'RENTAL_VILLAS' } },
         externalHotelId: providerPropertyId,
       },
       orderBy: { createdAt: 'asc' },

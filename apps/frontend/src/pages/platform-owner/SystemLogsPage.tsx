@@ -131,9 +131,7 @@ export function SystemLogs({ logs, properties }: { logs: PlatformLogs | null; pr
                 value={logSearch}
                 onChange={setLogSearch}
                 placeholder="Search status, provider, error..."
-                className="mt-1 flex min-h-[2.6rem] items-center gap-2 rounded-lg border border-slate-200 bg-white px-3"
-                icon={<Activity className="h-3.5 w-3.5 flex-shrink-0 text-slate-400" aria-hidden="true" />}
-                inputClassName="min-w-0 flex-1 bg-transparent text-sm font-medium text-slate-700 outline-none placeholder:text-slate-400"
+                className="mt-1"
               />
             </label>
           </div>

@@ -38,7 +38,7 @@ This is a Hotel Management System monorepo:
 - Frontend reload failures now keep last-good data visible instead of clearing loaded screens immediately.
 - Frontend operational/admin pages that compute totals or candidate lists now fetch complete paginated datasets instead of relying on 100-row caps.
 - Property and room-category photos can be uploaded locally and previewed in Property Setup.
-- WhatsApp notification service sends booking confirmations, hotel-owner booking notifications, and check-in reminders. Delivery now runs through queued background jobs. It defaults to mock logs and supports WhatsApp Cloud API mode through environment variables.
+- Reservation notification service sends booking confirmations, hotel-owner booking notifications, and check-in reminders. Delivery now runs through queued background jobs. It defaults to mock logs and supports Telegram mode through environment variables.
 - Frontend pages exist for dashboard, property setup, availability, rooms, bookings, guests, housekeeping, payments, channels, and audit logs.
 - The bookings UI is reservation-group based and focuses on imported OTA stays with nested room lines.
 - The frontend now has shared compact filter bars, a bookings timeline/ledger toggle, a queried-night availability strip, and richer integrations surfaces for syncs, webhook events, background jobs, and metrics-summary snapshots.
@@ -83,7 +83,7 @@ This is a Hotel Management System monorepo:
 - `webhook`: signed webhook ingestion, replay-safe event storage, and admin-visible webhook-event listing.
 - `background-job`: persisted async job queue with worker loop, retries, dead-letter status, and admin retry endpoint.
 - `property`: also owns local image upload endpoints for properties and room categories.
-- `notification`: WhatsApp provider boundary with mock and Cloud API modes.
+- `notification`: reservation notification provider boundary with mock and Telegram modes.
 - `health`: public uptime check.
 
 ## Run Commands

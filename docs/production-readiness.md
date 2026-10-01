@@ -7,8 +7,8 @@
 - JWT auth with `SUPER_ADMIN`, `ADMIN`, and `STAFF` roles.
 - Refresh-token sessions, logout/session revocation, and password reset token endpoints.
 - Property-scoped authorization for hotel admins and staff.
-- Availability, housekeeping, billing, payment transactions, mock WhatsApp notifications, and dashboard metrics.
-- Booking-created WhatsApp notifications for guests and hotel owners, with mock and WhatsApp Cloud API modes.
+- Availability, housekeeping, billing, payment transactions, mock reservation notifications, and dashboard metrics.
+- Booking-created reservation notifications for guests and hotel owners, with mock and Telegram modes.
 - Channel-manager boundary with channel connections, external room/rate mappings, and sync logs.
 - Generic webhook-event store with signed ingestion for payment/channel callback foundations.
 - Database-backed background-job queue with retry scheduling and dead-letter state for async webhook, channel-sync, and notification processing.
@@ -72,18 +72,11 @@ GET /audit-logs?page=1&limit=25&search=refund
 
 Current audit coverage includes booking creation, check-in, checkout, room create/update/delete, payment collection/refunds, channel connection/mapping creation, and channel sync success/failure. Future coverage should include user-management changes and any future rate-plan update endpoints.
 
-## WhatsApp Business API
+## Reservation notifications
 
-`WhatsAppNotificationService` defaults to mock logging. Set these variables for WhatsApp Cloud API delivery:
+`ReservationNotificationService` defaults to mock logging. Set `NOTIFICATION_PROVIDER=telegram`, `TELEGRAM_BOT_TOKEN`, and the appropriate Telegram chat IDs for delivery. Reservation confirmations, owner alerts, and check-in reminders are queued through background jobs with retry and dead-letter handling.
 
-```text
-WHATSAPP_PROVIDER=cloud_api
-WABA_ACCESS_TOKEN=...
-WABA_PHONE_NUMBER_ID=...
-WABA_API_VERSION=v20.0
-```
-
-Imported reservation intake sends a guest confirmation and a hotel-owner notification to `property.phone`. Check-in reminders also run through the same delivery path. These notifications are now queued through background jobs so delivery failures can retry and dead-letter. Production should add webhook handling for replies, delivery status tracking, opt-in/consent policy, and approved template messages where required.
+The WhatsApp/Baileys UI, API, and delivery integration have been removed. Migration `20260924120000_remove_whatsapp` removes the four WhatsApp tables, their stored data, and associated enum types.
 
 ## Deployment Checklist
 

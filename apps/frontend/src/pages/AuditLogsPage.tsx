@@ -5,6 +5,7 @@ import { AuditLog } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
 import { DelayedSpinnerOverlay } from '../components/Spinner';
 import { ErrorMsg, SearchInput, StatCard } from './ui';
+import { auditMoney, billingAuditDetail } from '../utils/billing-audit';
 
 type ActorFilter = 'ALL' | 'USER' | 'SYSTEM';
 
@@ -23,6 +24,7 @@ const OTHER_ACTION_OPTIONS: { value: string; label: string }[] = [
 ];
 
 const QUICK_ACTION_CHIPS: { value: string; label: string }[] = [
+  { value: 'BILL_CHARGES',    label: 'Bill charges' },
   { value: 'CHECK_IN',        label: 'Check-in' },
   { value: 'CHECK_OUT',       label: 'Check-out' },
   { value: 'PAYMENT_COLLECT', label: 'Payment' },
@@ -52,8 +54,6 @@ const ACTION_BADGE: Record<string, string> = {
 };
 
 let auditLogsCache: AuditLog[] | null = null;
-let auditLogsCacheUpdatedAt = 0;
-const auditLogsCacheTtlMs = 60_000;
 
 const LOGS_PER_PAGE = 15;
 
@@ -63,6 +63,7 @@ export function AuditLogsPage() {
   const [actionFilter, setActionFilter] = useState<string>('ALL');
   const [actorFilter, setActorFilter] = useState<ActorFilter>('ALL');
   const [logsPage, setLogsPage] = useState(1);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [logsState, setLogsState] = useState<AuditLogsState>(() => ({
     data: auditLogsCache,
     error: null,
@@ -71,34 +72,37 @@ export function AuditLogsPage() {
 
   useEffect(() => {
     let active = true;
-    const hasFreshCache = auditLogsCache && Date.now() - auditLogsCacheUpdatedAt < auditLogsCacheTtlMs;
-    if (hasFreshCache) { setLogsState({ data: auditLogsCache, error: null, loading: false }); return () => { active = false; }; }
-    setLogsState((c) => ({ ...c, error: null, loading: !c.data }));
+    setLogsState((c) => ({ ...c, error: null, loading: true }));
     fetchAllPages<AuditLog>('/audit-logs')
       .then((loadedLogs) => {
         if (!active) return;
-        auditLogsCache = loadedLogs; auditLogsCacheUpdatedAt = Date.now();
+        auditLogsCache = loadedLogs;
         setLogsState({ data: loadedLogs, error: null, loading: false });
       })
       .catch((err: unknown) => { if (!active) return; setLogsState((c) => ({ ...c, error: getApiErrorMessage(err), loading: false })); });
     return () => { active = false; };
-  }, []);
+  }, [refreshKey]);
 
   const logs = (logsState.data ?? []).filter((log) => {
-    if (actionFilter !== 'ALL' && log.action !== actionFilter) return false;
-    if (actorFilter === 'USER'   && !log.user) return false;
-    if (actorFilter === 'SYSTEM' &&  log.user) return false;
+    const detail = billingAuditDetail(log);
+    if (actionFilter === 'BILL_CHARGES') {
+      if (!['charge_added', 'charge_removed'].includes(detail?.operation ?? '')) return false;
+    } else if (actionFilter !== 'ALL' && log.action !== actionFilter) return false;
+    const hasActor = !!(log.user || detail?.actor);
+    if (actorFilter === 'USER'   && !hasActor) return false;
+    if (actorFilter === 'SYSTEM' && hasActor) return false;
     if (deferredSearch.trim()) {
       const q = deferredSearch.trim().toLowerCase();
-      if (![log.summary, log.entity_type, log.entity_id, log.action, log.user?.name, log.user?.role, log.property_id].some(v => v?.toLowerCase().includes(q))) return false;
+      if (![log.summary, log.entity_type, log.entity_id, log.action, log.user?.name, log.user?.role, log.property_id,
+        detail?.guest, detail?.reservation, detail?.invoice, detail?.description, detail?.actor, detail?.role].some(v => v?.toLowerCase().includes(q))) return false;
     }
     return true;
   });
 
   const totalLogPages = Math.max(1, Math.ceil(logs.length / LOGS_PER_PAGE));
   const pagedLogs = logs.slice((logsPage - 1) * LOGS_PER_PAGE, logsPage * LOGS_PER_PAGE);
-  const systemCount = (logsState.data ?? []).filter((l) => !l.user).length;
-  const userCount   = (logsState.data ?? []).filter((l) =>  l.user).length;
+  const userCount = (logsState.data ?? []).filter((l) => l.user || billingAuditDetail(l)?.actor).length;
+  const systemCount = (logsState.data?.length ?? 0) - userCount;
   const topEntry    = Object.entries(
     (logsState.data ?? []).reduce<Record<string, number>>((acc, l) => { acc[l.action] = (acc[l.action] ?? 0) + 1; return acc; }, {})
   ).sort((a, b) => b[1] - a[1])[0];
@@ -119,7 +123,7 @@ export function AuditLogsPage() {
             <span className="text-[9.5px] font-bold uppercase tracking-[0.15em] text-slate-400">Audit Logs</span>
           </div>
           <h1 className="text-[24px] font-bold text-slate-900 tracking-tight leading-none">Audit Logs</h1>
-          <p className="text-[13px] text-slate-500 mt-1.5">Review operational actions across rooms, reservations, payments, and channel sync.</p>
+          <p className="text-[13px] text-slate-500 mt-1.5">See who changed guest bills, recorded payments, and managed reservations.</p>
         </div>
 
         {/* Search + filters */}
@@ -127,11 +131,11 @@ export function AuditLogsPage() {
           <SearchInput
             value={search}
             onChange={setSearch}
-            placeholder="Search summary, entity, actor…"
-            className="relative"
-            iconClassName="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none"
-            inputClassName="h-10 pl-9 pr-3 w-64 rounded-lg bg-white border border-black/[0.07] text-[12px] text-slate-800 placeholder-slate-400 outline-none"
+            placeholder="Search guest, invoice, charge, actor…"
+            className="w-64 max-w-full"
           />
+          <button type="button" onClick={() => setRefreshKey(key => key + 1)} disabled={logsState.loading}
+            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-[11.5px] font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40">Refresh</button>
           <div className="w-[220px]">
             <CustomSelect
               value={actorFilter}
@@ -202,6 +206,7 @@ export function AuditLogsPage() {
         )}
 
         {pagedLogs.map((log) => {
+          const detail = billingAuditDetail(log);
           const accent = ACTION_ACCENT[log.action] ?? 'bg-slate-300';
           const badge  = ACTION_BADGE[log.action]  ?? 'bg-slate-100 text-slate-600';
           const ts = new Date(log.created_at);
@@ -223,6 +228,24 @@ export function AuditLogsPage() {
                     )} */}
                   </div>
                   <p className="text-[13px] font-semibold text-slate-800 leading-snug">{log.summary}</p>
+                  {detail && (
+                    <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-3 text-[12px] space-y-2">
+                      <div className="flex flex-wrap gap-x-5 gap-y-1 text-slate-600">
+                        <span>Guest <strong className="text-slate-800">{detail.guest ?? '—'}</strong></span>
+                        <span>Reservation <strong className="text-slate-800 break-all">{detail.reservation ?? '—'}</strong></span>
+                      </div>
+                      <div className="text-slate-600 break-words">
+                        {detail.description && <span className="font-semibold text-slate-800">{detail.description} · </span>}
+                        {detail.operation === 'payment_refunded' ? 'Refund' : detail.operation === 'payment_collected' ? 'Payment' : 'Charge'}: {auditMoney(detail.amount, detail.currency)}
+                      </div>
+                      <div className="flex flex-wrap gap-x-6 gap-y-1 tabular-nums">
+                        <span className="text-slate-500">Bill total <span className="font-semibold text-slate-800">{auditMoney(detail.before.total, detail.currency)} → {auditMoney(detail.after.total, detail.currency)}</span></span>
+                        <span className="text-slate-500">Balance due <span className="font-semibold text-slate-800">{auditMoney(detail.before.balance, detail.currency)} → {auditMoney(detail.after.balance, detail.currency)}</span></span>
+                      </div>
+                      {detail.reason && <p className="text-slate-600 break-words">Reason: {detail.reason}</p>}
+                      <p className="text-[10.5px] text-slate-400 break-all">Invoice {detail.invoice}</p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Timestamp */}
@@ -234,8 +257,8 @@ export function AuditLogsPage() {
                 {/* Actor detail */}
                 <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 xl:border-l xl:border-slate-100 xl:pl-6">
                   {[
-                    { label: 'Actor',    value: log.user?.name ?? 'System' },
-                    { label: 'Role',     value: log.user?.role ?? 'Automation' },
+                    { label: 'Actor',    value: detail?.actor ?? log.user?.name ?? 'System' },
+                    { label: 'Role',     value: detail?.role ?? log.user?.role ?? 'Automation' },
                     { label: 'Property', value: log.property_id ? log.property_id.slice(0, 8) + '…' : 'Global' },
                   ].map(row => (
                     <div key={row.label} className="contents">
