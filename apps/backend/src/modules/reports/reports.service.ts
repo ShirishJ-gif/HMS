@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { financialRange, folioStayWhere, financialGroupVisibilityWhere } from '../billing/financial-scope';
+import { Injectable } from '@nestjs/common';
 import { ChannelConnectionStatus, PaymentTransactionStatus, Prisma, PropertyType, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
@@ -18,12 +19,8 @@ export class ReportsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getAnalytics(query: GetAnalyticsReportDto, user?: AuthenticatedUser) {
-    const from = this.parseDate(query.from, 'from');
-    const to = this.parseDate(query.to, 'to');
-    if (from > to) throw new BadRequestException('from must be before or equal to to');
-    const end = new Date(to.getTime() + DAY_MS);
+    const { from, end } = financialRange(query.from, query.to)!;
     const days = daysBetween(from, end);
-    if (days > 366) throw new BadRequestException('Choose a date range of 366 days or fewer');
     const previousFrom = new Date(from.getTime() - days * DAY_MS);
     const requestedPropertyId = query.property_id && query.property_id !== 'ALL' ? query.property_id : undefined;
     if (requestedPropertyId) assertCanAccessProperty(user, requestedPropertyId);
@@ -31,7 +28,7 @@ export class ReportsService {
     const accessiblePropertyFilter =
       user?.role === UserRole.ORG_OWNER ? { in: user.property_ids ?? [] } : propertyIdFilter(user);
     const scopedPropertyId = requestedPropertyId ?? accessiblePropertyFilter;
-    const visibility = this.reservationRoomVisibilityWhere();
+    const visibility = { reservationGroup: financialGroupVisibilityWhere() };
     const scopedRooms = { ...visibility, propertyId: scopedPropertyId };
     const [properties, rooms, payments, inventory, channels, expenses] = await Promise.all([
       this.prisma.property.findMany({
@@ -40,7 +37,7 @@ export class ReportsService {
         select: { id: true, name: true, code: true, propertyType: true },
       }),
       this.prisma.reservationRoom.findMany({
-        where: { ...scopedRooms, arrivalDate: { lt: end }, departureDate: { gt: previousFrom } },
+        where: { ...scopedRooms, AND: [{ reservationGroup: folioStayWhere({ from: previousFrom, end }) }] },
         include: roomInclude,
       }),
       this.prisma.paymentTransaction.findMany({
@@ -52,7 +49,7 @@ export class ReportsService {
                 select: {
                   propertyId: true,
                   property: { select: { name: true } },
-                  reservationGroup: { select: { id: true, externalReservationId: true } },
+                  reservationGroup: { select: { id: true, externalReservationId: true, rawPayload: true } },
                 },
               },
             },
@@ -134,7 +131,7 @@ export class ReportsService {
         from,
         end,
       );
-      return { ...category, room_nights: period.summary.room_nights_sold, billed_total: period.summary.billed_total };
+      return { ...category, room_nights: period.summary.room_nights_sold, billed_total: period.summary.room_revenue };
     });
     const methods = [
       ...new Set(
@@ -166,13 +163,13 @@ export class ReportsService {
       trend.push({
         from: dateKey(new Date(time)),
         to: dateKey(new Date(bucketEnd.getTime() - DAY_MS)),
-        billed: period.summary.billed_total,
-        collected: period.summary.paid_total,
+        billed: period.summary.room_revenue,
+        collected: period.summary.period_net_collected,
         room_nights: period.summary.room_nights_sold,
         previous_from: dateKey(previousStart),
         previous_to: dateKey(new Date(previousEnd.getTime() - DAY_MS)),
-        previous_billed: prior.summary.billed_total,
-        previous_collected: prior.summary.paid_total,
+        previous_billed: prior.summary.room_revenue,
+        previous_collected: prior.summary.period_net_collected,
       });
     }
     return {
@@ -241,27 +238,6 @@ export class ReportsService {
     };
   }
 
-  private reservationRoomVisibilityWhere(): Prisma.ReservationRoomWhereInput {
-    if (
-      process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY === 'true' ||
-      process.env.ZODOMUS_ENVIRONMENT?.trim() === 'production'
-    )
-      return {};
-    return {
-      reservationGroup: {
-        OR: [
-          { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
-          { channelConnectionId: null, source: { in: ['DIRECT', 'WALK_IN'] } },
-        ],
-      },
-    };
-  }
-  private parseDate(value: string, field: string) {
-    const date = new Date(`${value}T00:00:00.000Z`);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(date.getTime()) || dateKey(date) !== value)
-      throw new BadRequestException(`${field} must be a valid date (YYYY-MM-DD)`);
-    return date;
-  }
   private asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   }

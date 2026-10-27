@@ -19,6 +19,9 @@ These describe the current reservation-centric system and should be treated as t
 - [how-it-works.md](/Users/cronberry/Hms/docs/how-it-works.md)
 - [production-readiness.md](/Users/cronberry/Hms/docs/production-readiness.md)
 - [api-examples.http](/Users/cronberry/Hms/docs/api-examples.http)
+- [Financial reporting and folio reconciliation](financial-reporting.md)
+- [Imported villa calendar history](ical-history.md)
+- [Operations production audit — 7 October 2026](operations-production-audit-2026-10-07.md)
 - [metrics-alerting.md](/Users/cronberry/Hms/docs/metrics-alerting.md)
 - [legacy-booking-migration-validation.md](/Users/cronberry/Hms/docs/legacy-booking-migration-validation.md)
 - [ConnectionLifecycle.md](/Users/cronberry/Hms/docs/ConnectionLifecycle.md)
@@ -53,6 +56,10 @@ These no longer match the active reservation-centric system closely enough to ke
 - [archive/zodomus-channel-manager-flow.md](/Users/cronberry/Hms/docs/archive/zodomus-channel-manager-flow.md)
 - [archive/zodomus-reservation-import-discussion.md](/Users/cronberry/Hms/docs/archive/zodomus-reservation-import-discussion.md)
 - [archive/zodomus-validation-findings.md](/Users/cronberry/Hms/docs/archive/zodomus-validation-findings.md)
+
+## Proposals Awaiting Review
+
+- [User invitations and password management](user-invitations-and-password-management-proposal.md) — proposed invitation, verification, password recovery, and access-management flow; not implemented.
 
 ## Usage Rule
 

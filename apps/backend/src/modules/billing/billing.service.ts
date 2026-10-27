@@ -1,5 +1,6 @@
 import { billingTotal, billingPaymentState, isOtaMetadataCharge, recalculateBilling, lockBilling } from './billing-calculations';
 import { recordBillingAudit } from './billing-audit';
+import { lockReservationRoomGroup } from '../booking/reservation-lock';
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PaymentStatus, Prisma } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -38,6 +39,7 @@ export class BillingService {
   async createInvoice(createInvoiceDto: CreateInvoiceDto, user?: AuthenticatedUser) {
     try {
       const billing = await this.prisma.$transaction(async (tx) => {
+        await lockReservationRoomGroup(tx, createInvoiceDto.reservation_room_id);
         const tax = new Prisma.Decimal(createInvoiceDto.tax ?? '0.00');
 
         const reservationRoom = await tx.reservationRoom.findUnique({
@@ -195,6 +197,8 @@ export class BillingService {
       paid_total: paidTotal,
       refunded_total: refundedTotal,
       balance_due: balanceDue,
+      settlement_credit: lineInvoices.reduce((sum, invoice) => sum + invoice.settlement_credit, 0),
+      credit_balance: lineInvoices.reduce((sum, invoice) => sum + invoice.credit_balance, 0),
       invoices: lineInvoices,
       rooms: group.rooms.map((room) => ({
         id: room.id,
@@ -435,7 +439,7 @@ export class BillingService {
     const refundedTotal = billing.payments
       .filter((payment) => payment.status === 'REFUNDED')
       .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0));
-    const { balance: balanceDue, paymentStatus } = recalculateBilling(billing);
+    const { balance: balanceDue, paymentStatus, settlementCredit, creditBalance } = recalculateBilling(billing);
     const subject = billing.reservationRoom
       ? {
           reservation_room_id: billing.reservationRoomId,
@@ -491,6 +495,8 @@ export class BillingService {
       paid_total: paidTotal.toNumber(),
       refunded_total: refundedTotal.toNumber(),
       balance_due: balanceDue.toNumber(),
+      settlement_credit: settlementCredit.toNumber(),
+      credit_balance: creditBalance.toNumber(),
       total: visibleTotal.toNumber(),
       payment_status: paymentStatus,
       reservation_room: subject.reservation_room,

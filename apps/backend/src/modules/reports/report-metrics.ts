@@ -1,4 +1,4 @@
-import { billingPaymentState } from '../billing/billing-calculations';
+import { recalculateBilling } from '../billing/billing-calculations';
 import { BookingStatus, PaymentStatus, PaymentTransactionStatus, Prisma } from '@prisma/client';
 
 export const DAY_MS = 86_400_000;
@@ -10,11 +10,8 @@ export const overlapNights = (arrival: Date, departure: Date, from: Date, end: D
     new Date(Math.max(arrival.getTime(), from.getTime())),
     new Date(Math.min(departure.getTime(), end.getTime())),
   );
-export function importBlocked(raw: unknown) {
-  return (
-    !!raw && typeof raw === 'object' && !Array.isArray(raw) && (raw as Record<string, unknown>).importBlocked === true
-  );
-}
+export { isImportBlocked as importBlocked } from '../billing/financial-scope';
+import { isImportBlocked as importBlocked } from '../billing/financial-scope';
 
 type Amount = { toNumber(): number };
 export type ReportRoom = {
@@ -47,7 +44,7 @@ export type ReportPayment = {
     reservationRoom: {
       propertyId: string;
       property: { name: string };
-      reservationGroup: { id: string; externalReservationId: string };
+      reservationGroup: { id: string; externalReservationId: string; rawPayload?: unknown };
     } | null;
   };
 };
@@ -56,17 +53,6 @@ export type ReportInventory = {
   status: string;
   outOfServicePeriods: Array<{ fromDate: Date; toDate: Date }>;
 };
-
-// Match the guest-facing totals used by Finance and Billing: OTA metadata is not an extra charge.
-function invoiceTotal(billing: ReportRoom['billings'][number]) {
-  const extras = billing.extraCharges
-    .filter((charge) => {
-      const description = charge.description.trim().toUpperCase();
-      return !description.startsWith('OTA ') && !description.includes('TAX WITHHOLDING');
-    })
-    .reduce((sum, charge) => sum + charge.amount.toNumber(), 0);
-  return billing.amount.toNumber() + billing.tax.toNumber() + extras;
-}
 
 export function calculatePeriod(
   rooms: ReportRoom[],
@@ -93,8 +79,7 @@ export function calculatePeriod(
     (sum, room) => sum + overlapNights(room.arrivalDate, room.departureDate, from, end),
     0,
   );
-  let billed = 0,
-    roomRevenue = 0;
+  let roomRevenue = 0;
   const nightsByGroup = new Map<string, number>();
   for (const room of soldRooms) {
     const nights = overlapNights(room.arrivalDate, room.departureDate, from, end);
@@ -103,20 +88,20 @@ export function calculatePeriod(
       overlapNights(room.arrivalDate, room.departureDate, from, end) /
       daysBetween(room.arrivalDate, room.departureDate);
     for (const billing of room.billings) {
-      billed += invoiceTotal(billing) * portion;
       roomRevenue += billing.amount.toNumber() * portion;
     }
   }
-  const folios = scopedRooms
+  const selectedGroups = new Set(scopedRooms.map(room => room.reservationGroup.id));
+  const folios = rooms.filter(room => selectedGroups.has(room.reservationGroup.id))
     .filter((room) => !importBlocked(room.reservationGroup.rawPayload))
     .flatMap((room) =>
       room.billings.map((billing) => {
-        const paid = billing.payments
-          .filter((p) => p.status === PaymentTransactionStatus.SUCCEEDED)
-          .reduce((sum, p) => sum + p.amount.toNumber(), 0);
-        const refunded = billing.payments
-          .filter((p) => p.status === PaymentTransactionStatus.REFUNDED)
-          .reduce((sum, p) => sum + p.amount.toNumber(), 0);
+        const calculation = recalculateBilling({
+          ...billing,
+          amount: new Prisma.Decimal(billing.amount.toNumber()),
+          tax: new Prisma.Decimal(billing.tax.toNumber()),
+          extraCharges: billing.extraCharges.map(charge => ({ ...charge, amount: new Prisma.Decimal(charge.amount.toNumber()) })),
+        });
         return {
           billing_id: billing.id,
           group_id: room.reservationGroup.id,
@@ -126,15 +111,18 @@ export function calculatePeriod(
           guest_name: room.guestName ?? 'Guest',
           from: dateKey(room.arrivalDate),
           to: dateKey(room.departureDate),
-          total: money(invoiceTotal(billing)),
-          paid: money(paid - refunded),
-          balance:
-            billingPaymentState(new Prisma.Decimal(invoiceTotal(billing)), billing.payments,
-              new Prisma.Decimal(billing.amount.toNumber()).add(billing.tax.toNumber())).balance.toNumber(),
+          total: calculation.total.toNumber(),
+          paid: calculation.netPaid.toNumber(),
+          gross_collected: calculation.paid.toNumber(),
+          refunded: calculation.refunded.toNumber(),
+          settlement_credit: calculation.settlementCredit.toNumber(),
+          credit_balance: calculation.creditBalance.toNumber(),
+          balance: calculation.balance.toNumber(),
         };
       }),
     );
-  const transactions = payments.filter((p) => p.createdAt >= from && p.createdAt < end);
+  const transactions = payments.filter((p) => p.createdAt >= from && p.createdAt < end
+    && !importBlocked(p.billing.reservationRoom?.reservationGroup.rawPayload));
   const collected = transactions
     .filter((p) => p.status === PaymentTransactionStatus.SUCCEEDED)
     .reduce((sum, p) => sum + p.amount.toNumber(), 0);
@@ -161,10 +149,16 @@ export function calculatePeriod(
       available_room_nights: availableNights,
       occupancy_rate: availableNights > 0 ? money((roomNights / availableNights) * 100) : null,
       average_daily_rate: roomNights > 0 ? money(roomRevenue / roomNights) : null,
-      billed_total: money(billed),
-      paid_total: money(collected - refunded),
-      gross_collected: money(collected),
-      refunded_total: money(refunded),
+      billed_total: money(folios.reduce((sum, f) => sum + f.total, 0)),
+      paid_total: money(folios.reduce((sum, f) => sum + f.paid, 0)),
+      gross_collected: money(folios.reduce((sum, f) => sum + f.gross_collected, 0)),
+      refunded_total: money(folios.reduce((sum, f) => sum + f.refunded, 0)),
+      settlement_credit: money(folios.reduce((sum, f) => sum + f.settlement_credit, 0)),
+      credit_balance: money(folios.reduce((sum, f) => sum + f.credit_balance, 0)),
+      room_revenue: money(roomRevenue),
+      period_net_collected: money(collected - refunded),
+      period_gross_collected: money(collected),
+      period_refunded_total: money(refunded),
       balance_due: money(folios.reduce((sum, f) => sum + f.balance, 0)),
       active_reservation_groups: count(BookingStatus.BOOKED) + count(BookingStatus.CHECKED_IN),
       cancelled_reservation_groups: cancelled,

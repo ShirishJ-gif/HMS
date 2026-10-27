@@ -44,8 +44,9 @@ export class HousekeepingService {
     return paginatedResponse(tasks.map((task) => this.toResponse(task)), total, page, limit);
   }
 
-  async getBoard(user?: AuthenticatedUser) {
-    const scopedPropertyId = propertyIdFilter(user);
+  async getBoard(user?: AuthenticatedUser, requestedPropertyId?: string) {
+    if (requestedPropertyId) assertCanAccessProperty(user, requestedPropertyId);
+    const scopedPropertyId = requestedPropertyId ?? propertyIdFilter(user);
     const propertyWhere: Prisma.PropertyWhereInput = scopedPropertyId ? { id: scopedPropertyId } : {};
     const childWhere: Prisma.RoomCategoryWhereInput = scopedPropertyId ? { propertyId: scopedPropertyId } : {};
     const taskWhere: Prisma.HousekeepingTaskWhereInput = scopedPropertyId ? { propertyId: scopedPropertyId } : {};

@@ -72,7 +72,8 @@ export function RoomsPage({ embedded = false, propertyId, showHeading = true }: 
   const [form, setForm]                         = useState({ ...defaultForm, property_id: propertyId ?? '' });
   const [showAddForm, setShowAddForm]           = useState(false);
   const [selectedRoomId, setSelectedRoomId]     = useState<string | null>(null);
-  const [propFilter, setPropFilter]             = useState(propertyId ?? 'ALL');
+  const [localPropFilter, setPropFilter] = useState('ALL');
+  const propFilter = propertyId !== undefined ? propertyId || 'ALL' : localPropFilter;
   const [statusFilter, setStatusFilter]         = useState<RoomStatus | 'ALL'>('ALL');
   const [toastMessage, setToastMessage]         = useState<string | null>(null);
   const [actionError, setActionError]           = useState<string | null>(null);
@@ -87,11 +88,12 @@ export function RoomsPage({ embedded = false, propertyId, showHeading = true }: 
   }, []);
 
   useEffect(() => {
-    if (!propertyId) return;
-    setPropFilter(propertyId);
+    if (propertyId === undefined) return;
+    setSelectedRoomId(null);
+    setShowAddForm(false);
     setForm(current => ({
       ...current,
-      property_id: propertyId,
+      property_id: propertyId || '',
       room_category_id: current.property_id === propertyId ? current.room_category_id : '',
     }));
   }, [propertyId]);
@@ -197,7 +199,7 @@ export function RoomsPage({ embedded = false, propertyId, showHeading = true }: 
       {/* Filters */}
       <div className={`flex min-h-8 items-center justify-between gap-3 ${embedded ? 'px-5 lg:px-6' : 'px-5 lg:px-8'} pb-4 flex-wrap`}>
         <div className="flex max-w-full items-center gap-2 flex-wrap">
-          <div className="w-[240px] max-w-full">
+          {propertyId === undefined && <div className="w-[240px] max-w-full">
             <CustomSelect
               value={propFilter}
               onChange={setPropFilter}
@@ -206,7 +208,7 @@ export function RoomsPage({ embedded = false, propertyId, showHeading = true }: 
                 ...properties.map(p => ({ label: p.name, value: p.id })),
               ]}
             />
-          </div>
+          </div>}
           <div className="w-[180px] max-w-full">
             <CustomSelect
               value={statusFilter}

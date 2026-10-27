@@ -18,8 +18,8 @@ export class HousekeepingController {
   }
 
   @Get('board')
-  getBoard(@CurrentUser() user: AuthenticatedUser) {
-    return this.housekeepingService.getBoard(user);
+  getBoard(@CurrentUser() user: AuthenticatedUser, @Query('property_id', new ParseUUIDPipe({ optional: true })) propertyId?: string) {
+    return this.housekeepingService.getBoard(user, propertyId);
   }
 
   @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.STAFF)

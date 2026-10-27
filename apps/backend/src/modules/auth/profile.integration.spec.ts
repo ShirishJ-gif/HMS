@@ -1,0 +1,63 @@
+import '../../common/env/load-env';
+import { randomUUID, createHash } from 'node:crypto';
+import { PrismaClient } from '@prisma/client';
+import { JwtService } from '@nestjs/jwt';
+import { AuthService } from './auth.service';
+import { PasswordService } from './password.service';
+import { AuthenticatedUser } from './auth.guard';
+
+const integration = process.env.RUN_PROFILE_INTEGRATION === 'true' ? describe : describe.skip;
+integration('Profile and password persistence (rolled back)', () => {
+  const prisma = new PrismaClient();
+  afterAll(() => prisma.$disconnect());
+  it('enforces property access, persists preferences, and revokes old credentials', async () => {
+    const rollback = new Error('rollback profile test');
+    await expect(prisma.$transaction(async tx => {
+      const passwords = new PasswordService();
+      const jwt = new JwtService({ secret: 'profile-integration-test-only' });
+      const organization = await tx.organization.create({ data: { name: 'Profile test' } });
+      const first = await tx.property.create({ data: { name: 'First', code: randomUUID(), address: 'Test', organizationId: organization.id } });
+      const second = await tx.property.create({ data: { name: 'Second', code: randomUUID(), address: 'Test', organizationId: organization.id } });
+      const outside = await tx.property.create({ data: { name: 'Outside', code: randomUUID(), address: 'Test' } });
+      const inactive = await tx.property.create({ data: { name: 'Inactive', code: randomUUID(), address: 'Test', organizationId: organization.id, isActive: false } });
+      const account = await tx.user.create({ data: { name: 'Owner', email: `${randomUUID()}@example.test`, role: 'ORG_OWNER', organizationId: organization.id, propertyId: first.id, passwordHash: await passwords.hash('OldPassword123!') } });
+      const user: AuthenticatedUser = { sub: account.id, email: account.email, role: account.role, organization_id: organization.id, property_id: first.id, property_ids: [first.id] };
+      const db = new Proxy(tx, { get: (target, key) => key === '$transaction' ? async (fn: any) => fn(tx) : Reflect.get(target, key) });
+      const service = new AuthService(db as never, jwt, passwords);
+      const profile = await service.getProfile(user);
+      expect(profile.properties.map(p => p.id).sort()).toEqual([first.id, second.id, inactive.id].sort());
+      expect(profile).not.toHaveProperty('passwordHash');
+      expect(profile).not.toHaveProperty('tokenVersion');
+      await expect(service.updateProfile(user, { default_property_id: outside.id })).rejects.toThrow('Choose an active property');
+      await expect(service.updateProfile(user, { default_property_id: inactive.id })).rejects.toThrow('Choose an active property');
+      expect(await service.updateProfile(user, { name: 'Updated Owner', phone: '+91 98765 43210', default_property_id: second.id })).toMatchObject({ name: 'Updated Owner', phone: '+91 98765 43210', default_property_id: second.id });
+      const oldSession = await service.login({ email: account.email, password: 'OldPassword123!' });
+      expect(oldSession.user.default_property_id).toBe(second.id);
+      await expect(service.changePassword(user, { current_password: 'wrong', new_password: 'NewPassword123!' })).rejects.toThrow('Current password is incorrect');
+      await expect(service.changePassword(user, { current_password: 'OldPassword123!', new_password: 'OldPassword123!' })).rejects.toThrow('different new password');
+      expect((await tx.user.findUniqueOrThrow({ where: { id: account.id } })).tokenVersion).toBe(0);
+      const reset = await tx.passwordResetToken.create({ data: { userId: account.id, tokenHash: randomUUID(), expiresAt: new Date(Date.now() + 60000) } });
+      const newSession = await service.changePassword(user, { current_password: 'OldPassword123!', new_password: 'NewPassword123!' });
+      expect(jwt.verify(newSession.access_token).token_version).toBe(1);
+      expect(await passwords.verify('NewPassword123!', (await tx.user.findUniqueOrThrow({ where: { id: account.id } })).passwordHash)).toBe(true);
+      expect((await tx.passwordResetToken.findUniqueOrThrow({ where: { id: reset.id } })).usedAt).not.toBeNull();
+      await expect(service.login({ email: account.email, password: 'OldPassword123!' })).rejects.toThrow('Invalid credentials');
+      await expect(service.refresh(oldSession.refresh_token)).rejects.toThrow('Invalid refresh token');
+      await expect(service.refresh(newSession.refresh_token)).resolves.toHaveProperty('access_token');
+      // A refresh racing the password change may create an unrevoked session with an obsolete version.
+      const staleRefresh = randomUUID();
+      await tx.refreshSession.create({ data: { userId: account.id, tokenHash: createHash('sha256').update(staleRefresh).digest('hex'), tokenVersion: 0, expiresAt: new Date(Date.now() + 60000) } });
+      await expect(service.refresh(staleRefresh)).rejects.toThrow('Invalid refresh token');
+      await tx.user.update({ where: { id: account.id }, data: { role: 'STAFF' } });
+      expect((await service.getProfile(user)).properties.map(p => p.id)).toEqual([first.id]);
+      await expect(service.updateProfile(user, { default_property_id: second.id })).rejects.toThrow('Choose an active property');
+      expect((await service.updateProfile(user, { phone: null, default_property_id: null })).default_property_id).toBeNull();
+      await tx.user.update({ where: { id: account.id }, data: { role: 'ORG_OWNER', propertyId: null } });
+      await tx.property.updateMany({ where: { organizationId: organization.id }, data: { organizationId: null } });
+      expect((await service.getProfile(user)).properties).toEqual([]);
+      await tx.user.update({ where: { id: account.id }, data: { role: 'PLATFORM_OWNER' } });
+      expect((await service.getProfile(user)).properties.map(p => p.id)).toContain(outside.id);
+      throw rollback;
+    }, { timeout: 30000 })).rejects.toBe(rollback);
+  });
+});

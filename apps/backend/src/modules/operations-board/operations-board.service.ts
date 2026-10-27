@@ -47,7 +47,7 @@ export class OperationsBoardService {
     };
 
     const [dashboard, properties, reservationGroups, rooms, housekeepingTasks] = await Promise.all([
-      this.dashboardService.getSummary(boardDate, user),
+      this.dashboardService.getSummary(boardDate, user, requestedPropertyId, boardDateText),
       this.prisma.property.findMany({
         where: propertyWhere,
         include: { images: true },

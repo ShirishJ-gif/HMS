@@ -1,11 +1,10 @@
 import { FocusBanner, type DashboardFocus } from '../components/WorkspaceUI';
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { api, getApiErrorMessage } from '../api/client';
 import { Billing, PaymentProvider, ReservationGroup, ReservationGroupFolio, ReservationGroupPaymentCollection } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
 import { DelayedSpinnerOverlay } from '../components/Spinner';
-import { useScrollLock } from '../hooks/useScrollLock';
+import { useCachedQuery } from '../hooks/useCachedQuery';
 import { formatCurrency } from '../utils/format';
 import { bookingBillHtml, groupBookingBills } from '../utils/booking-bills';
 import { invoiceHtml, invoiceChargeLines, paymentReferenceLabel, airbnbPayoutPaymentDetails, formatGuestName, nights, otaPaymentRows } from '../utils/invoice-print';
@@ -30,7 +29,6 @@ const STATUS_CFG: Record<string, { badge: string; label: string }> = {
   REFUNDED: { badge: 'bg-slate-100 text-slate-600 border-slate-200',   label: 'Refunded' },
 };
 
-const defaultPayForm = { amount: '', provider: 'CASH' as PaymentProvider, provider_reference: '' };
 const defaultGroupPayForm = { amount: '', provider: 'CASH' as PaymentProvider, provider_reference: '' };
 const defaultExtraChargeForm = { description: '', amount: '' };
 const FOLIOS_PER_PAGE = 8;
@@ -47,16 +45,6 @@ type FinanceOverview = {
   billings: Billing[];
   reservation_groups: ReservationGroup[];
 };
-
-type FinanceState = {
-  data: FinanceOverview | null;
-  error: string | null;
-  loading: boolean;
-};
-
-let financeOverviewCache: FinanceOverview | null = null;
-let financeOverviewCacheAt = 0;
-const financeOverviewCacheTtlMs = 60_000;
 
 function fmtDate(d: string) {
   return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
@@ -78,14 +66,10 @@ function printInvoice(billing: Billing) {
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────
-export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, initialFocus, onReturn, returnLabel = 'Reports & Analytics' }: { previewDataEnabled?: boolean; initialFolioGroupId?: string | null; initialFocus?: DashboardFocus | null; onReturn?: () => void; returnLabel?: string }) {
+export function PaymentsPage({ activePropertyId, previewDataEnabled = false, initialFolioGroupId, initialFocus, onReturn, returnLabel = 'Reports & Analytics' }: { activePropertyId: string; previewDataEnabled?: boolean; initialFolioGroupId?: string | null; initialFocus?: DashboardFocus | null; onReturn?: () => void; returnLabel?: string }) {
   const [focus, setFocus] = useState(initialFocus);
-  const [reloadKey, setReloadKey]             = useState(0);
   const [selectedBillingId, setSelectedBillingId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter]       = useState<string>('ALL');
-  const [showPayModal, setShowPayModal]       = useState(false);
-  const [payForm, setPayForm]                 = useState(defaultPayForm);
-  const [collecting, setCollecting]           = useState(false);
   const [toastMessage, setToastMessage]       = useState<string | null>(null);
   const [actionError, setActionError]         = useState<string | null>(null);
 
@@ -119,38 +103,11 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
     }
   }, [initialFolioGroupId, selectedFolio]);
 
-  const [financeState, setFinanceState] = useState<FinanceState>(() => {
-    const hasFreshCache = financeOverviewCache && Date.now() - financeOverviewCacheAt < financeOverviewCacheTtlMs;
-    return {
-      data: hasFreshCache ? financeOverviewCache : null,
-      error: null,
-      loading: !hasFreshCache,
-    };
-  });
-
-  useEffect(() => {
-    let active = true;
-    const hasFreshCache = financeOverviewCache && reloadKey === 0 && Date.now() - financeOverviewCacheAt < financeOverviewCacheTtlMs;
-    if (hasFreshCache) {
-      setFinanceState({ data: financeOverviewCache, error: null, loading: false });
-      return () => { active = false; };
-    }
-
-    setFinanceState((current) => ({ ...current, error: null, loading: !current.data || reloadKey > 0 }));
-    api.get<FinanceOverview>('/finance/overview')
-      .then((response) => {
-        if (!active) return;
-        financeOverviewCache = response.data;
-        financeOverviewCacheAt = Date.now();
-        setFinanceState({ data: response.data, error: null, loading: false });
-      })
-      .catch((err: unknown) => {
-        if (!active) return;
-        setFinanceState((current) => ({ data: current.data, error: getApiErrorMessage(err), loading: false }));
-      });
-
-    return () => { active = false; };
-  }, [reloadKey]);
+  const financeState = useCachedQuery(
+    JSON.stringify(['finance/overview', activePropertyId || 'ALL']),
+    async () => (await api.get<FinanceOverview>('/finance/overview', { params: { property_id: activePropertyId || 'ALL' } })).data,
+    !previewDataEnabled,
+  );
 
   const previewData       = previewDataEnabled ? createPreviewData() : null;
   const billings = (previewData?.billings ?? financeState.data?.billings ?? []).filter(b => !focus || (!focus.propertyId || b.reservation_room.property.id === focus.propertyId));
@@ -199,31 +156,13 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
 
   function flash(msg: string) { setToastMessage(msg); setTimeout(() => setToastMessage(null), 3000); }
 
-  // ── Collect against a billing invoice ─────────────────────────────────
-  async function submitPayment(e: FormEvent) {
-    e.preventDefault(); if (!selectedBillingId) return;
-    if (isPreviewId(selectedBillingId)) { setActionError('Sample preview records are read-only. Turn off sample data to record a payment.'); return; }
-    setActionError(null); setCollecting(true);
-    try {
-      await api.post('/payments/collect', {
-        billing_id: selectedBillingId,
-        amount: payForm.amount,
-        provider: payForm.provider,
-        provider_reference: payForm.provider === 'CASH' ? undefined : payForm.provider_reference || undefined,
-      });
-      setPayForm(defaultPayForm); setShowPayModal(false);
-      setReloadKey(v => v + 1); flash('Payment recorded successfully.');
-    } catch (err) { setActionError(getApiErrorMessage(err)); }
-    finally { setCollecting(false); }
-  }
-
   // ── Generate invoice for a single checked-out room ────────────────────
   async function generateInvoice(reservationRoomId: string) {
     if (isPreviewId(reservationRoomId)) { setActionError('Sample preview records are read-only. Turn off sample data to generate an invoice.'); return; }
     setActionError(null); setInvoicingRoomId(reservationRoomId);
     try {
       await api.post('/billings', { reservation_room_id: reservationRoomId, tax: '0.00' });
-      setReloadKey(v => v + 1); flash('Invoice generated.');
+      flash('Invoice generated.');
     } catch (err) { setActionError(getApiErrorMessage(err)); }
     finally { setInvoicingRoomId(null); }
   }
@@ -273,6 +212,9 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
     try {
       const res = await api.get<ReservationGroupFolio>(`/billings/reservation-groups/${groupId}/folio`);
       if (folioRequestIdRef.current !== requestId) return;
+      if (activePropertyId && res.data.property.id !== activePropertyId) {
+        throw new Error('This folio belongs to another property. Select that property in the top bar to view it.');
+      }
       setSelectedFolioGroupId(groupId);
       setSelectedFolio(res.data);
       setFolioCache(cache => ({ ...cache, [groupId]: res.data }));
@@ -308,7 +250,7 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
     setActionError(null); setGeneratingFolioId(groupId);
     try {
       await api.post(`/billings/reservation-groups/${groupId}/generate-missing-invoices`);
-      setReloadKey(v => v + 1); flash('Missing invoices generated.');
+      flash('Missing invoices generated.');
       if (selectedFolioGroupId === groupId) await openFolio(groupId, true);
     } catch (err) { setActionError(getApiErrorMessage(err)); }
     finally { setGeneratingFolioId(null); }
@@ -329,7 +271,7 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
       setLastGroupCollection(res.data);
       setGroupPayForm(defaultGroupPayForm);
       await openFolio(selectedFolioGroupId, true);
-      setReloadKey(v => v + 1); flash('Group payment recorded.');
+      flash('Group payment recorded.');
     } catch (err) { setActionError(getApiErrorMessage(err)); }
     finally { setCollectingGroup(false); }
   }
@@ -358,7 +300,6 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
       });
       setExtraChargeForm(defaultExtraChargeForm);
       await openFolio(selectedFolioGroupId, true);
-      setReloadKey(v => v + 1);
       flash('Extra charge added to folio.');
     } catch (err) {
       setActionError(getApiErrorMessage(err));
@@ -378,7 +319,6 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
     try {
       await api.delete(`/billings/${billingId}/extra-charges/${chargeId}`);
       if (selectedFolioGroupId) await openFolio(selectedFolioGroupId, true);
-      setReloadKey(v => v + 1);
       flash('Extra charge removed from folio.');
     } catch (err) {
       setActionError(getApiErrorMessage(err));
@@ -406,8 +346,13 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
         <div>
           <p className="text-[10.5px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Finance</p>
           <h1 className="text-[22px] font-black text-slate-900 tracking-tight leading-none">Payment & Folios</h1>
-          <p className="text-[12px] text-slate-400 mt-1">One bill per booking, with all room charges and payments together</p>
+          <p className="text-[12px] text-slate-400 mt-1">All stay dates · One bill per booking, with all room charges and payments together</p>
         </div>
+        {!previewDataEnabled && <button type="button" onClick={() => {
+          financeState.refresh();
+          setFolioCache({});
+          if (selectedFolioGroupId) void openFolio(selectedFolioGroupId, true);
+        }} disabled={loading} className="h-10 rounded-lg border border-slate-200 bg-white px-4 text-xs font-semibold disabled:opacity-50">Refresh</button>}
       </div>
 
       {/* Messages */}
@@ -418,7 +363,7 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
       <div className={`px-5 lg:px-8 pb-4 grid grid-cols-2 ${focus ? 'xl:grid-cols-4' : 'md:grid-cols-3 xl:grid-cols-5'} gap-3`}>
         {[
           { label: 'Total billed',  value: formatCurrency(totalBilled),    sub: `${bookingBills.length} booking bill${bookingBills.length === 1 ? '' : 's'}`, color: 'text-slate-900' },
-          { label: 'Collected',     value: formatCurrency(totalCollected),  sub: 'Net of refunds', color: 'text-emerald-600' },
+          { label: 'Collected',     value: formatCurrency(totalCollected),  sub: 'All payments on these bills, less refunds', color: 'text-emerald-600' },
           { label: 'Balance due',   value: formatCurrency(totalBalance),    sub: totalBalance > 0 ? 'Outstanding' : 'Clear', color: totalBalance > 0 ? 'text-rose-600' : 'text-slate-500' },
           { label: 'Open bills', value: String(openCount),               sub: openCount > 0 ? 'Needs follow-up' : 'All settled', color: openCount > 0 ? 'text-amber-600' : 'text-slate-500' },
           ...(!focus ? [{ label: 'Transactions', value: String(transactionCount), sub: 'Payment records', color: 'text-sky-700' }] : []),
@@ -433,6 +378,10 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
           />
         ))}
       </div>
+      <p className="px-5 lg:px-8 pb-4 text-xs leading-6 text-slate-500">
+        Airbnb settlement (non-cash): {formatCurrency(billings.reduce((sum, bill) => sum + (bill.settlement_credit ?? 0), 0))} · Credit balances: {formatCurrency(billings.reduce((sum, bill) => sum + (bill.credit_balance ?? 0), 0))}.
+        {' '}Billed − collected − settlement + credit balances = balance due. Totals cover all bill statuses.
+      </p>
       {uninvoiced.length > 0 && (
         <div className="px-5 lg:px-8 pb-3">
           <span className="inline-flex text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg">
@@ -677,13 +626,6 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
                         className="h-8 px-3.5 rounded-lg text-[11.5px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors">
                         Print invoice
                       </button>
-                      {selectedBilling.balance_due > 0 && (
-                        <button type="button"
-                          onClick={() => { setPayForm(f => ({ ...f, amount: selectedBilling.balance_due.toFixed(2) })); setShowPayModal(true); }}
-                          className="h-8 px-4 rounded-lg text-[11.5px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">
-                          Collect payment →
-                        </button>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -996,7 +938,9 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
                       <div className="mt-4 pt-4 border-t border-slate-200 space-y-2">
                         {[
                           { label: 'Total billed', value: formatCurrency(selectedFolio.billed_total) },
-                          { label: 'Paid total',   value: formatCurrency(selectedFolio.paid_total - selectedFolio.refunded_total) },
+                          { label: 'Net collected', value: formatCurrency(selectedFolio.paid_total - selectedFolio.refunded_total) },
+                          { label: 'Airbnb settlement (non-cash)', value: formatCurrency(selectedFolio.settlement_credit ?? 0) },
+                          { label: 'Credit balance', value: formatCurrency(selectedFolio.credit_balance ?? 0) },
                           { label: 'Balance due',  value: formatCurrency(selectedFolio.balance_due) },
                         ].map(row => (
                           <div key={row.label} className="flex items-center justify-between">
@@ -1021,88 +965,6 @@ export function PaymentsPage({ previewDataEnabled = false, initialFolioGroupId, 
         </div>
       </div>
 
-      {/* ── Collect payment modal ── */}
-      {showPayModal && selectedBilling && (
-        <CollectPaymentModal
-          billing={selectedBilling}
-          collecting={collecting}
-          form={payForm}
-          onClose={() => setShowPayModal(false)}
-          onFormChange={setPayForm}
-          onSubmit={submitPayment}
-        />
-      )}
     </div>
-  );
-}
-
-function CollectPaymentModal({
-  billing,
-  collecting,
-  form,
-  onClose,
-  onFormChange,
-  onSubmit,
-}: {
-  billing: Billing;
-  collecting: boolean;
-  form: typeof defaultPayForm;
-  onClose: () => void;
-  onFormChange: React.Dispatch<React.SetStateAction<typeof defaultPayForm>>;
-  onSubmit: (event: FormEvent) => void;
-}) {
-  useScrollLock(true);
-
-  return createPortal(
-    <>
-      <button aria-label="Close collect payment" className="fixed inset-0 z-40 bg-slate-900/20" onClick={onClose} type="button" />
-      <section aria-label="Collect payment" className="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-3rem)] w-[calc(100vw_-_2rem)] max-w-[420px] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
-          <div>
-            <h3 className="text-[16px] font-bold text-slate-900">Collect payment</h3>
-            <p className="text-[12px] text-slate-400 mt-0.5">{formatGuestName(billing.reservation_room.guest.name)} · {billing.reservation_room.room_category.name}</p>
-          </div>
-          <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-xl leading-none text-slate-400 transition hover:bg-slate-100 hover:text-slate-700">×</button>
-        </div>
-        <div className="min-h-0 overflow-y-auto p-6">
-          <div className="bg-rose-50 border border-rose-100 rounded-xl px-4 py-3 mb-5 flex items-center justify-between">
-            <span className="text-[12.5px] text-rose-600">Outstanding balance</span>
-            <span className="text-[22px] font-black text-rose-600">{formatCurrency(billing.balance_due)}</span>
-          </div>
-          <form onSubmit={onSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400">Payment method</label>
-              <div className="grid grid-cols-3 gap-1.5">
-                {PROVIDERS.filter(p => p.value !== 'MOCK').map(p => (
-                  <button key={p.value} type="button" onClick={() => onFormChange(f => ({ ...f, provider: p.value, provider_reference: p.value === 'CASH' ? '' : f.provider_reference }))}
-                    className={`h-9 rounded-lg text-[11px] font-bold transition-colors border ${form.provider === p.value ? 'bg-emerald-50 text-emerald-700 border-emerald-300 shadow-sm' : 'border-slate-200 text-slate-600 hover:border-emerald-200 hover:bg-emerald-50/50'}`}>
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400">Amount</label>
-              <input type="number" min="0" step="0.01" required
-                value={form.amount} onChange={e => onFormChange(f => ({ ...f, amount: e.target.value }))}
-                className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[14px] text-slate-900 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-400/30" />
-            </div>
-            {form.provider !== 'CASH' ? (
-              <div className="space-y-1.5">
-                <label className="text-[10.5px] font-bold uppercase tracking-wider text-slate-400">Reference (optional)</label>
-                <input placeholder="Card last 4, UPI ref, receipt no..."
-                  value={form.provider_reference} onChange={e => onFormChange(f => ({ ...f, provider_reference: e.target.value }))}
-                  className="w-full h-10 px-3 rounded-lg border border-slate-200 text-[13px] text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-400/30" />
-              </div>
-            ) : null}
-            <button type="submit" disabled={collecting || !form.amount}
-              className="w-full h-11 rounded-xl text-[13px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-              {collecting ? 'Recording...' : 'Record payment & settle folio'}
-            </button>
-          </form>
-        </div>
-      </section>
-    </>,
-    document.body,
   );
 }

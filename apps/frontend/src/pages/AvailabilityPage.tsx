@@ -1,8 +1,7 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { AvailabilitySummary, InventoryCalendarSummary, Property } from '../api/types';
 import { InlineCalendarDatePicker } from '../components/CalendarDatePicker';
-import { CustomSelect } from '../components/CustomSelect';
 import { formatCurrency } from '../utils/format';
 import { createPreviewData } from './previewData';
 import { VillaAvailabilityPage } from './VillaAvailabilityPage';
@@ -29,35 +28,32 @@ type PersistedAvailabilityState = {
 
 export function AvailabilityPage(props: {
   activePropertyId?: string;
-  onPropertyChange?: (propertyId: string) => void;
   previewDataEnabled?: boolean;
   properties?: Property[];
   propertiesLoaded?: boolean;
 }) {
-  const [localPropertyId, setLocalPropertyId] = useState(props.activePropertyId ?? '');
-  const property = props.properties?.find(item => item.id === (props.activePropertyId || localPropertyId)) ?? props.properties?.[0];
+  const property = props.properties?.find(item => item.id === props.activePropertyId);
   if (!props.previewDataEnabled && property?.property_type === 'RENTAL_VILLAS') {
-    return <VillaAvailabilityPage key={property.id} property={property} properties={props.properties ?? []} onPropertyChange={id => { setLocalPropertyId(id); props.onPropertyChange?.(id); }} />;
+    return <VillaAvailabilityPage key={property.id} property={property} />;
   }
-  return <HotelAvailabilityPage {...props} activePropertyId={props.activePropertyId || localPropertyId} onPropertyChange={id => { setLocalPropertyId(id); props.onPropertyChange?.(id); }} />;
+  return <HotelAvailabilityPage {...props} />;
 }
 
 function HotelAvailabilityPage({
   activePropertyId = '',
-  onPropertyChange,
   previewDataEnabled = false,
   properties: appProperties = [],
   propertiesLoaded = false,
 }: {
   activePropertyId?: string;
-  onPropertyChange?: (propertyId: string) => void;
   previewDataEnabled?: boolean;
   properties?: Property[];
   propertiesLoaded?: boolean;
 }) {
   const today = dateToInputValue(new Date());
   const defaultRange = getPresetRange('next_30', today);
-  const [propertyId, setPropertyIdState] = useState(activePropertyId);
+  const previewData = useMemo(() => (previewDataEnabled ? createPreviewData() : null), [previewDataEnabled]);
+  const propertyId = previewData?.availability.property_id ?? activePropertyId;
   const persistedAvailabilityState = useMemo(() => readPersistedAvailabilityState(), []);
   const restoredQuery = persistedAvailabilityState?.lastLoadedQuery ?? null;
   const restoredQueryMatchesDefaultRange =
@@ -66,7 +62,7 @@ function HotelAvailabilityPage({
   const shouldRestorePersistedResults =
     restoredQuery != null &&
     restoredQueryMatchesDefaultRange &&
-    (!propertyId || restoredQuery.propertyId === propertyId) &&
+    restoredQuery.propertyId === propertyId &&
     persistedAvailabilityState?.inventoryCalendar.from === restoredQuery.from &&
     persistedAvailabilityState?.inventoryCalendar.to === restoredQuery.to;
   const [from, setFrom] = useState(shouldRestorePersistedResults ? restoredQuery.from : defaultRange.from);
@@ -93,41 +89,26 @@ function HotelAvailabilityPage({
   const availabilityRequestIdRef = useRef(0);
   const autoLoadedQueryRef = useRef<string | null>(shouldRestorePersistedResults && restoredQuery ? queryKey(restoredQuery) : null);
 
-  const previewData = useMemo(() => (previewDataEnabled ? createPreviewData() : null), [previewDataEnabled]);
   const properties = previewData?.properties ?? appProperties;
   const hasLoadedProperties = previewDataEnabled || propertiesLoaded;
   const selectedPropertyExists = Boolean(propertyId && properties.some((p) => p.id === propertyId));
 
-  const setPropertyId = useCallback((nextPropertyId: string) => {
-    setPropertyIdState(nextPropertyId);
-    if (!previewDataEnabled) onPropertyChange?.(nextPropertyId);
-  }, [onPropertyChange, previewDataEnabled]);
-
   useEffect(() => {
-    if (previewDataEnabled) return;
-    if (activePropertyId && activePropertyId !== propertyId) {
-      setPropertyIdState(activePropertyId);
-    }
-  }, [activePropertyId, previewDataEnabled, propertyId]);
-
-  useEffect(() => {
-    if (previewDataEnabled) return;
-    if (!propertyId && restoredQuery?.propertyId) setPropertyId(restoredQuery.propertyId);
-  }, [previewDataEnabled, propertyId, restoredQuery, setPropertyId]);
+    availabilityRequestIdRef.current += 1;
+    autoLoadedQueryRef.current = null;
+    setAvailabilityLoading(false);
+    setError(null);
+    setSelectedCatId(null);
+    return () => { availabilityRequestIdRef.current += 1; };
+  }, [propertyId, previewDataEnabled]);
 
   useEffect(() => {
     if (!hasLoadedProperties) return;
-    if (properties.length === 0) {
-      if (propertyId) setPropertyId('');
+    if (!selectedPropertyExists) {
       setAvailability(null); setInventoryCalendar(null); setLastLoadedQuery(null);
       clearPersistedAvailabilityState(); return;
     }
-    if (!propertyId || !properties.some((p) => p.id === propertyId)) {
-      setPropertyId(properties[0].id);
-      setAvailability(null); setInventoryCalendar(null); setLastLoadedQuery(null);
-      clearPersistedAvailabilityState();
-    }
-  }, [hasLoadedProperties, properties, propertyId, setPropertyId]);
+  }, [hasLoadedProperties, selectedPropertyExists]);
 
   const currentQuery = useMemo(() => ({ propertyId, from, to }), [from, propertyId, to]);
 
@@ -258,7 +239,8 @@ function HotelAvailabilityPage({
 
   useEffect(() => {
     if (!hasLoadedProperties || !selectedPropertyExists || !propertyId || availabilityLoading) return;
-    if (currentQueryHasLoaded || !currentQueryIsDefaultRange || shouldRestorePersistedResults) return;
+    if (currentQueryHasLoaded) return;
+    if (!currentQueryIsDefaultRange && lastLoadedQuery?.propertyId === propertyId) return;
 
     const key = queryKey(currentQuery);
     if (autoLoadedQueryRef.current === key) return;
@@ -272,7 +254,7 @@ function HotelAvailabilityPage({
     hasLoadedProperties,
     propertyId,
     selectedPropertyExists,
-    shouldRestorePersistedResults,
+    lastLoadedQuery,
   ]);
 
   function applyRangePreset(preset: RangePreset) {
@@ -326,15 +308,6 @@ function HotelAvailabilityPage({
         {/* Filter controls */}
         <div className="px-5 lg:px-8 pb-4 overflow-visible">
           <div className="inline-flex max-w-full items-center gap-2 rounded-xl p-1.5 shadow-slate-900/[0.03]">
-            <div className="w-[240px] flex-shrink-0">
-              <CustomSelect
-                onChange={setPropertyId}
-                options={properties.map((p) => ({ label: p.name, value: p.id }))}
-                placeholder="Select property"
-                value={propertyId}
-              />
-            </div>
-
             <div className="flex w-[420px] items-center gap-1 rounded-lg bg-slate-100 p-1 flex-shrink-0">
               {RANGE_CHIPS.map((chip) => (
                 <button

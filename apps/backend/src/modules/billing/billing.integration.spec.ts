@@ -5,6 +5,8 @@ import { BillingService } from './billing.service';
 import { PaymentService } from '../payment/payment.service';
 import { PaymentProviderService } from '../payment/payment-provider.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
+import { ReportsService } from '../reports/reports.service';
+import { FinanceService } from '../finance/finance.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 
 const integration = process.env.RUN_BILLING_INTEGRATION === 'true' ? describe : describe.skip;
@@ -41,8 +43,49 @@ integration('Billing and payments (rolled back)', () => {
     const payments = new PaymentService(db as never, new PaymentProviderService(),
       { run: (_key: unknown, _scope: unknown, _input: unknown, _user: unknown, action: () => Promise<unknown>) => action() } as never,
       { recordPaymentCollect: jest.fn(), recordPaymentRefund: jest.fn() } as never);
-    return { tx, bill, group, billing, payments, actor, audit: new AuditLogService(db as never) };
+    return { tx, db, bill, group, billing, payments, actor, audit: new AuditLogService(db as never) };
   }
+
+  it('reconciles report totals, finance totals and full folios across room dates and payment dates', async () => run(async ({ tx, db, bill, group, actor, billing }) => {
+    await tx.reservationGroup.update({ where: { id: group.id }, data: { source: 'DIRECT' } });
+    const firstRoom = await tx.reservationRoom.findUniqueOrThrow({ where: { id: bill.reservationRoomId! } });
+    const sibling = await tx.reservationRoom.create({ data: {
+      propertyId: firstRoom.propertyId, reservationGroupId: group.id, roomCategoryId: firstRoom.roomCategoryId,
+      ratePlanId: firstRoom.ratePlanId, externalRoomId: randomUUID(), externalRoomReservationId: randomUUID(),
+      arrivalDate: new Date('2026-11-01'), departureDate: new Date('2026-11-03'),
+    } });
+    const secondBill = await tx.billing.create({ data: { reservationRoomId: sibling.id, amount: 200, tax: 20, total: 220 } });
+    await tx.billingExtraCharge.createMany({ data: [
+      { billingId: bill.id, description: 'Food', amount: 25 },
+      { billingId: bill.id, description: 'OTA fee', amount: 20 },
+    ] });
+    await tx.paymentTransaction.createMany({ data: [
+      { billingId: bill.id, amount: 80, status: 'SUCCEEDED', metadata: { source: 'airbnb_payout_email' }, createdAt: new Date('2026-09-01') },
+      { billingId: bill.id, amount: 10, status: 'REFUNDED', createdAt: new Date('2026-10-01') },
+      { billingId: secondBill.id, amount: 230, status: 'SUCCEEDED', createdAt: new Date('2026-11-01') },
+    ] });
+    const reports = new ReportsService(db as never);
+    const finance = new FinanceService(db as never);
+    const query = { property_id: actor.property_id!, from: '2026-10-01', to: '2026-10-01' };
+    const report = await reports.getAnalytics(query, actor);
+    const overview = await finance.getOverview(query, actor);
+    const folio = await billing.findReservationGroupFolio(group.id, actor);
+    expect(report.summary).toMatchObject({ billed_total: 345, paid_total: 300, balance_due: 35, settlement_credit: 20, credit_balance: 10, room_revenue: 100, period_net_collected: -10 });
+    expect(overview.summary).toMatchObject({ total_billed: report.summary.billed_total, total_collected: report.summary.paid_total, total_balance: report.summary.balance_due, settlement_credit: 20, credit_balance: 10, invoice_count: 2, transaction_count: 3 });
+    expect(folio).toMatchObject({ billed_total: 345, balance_due: 35, settlement_credit: 20, credit_balance: 10 });
+    expect(report.folios.map(f => f.billing_id).sort()).toEqual(overview.billings.map(b => b.id).sort());
+    expect(report.trend.reduce((sum, bucket) => sum + bucket.billed, 0)).toBe(100);
+    expect(report.trend.reduce((sum, bucket) => sum + bucket.collected, 0)).toBe(-10);
+    // Checkout alone does not select the booking.
+    expect((await finance.getOverview({ ...query, from: '2026-10-02', to: '2026-10-02' }, actor)).billings).toHaveLength(0);
+    // Invoiced cancellations still reconcile, but no longer contribute room revenue.
+    await tx.reservationGroup.update({ where: { id: group.id }, data: { status: 'CANCELLED' } });
+    expect((await reports.getAnalytics(query, actor)).summary).toMatchObject({ billed_total: 345, room_revenue: 0 });
+    // Blocked imports cannot leak into either invoice view or period collections.
+    await tx.reservationGroup.update({ where: { id: group.id }, data: { rawPayload: { importBlocked: true } } });
+    expect((await reports.getAnalytics(query, actor)).summary).toMatchObject({ billed_total: 0, paid_total: 0, period_net_collected: 0 });
+    expect((await finance.getOverview(query, actor)).summary).toMatchObject({ total_billed: 0, total_collected: 0, transaction_count: 0 });
+  }));
 
   it('counts a refund once, permits recollection and keeps the stored status and folio consistent', async () => run(async ({ tx, bill, group, billing, payments }) => {
     const payment = await payments.collect({ billing_id: bill.id, amount: '100', provider: 'CASH' });

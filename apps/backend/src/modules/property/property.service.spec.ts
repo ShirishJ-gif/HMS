@@ -5,6 +5,7 @@ import { SignupPropertyDto } from '../auth/dto/signup-property.dto';
 import { CreatePropertyDto } from './dto/create-property.dto';
 import { UpdatePropertyDto } from './dto/update-property.dto';
 import { PropertyService } from './property.service';
+import { AuthenticatedUser } from '../auth/auth.guard';
 jest.mock('./villa-inventory', () => ({ ensureVillaInventory: jest.fn().mockResolvedValue({}) }));
 
 describe('Property type', () => {
@@ -18,7 +19,7 @@ describe('Property type', () => {
 
   it.each([PropertyType.HOTEL, PropertyType.RENTAL_VILLAS])('persists and returns %s on creation', async propertyType => {
     const create = jest.fn().mockResolvedValue({ ...property, propertyType });
-    const db = { property: { create } };
+    const db = { property: { create }, auditLog: { create: jest.fn() } };
     const service = new PropertyService({ ...db, $transaction: (callback: (tx: unknown) => unknown) => callback(db) } as unknown as PrismaService);
     const response = await service.createProperty({ name: property.name, code: property.code, address: property.address, property_type: propertyType });
     expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({ propertyType }) });
@@ -27,10 +28,23 @@ describe('Property type', () => {
 
   it('saves the initial villa nightly rate with the property', async () => {
     const create = jest.fn().mockResolvedValue(property);
-    const db = { property: { create } };
+    const db = { property: { create }, auditLog: { create: jest.fn() } };
     const service = new PropertyService({ ...db, $transaction: (callback: (tx: unknown) => unknown) => callback(db) } as unknown as PrismaService);
     await service.createProperty({ name: property.name, code: property.code, address: property.address, property_type: PropertyType.RENTAL_VILLAS, nightly_rate: 4500 });
     expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({ villaWholeRate: 4500 }) });
+  });
+
+  it('records property creation under the new property and the organization owner who saved it', async () => {
+    const owner: AuthenticatedUser = { sub: 'owner-1', email: 'owner@example.test', role: 'ORG_OWNER', organization_id: 'organization-1', property_id: 'old-property' };
+    const saved = { ...property, organizationId: owner.organization_id };
+    const tx = { property: { create: jest.fn().mockResolvedValue(saved) }, auditLog: { create: jest.fn() } };
+    const service = new PropertyService({ $transaction: (work: (db: unknown) => unknown) => work(tx) } as unknown as PrismaService);
+    await service.createProperty({ name: property.name, code: property.code, address: property.address }, owner);
+    expect(tx.property.create).toHaveBeenCalledWith({ data: expect.objectContaining({ organizationId: owner.organization_id }) });
+    expect(tx.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      action: 'CREATE', entityType: 'property', entityId: property.id, propertyId: property.id, userId: owner.sub,
+      summary: 'Created property "Test villa" (VILLA)', metadata: expect.objectContaining({ name: property.name, organization_id: owner.organization_id }),
+    }) });
   });
 
   it.each([0, -1, 100000000, 12.345])('rejects invalid initial nightly rate %s', async nightly_rate => {

@@ -128,6 +128,7 @@ function isAuthSensitivePath(request: Request) {
   return [
     '/auth/bootstrap',
     '/auth/login',
+    '/auth/change-password',
     '/auth/password-reset/request',
     '/auth/password-reset/confirm',
     '/auth/refresh',

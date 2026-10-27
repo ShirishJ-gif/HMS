@@ -4,6 +4,7 @@ import { api, getApiErrorMessage } from '../api/client';
 import { Billing, DashboardSummary, Guest, HousekeepingTask, Property, ReservationGroup, Room } from '../api/types';
 import { CustomSelect } from '../components/CustomSelect';
 import { useScrollLock } from '../hooks/useScrollLock';
+import { useWorkspaceState } from '../hooks/useWorkspaceState';
 import { capitalizeFirstLetter, formatCompactReservationId, formatCurrency } from '../utils/format';
 import { createPreviewData, isPreviewId } from './previewData';
 import { FloatingSuccessToast, SearchInput } from './ui';
@@ -28,8 +29,8 @@ type OperationsBoardData = {
 };
 type OperationsBoardState = { data: OperationsBoardData | null; error: string | null; loading: boolean };
 
-let operationsBoardCache: OperationsBoardData | null = null;
-let operationsBoardCacheKey = '';
+// Presentation only: retain late-arrival records and reminder support for future use.
+const SHOW_LATE_ARRIVALS = false;
 
 function getLocalDate() {
   const now = new Date();
@@ -348,9 +349,9 @@ function EmptyCol({ label }: { label: string }) {
 }
 
 /* ── Main page ── */
-export function OperationsBoardPage({ previewDataEnabled = false }: { previewDataEnabled?: boolean }) {
+export function OperationsBoardPage({ activePropertyId, previewDataEnabled = false }: { activePropertyId: string; previewDataEnabled?: boolean }) {
   const [reloadKey, setReloadKey]         = useState(0);
-  const [propertyFilter, setPropertyFilter] = useState('ALL');
+  const propertyFilter = previewDataEnabled ? 'ALL' : activePropertyId || 'ALL';
   const [searchQuery, setSearchQuery]     = useState('');
   const [activeTab, setActiveTab]         = useState<'board' | 'housekeeping'>('board');
   const [selectedArrivalRow, setSelectedArrivalRow] = useState<BoardRow | null>(null);
@@ -359,11 +360,9 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<{ id: string; type: 'checkin' | 'checkout' | 'reminder' } | null>(null);
   const today = getLocalDate();
-  const initialCacheKey = `ALL:${today}`;
-  const initialOperationsBoardCache = operationsBoardCacheKey === initialCacheKey ? operationsBoardCache : null;
-  const [boardState, setBoardState]       = useState<OperationsBoardState>(() => ({
-    data: initialOperationsBoardCache, error: null, loading: !initialOperationsBoardCache,
-  }));
+  const [boardState, setBoardState] = useWorkspaceState<OperationsBoardState>(`operations:${propertyFilter}:${today}`, {
+    data: null, error: null, loading: true,
+  });
 
   useEffect(() => {
     if (!actionSuccess) return;
@@ -372,20 +371,20 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
   }, [actionSuccess]);
 
   useEffect(() => {
+    if (previewDataEnabled) return;
     let active = true;
-    const cacheKey = `${propertyFilter}:${today}`;
+    const controller = new AbortController();
     setBoardState(cur => ({ ...cur, error: null, loading: !cur.data }));
-    api.get<OperationsBoardData>('/operations-board', { params: { property_id: propertyFilter, date: today } }).then((res) => {
+    api.get<OperationsBoardData>('/operations-board', { params: { property_id: propertyFilter, date: today }, signal: controller.signal }).then((res) => {
       if (!active) return;
       const next = res.data;
-      operationsBoardCache = next; operationsBoardCacheKey = cacheKey;
       setBoardState({ data: next, error: null, loading: false });
     }).catch((err: unknown) => {
       if (!active) return;
       setBoardState(cur => ({ data: cur.data, error: getApiErrorMessage(err), loading: false }));
     });
-    return () => { active = false; };
-  }, [propertyFilter, reloadKey, today]);
+    return () => { active = false; controller.abort(); };
+  }, [previewDataEnabled, propertyFilter, reloadKey, today]);
 
   function blockPreviewAction(id: string) {
     if (!isPreviewId(id)) return false;
@@ -455,9 +454,12 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
       primary_guest_name: g.primary_guest?.name ?? 'Imported guest', room: r,
     }))
   );
+  const visibleRows = SHOW_LATE_ARRIVALS ? allRows : allRows.filter(row =>
+    !(row.room.arrival_date < today && row.room.reservation_status === 'BOOKED'),
+  );
   const filteredRows = normalizedQ
-    ? allRows.filter(row => [row.room.guest_name, row.primary_guest_name, row.property.name, row.external_reservation_id, row.room.room.room_number, row.room.room_category.name, row.room.rate_plan.name].filter(Boolean).join(' ').toLowerCase().includes(normalizedQ))
-    : allRows;
+    ? visibleRows.filter(row => [row.room.guest_name, row.primary_guest_name, row.property.name, row.external_reservation_id, row.room.room.room_number, row.room.room_category.name, row.room.rate_plan.name].filter(Boolean).join(' ').toLowerCase().includes(normalizedQ))
+    : visibleRows;
 
   const arrivals     = filteredRows.filter(r => r.room.arrival_date === today && r.room.reservation_status === 'BOOKED');
   const inHouse      = filteredRows.filter(r => r.room.reservation_status === 'CHECKED_IN').sort((a, b) => a.room.departure_date.localeCompare(b.room.departure_date));
@@ -559,7 +561,7 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
           </div>
         </div>
 
-        {/* Row 2: search + property filter */}
+        {/* Row 2: search */}
         <div className="flex items-center gap-3 px-5 lg:px-8 pb-4">
           <SearchInput
             value={searchQuery}
@@ -567,18 +569,6 @@ export function OperationsBoardPage({ previewDataEnabled = false }: { previewDat
             placeholder="Guest, room, reservation…"
             className="w-72 max-w-full"
           />
-
-          {/* Property toggle pills */}
-          <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1">
-            <button onClick={() => setPropertyFilter('ALL')} className={`h-8 px-3 rounded-lg text-[11px] font-semibold transition-colors ${propertyFilter === 'ALL' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
-              All
-            </button>
-            {properties.map(p => (
-              <button key={p.id} onClick={() => setPropertyFilter(p.id)} className={`h-8 px-3 rounded-lg text-[11px] font-semibold transition-colors ${propertyFilter === p.id ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
-                {p.name}
-              </button>
-            ))}
-          </div>
 
         </div>
 

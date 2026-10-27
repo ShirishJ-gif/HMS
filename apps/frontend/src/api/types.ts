@@ -30,6 +30,13 @@ export type AuthUser = {
   email: string;
   role: UserRole;
   is_active: boolean;
+  phone?: string | null;
+  default_property_id?: string | null;
+};
+
+export type UserProfile = AuthUser & {
+  organization: { id: string; name: string } | null;
+  properties: Array<{ id: string; name: string; code: string; is_active: boolean }>;
 };
 
 export type AuthResponse = {
@@ -126,7 +133,28 @@ export type DashboardStay = {
   room_labels: string;
 };
 
+export type DashboardPeriod = {
+  from: string;
+  to: string;
+  days: number;
+  bookings_created: number;
+  arrivals_count: number;
+  departures_count: number;
+  pending_arrivals: number;
+  pending_departures: number;
+  net_collected: number;
+  collected: number;
+  refunded: number;
+  previous_net_collected: number;
+  collections_trend: Array<{ date: string; amount: number }>;
+  revenue_by_source: Array<{ label: string; collected: number; refunded: number; amount: number }>;
+  arrivals: DashboardStay[];
+  departures: DashboardStay[];
+};
+
 export type DashboardSummary = {
+  period?: DashboardPeriod;
+  current?: { date: string; unassigned_arrivals: number; pending_departures: number; upcoming_arrivals: DashboardStay[] };
   date: string;
   timezone: string;
   generated_at: string;
@@ -335,6 +363,8 @@ export type Billing = {
   paid_total: number;
   refunded_total: number;
   balance_due: number;
+  settlement_credit?: number;
+  credit_balance?: number;
   total: number;
   payment_status: PaymentStatus;
   ota_payment_breakdown?: {
@@ -398,6 +428,8 @@ export type ReservationGroupFolio = {
   paid_total: number;
   refunded_total: number;
   balance_due: number;
+  settlement_credit?: number;
+  credit_balance?: number;
   invoices: Billing[];
   rooms: Array<{
     id: string;

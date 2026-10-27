@@ -13,8 +13,8 @@ export function groupReportFolios(folios: ReportFolio[]): ReservationReportFolio
       groups.set(key, { ...values, invoice_count: 1 });
       continue;
     }
-    for (const amount of ['total', 'paid', 'balance'] as const) {
-      existing[amount] = (Math.round(existing[amount] * 100) + Math.round(folio[amount] * 100)) / 100;
+    for (const amount of ['total', 'paid', 'balance', 'settlement_credit', 'credit_balance'] as const) {
+      existing[amount] = (Math.round((existing[amount] ?? 0) * 100) + Math.round((folio[amount] ?? 0) * 100)) / 100;
     }
     existing.invoice_count += 1;
     if (folio.from < existing.from) existing.from = folio.from;

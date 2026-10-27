@@ -34,7 +34,7 @@ export async function recordBillingAudit(tx: Prisma.TransactionClient, input: {
   billing: Subject;
   after: Calculation;
   action: AuditAction;
-  operation: 'charge_added' | 'charge_removed' | 'payment_collected' | 'payment_refunded';
+  operation: 'charge_added' | 'charge_removed' | 'payment_collected' | 'payment_refunded' | 'stay_amended';
   summary: string;
   detail: Prisma.InputJsonObject;
   user?: AuthenticatedUser;

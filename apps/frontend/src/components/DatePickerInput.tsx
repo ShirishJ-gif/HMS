@@ -44,20 +44,22 @@ export function DatePickerInput({ label, value, onChange, min, max, required = f
     function position() {
       if (!trigger) return;
       const bounds = trigger.getBoundingClientRect();
-      const hostBounds = host instanceof HTMLDialogElement ? host.getBoundingClientRect() : null;
-      const leftLimit = Math.max(8, (hostBounds?.left ?? 0) + 8);
-      const rightLimit = Math.min(innerWidth - 8, (hostBounds?.right ?? innerWidth) - 8);
-      const topLimit = Math.max(8, (hostBounds?.top ?? 0) + 8);
-      const bottomLimit = Math.min(innerHeight - 8, (hostBounds?.bottom ?? innerHeight) - 8);
+      // Keep the popup in the dialog's top layer, but let it use the viewport.
+      // Restricting it to the form's bounds clips most of the month grid.
+      const leftLimit = 8;
+      const rightLimit = innerWidth - 8;
+      const topLimit = 8;
+      const bottomLimit = innerHeight - 8;
       const width = Math.min(296, rightLimit - leftLimit);
-      const height = panelRef.current?.scrollHeight ?? (required ? 410 : 450);
+      const height = panelRef.current ? panelRef.current.scrollHeight + 2 : required ? 410 : 450;
       const below = Math.max(0, bottomLimit - bounds.bottom - 6);
       const above = Math.max(0, bounds.top - topLimit - 6);
       const upwards = below < height && above > below;
-      const maxHeight = Math.min(height, upwards ? above : below);
+      const maxHeight = Math.min(height, bottomLimit - topLimit);
+      const preferredTop = upwards ? bounds.top - maxHeight - 6 : bounds.bottom + 6;
       setPopup({ host, style: { position: 'fixed', width,
         left: Math.max(leftLimit, Math.min(bounds.left, rightLimit - width)),
-        top: upwards ? bounds.top - maxHeight - 6 : bounds.bottom + 6,
+        top: Math.max(topLimit, Math.min(preferredTop, bottomLimit - maxHeight)),
         maxHeight,
       } });
     }

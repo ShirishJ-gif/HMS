@@ -1,5 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { AuthResponse } from './types';
+import { queryCache } from './query-cache';
 import {
   activePageStorageKey,
   clearStoredSession,
@@ -34,6 +35,7 @@ const screenLabels: Record<string, string> = {
   audit: 'Audit Logs',
   notifications: 'Notifications',
   'org-users': 'Organization Users',
+  profile: 'My Profile',
   'platform-overview': 'Platform API Health',
   'platform-api-sample': 'Platform API Sample',
   'platform-api-monitor': 'Platform API Monitor',
@@ -110,7 +112,13 @@ function getCurrentScreenName() {
 let refreshPromise: Promise<string | null> | null = null;
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const method = response.config.method?.toLowerCase();
+    if (method && !['get', 'head', 'options'].includes(method) && !isAuthRequest(response.config.url)) {
+      queryCache.invalidate();
+    }
+    return response;
+  },
   async (error: AxiosError) => {
     const originalConfig = error.config as RetryableRequestConfig | undefined;
     if (

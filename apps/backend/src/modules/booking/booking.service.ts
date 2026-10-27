@@ -1,4 +1,6 @@
-import { billingTotal, billingPaymentState } from '../billing/billing-calculations';
+import { billingTotal, billingPaymentState, recalculateBilling, lockFolioBillings } from '../billing/billing-calculations';
+import { recordBillingAudit } from '../billing/billing-audit';
+import { lockReservationGroup, lockReservationRoomGroup } from './reservation-lock';
 import { ensureVillaInventory } from '../property/villa-inventory';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import {
@@ -460,6 +462,7 @@ export class BookingService {
     if (checkOutDate <= checkInDate) throw new ConflictException('check_out_date must be after check_in_date');
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      await lockReservationGroup(tx, id);
       const existing = await tx.reservationGroup.findUnique({
         where: { id },
         include: {
@@ -552,6 +555,9 @@ export class BookingService {
         },
       });
 
+      // Use the same invoice lock order as folio collection before amending
+      // multiple room invoices, avoiding inverted billing locks.
+      await lockFolioBillings(tx, id);
       for (const [index, room] of existing.rooms.entries()) {
         await tx.reservationRoom.update({
           where: { id: room.id },
@@ -577,6 +583,7 @@ export class BookingService {
             } satisfies Prisma.InputJsonObject,
           },
         });
+        await this.amendBookedRoomInvoice(tx, room.id, roomAmounts[index], user);
       }
 
       return tx.reservationGroup.findUniqueOrThrow({
@@ -670,7 +677,8 @@ export class BookingService {
     const { page, limit } = paginationParams(query);
     const search = query.search?.trim().toLowerCase() ?? '';
     const scopedPropertyId = propertyIdFilter(user);
-    const effectivePropertyId = scopedPropertyId ?? query.property_id ?? null;
+    if (query.property_id) assertCanAccessProperty(user, query.property_id);
+    const effectivePropertyId = query.property_id ?? scopedPropertyId ?? null;
     const statusFilter = query.status;
     const includeCancelled = query.include_cancelled ?? false;
     const dateWindow = this.reservationFeedDateWindow(query.date_from, query.date_to);
@@ -730,6 +738,7 @@ export class BookingService {
 
   async checkInReservationRoom(id: string, dto: CheckInReservationRoomDto, user?: AuthenticatedUser) {
     const reservationRoom = await this.prisma.$transaction(async (tx) => {
+      await lockReservationRoomGroup(tx, id);
       const existingRoomLine = await tx.reservationRoom.findUnique({
         where: { id },
         include: {
@@ -746,7 +755,7 @@ export class BookingService {
 
       assertCanAccessProperty(user, existingRoomLine.propertyId);
 
-      if (existingRoomLine.status !== BookingStatus.BOOKED) {
+      if (existingRoomLine.status !== BookingStatus.BOOKED || existingRoomLine.reservationGroup.status === BookingStatus.CANCELLED) {
         throw new ConflictException('Only booked imported room stays can be checked in');
       }
 
@@ -760,6 +769,12 @@ export class BookingService {
         propertyId: existingRoomLine.propertyId,
         roomCategoryId: existingRoomLine.roomCategoryId,
         status: RoomStatus.AVAILABLE,
+        outOfServicePeriods: {
+          none: {
+            fromDate: { lt: existingRoomLine.departureDate },
+            toDate: { gte: existingRoomLine.arrivalDate },
+          },
+        },
         reservationRooms: {
           none: {
             id: {
@@ -778,20 +793,11 @@ export class BookingService {
         },
       } satisfies Prisma.RoomWhereInput;
 
-      const assignedRoom = dto.room_id
-        ? await tx.room.findFirst({
-            where: {
-              ...roomAvailabilityWhere,
-              id: dto.room_id,
-            },
-          })
-        : existingRoomLine.room ??
-          (await tx.room.findFirst({
-            where: roomAvailabilityWhere,
-            orderBy: {
-              roomNumber: 'asc',
-            },
-          }));
+      const requestedRoomId = dto.room_id ?? existingRoomLine.roomId;
+      const assignedRoom = await tx.room.findFirst({
+        where: { ...roomAvailabilityWhere, ...(requestedRoomId ? { id: requestedRoomId } : {}) },
+        orderBy: { roomNumber: 'asc' },
+      });
 
       if (!assignedRoom) {
         throw new ConflictException(
@@ -855,6 +861,7 @@ export class BookingService {
 
   async checkOutReservationRoom(id: string, user?: AuthenticatedUser) {
     const reservationRoom = await this.prisma.$transaction(async (tx) => {
+      await lockReservationRoomGroup(tx, id);
       const existingRoomLine = await tx.reservationRoom.findUnique({
         where: { id },
         include: {
@@ -874,6 +881,8 @@ export class BookingService {
       if (existingRoomLine.status !== BookingStatus.CHECKED_IN) {
         throw new ConflictException('Only checked-in imported room stays can be checked out');
       }
+
+      await this.inventoryService.acquireInventoryAllocationLock(tx, existingRoomLine.propertyId, existingRoomLine.roomCategoryId);
 
       if (existingRoomLine.roomId) {
         await tx.room.update({
@@ -1795,6 +1804,28 @@ export class BookingService {
     const normalized = value.includes('T') ? value : value.replace(' ', 'T');
     const date = new Date(normalized);
     return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+
+  private async amendBookedRoomInvoice(
+    tx: Prisma.TransactionClient, roomId: string, amount: Prisma.Decimal, user?: AuthenticatedUser,
+  ) {
+    await tx.$queryRaw`SELECT id FROM billings WHERE reservation_room_id = ${roomId}::uuid FOR UPDATE`;
+    const billing = await tx.billing.findUnique({
+      where: { reservationRoomId: roomId },
+      include: { payments: true, extraCharges: true, reservationRoom: { include: { reservationGroup: true } } },
+    });
+    if (!billing) return;
+    // Before check-in the direct advance workflow bills only the advance. Its
+    // payment marker distinguishes it from a separately issued full invoice.
+    if (billing.payments.some(payment => this.readObject(payment.metadata).mode === 'direct_reservation_advance')) return;
+    if (billing.amount.equals(amount)) return;
+    const after = recalculateBilling({ ...billing, amount });
+    await tx.billing.update({ where: { id: billing.id }, data: { amount, total: after.total, paymentStatus: after.paymentStatus } });
+    await recordBillingAudit(tx, {
+      billing, after, action: AuditAction.UPDATE, operation: 'stay_amended',
+      summary: 'Updated room charges after a reservation edit',
+      detail: { previous_room_amount: billing.amount.toFixed(2), room_amount: amount.toFixed(2) }, user,
+    });
   }
 
   private async ensureReservationRoomBilling(

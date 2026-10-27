@@ -31,7 +31,7 @@ export function billingPaymentState(total: Prisma.Decimal, payments: PaymentAmou
   const paymentStatus = refunded.gt(0) && netPaid.lte(0) ? PaymentStatus.REFUNDED
     : covered.gte(total) ? PaymentStatus.PAID
     : netPaid.gt(0) ? PaymentStatus.PARTIAL : PaymentStatus.PENDING;
-  return { paymentStatus, paid, refunded, netPaid, settlementCredit, balance: Prisma.Decimal.max(total.sub(covered), 0) };
+  return { paymentStatus, paid, refunded, netPaid, settlementCredit, creditBalance: Prisma.Decimal.max(covered.sub(total), 0), balance: Prisma.Decimal.max(total.sub(covered), 0) };
 }
 
 export function isAirbnbPayout(metadata: unknown) {

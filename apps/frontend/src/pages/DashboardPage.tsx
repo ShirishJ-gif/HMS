@@ -5,7 +5,6 @@ import {
   BedDouble,
   CalendarDays,
   Check,
-  ChevronLeft,
   ChevronRight,
   Clock3,
   CreditCard,
@@ -17,12 +16,29 @@ import {
 import { api, getApiErrorMessage } from '../api/client';
 import type { DashboardSummary, DashboardStay } from '../api/types';
 import { formatCurrency } from '../utils/format';
+import { groupDashboardCollections } from '../utils/dashboard-collections';
 import { useWorkspaceState } from '../hooks/useWorkspaceState';
+import { useSavedFilters } from '../hooks/useSavedFilters';
+import { useReportingToday } from '../hooks/useReportingToday';
+import { isReportingSelection, reportingRange } from '../utils/reporting-period';
 import { workspacePanel, type DashboardFocus } from '../components/WorkspaceUI';
-import { InlineCalendarDatePicker } from '../components/CalendarDatePicker';
+import { CalendarDatePickerField } from '../components/CalendarDatePicker';
 import { createPreviewData } from './previewData';
+import type { ReportSelection } from './ReportsPage';
 
 export type DashboardDestination = 'reports' | 'bookings' | 'payments' | 'housekeeping' | 'availability' | 'setup';
+type DashboardPreset = 'today' | 'last_7' | 'this_month' | 'custom';
+type DashboardSelection = { preset: DashboardPreset; range: { from: string; to: string } };
+const presets: Array<{ value: DashboardPreset; label: string }> = [
+  { value: 'today', label: 'Today' }, { value: 'last_7', label: 'Last 7 days' },
+  { value: 'this_month', label: 'This month' }, { value: 'custom', label: 'Custom range' },
+];
+function addDays(value: string, count: number) {
+  return new Date(new Date(`${value}T00:00:00Z`).getTime() + count * 86400000).toISOString().slice(0, 10);
+}
+const presetRange = reportingRange;
+const isDashboardSelection = (value: unknown): value is DashboardSelection => isReportingSelection(value)
+  && ['today', 'last_7', 'this_month', 'custom'].includes(value.preset);
 type ScheduleTab = 'arrivals' | 'departures' | 'upcoming_arrivals';
 const panel = workspacePanel;
 const button =
@@ -30,6 +46,12 @@ const button =
 const colors = ['#6366f1', '#10b981', '#38bdf8', '#f59e0b', '#a78bfa', '#fb7185'];
 const shortDate = (date: string) =>
   new Date(`${date}T00:00:00Z`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+const chartAmount = (amount: number) => {
+  const absolute = Math.abs(amount);
+  const divisor = absolute >= 10000000 ? 10000000 : absolute >= 100000 ? 100000 : absolute >= 1000 ? 1000 : 1;
+  const suffix = divisor === 10000000 ? 'Cr' : divisor === 100000 ? 'L' : divisor === 1000 ? 'k' : '';
+  return `${amount < 0 ? '−' : ''}₹${new Intl.NumberFormat('en-IN', { maximumFractionDigits: divisor === 1 ? 2 : 1 }).format(absolute / divisor)}${suffix}`;
+};
 function Empty({ children }: { children: ReactNode }) {
   return <div className="px-5 py-6 text-center text-sm leading-6 text-slate-500">{children}</div>;
 }
@@ -39,23 +61,29 @@ export function DashboardPage({
   activePropertyId = '',
   onNavigate,
   onOpenFolio,
+  onOpenReports,
 }: {
   previewDataEnabled?: boolean;
   activePropertyId?: string;
   onNavigate?: (page: DashboardDestination, focus?: DashboardFocus) => void;
   onOpenFolio?: (groupId: string) => void;
+  onOpenReports?: (selection: ReportSelection) => void;
 }) {
   const scopeKey = `${previewDataEnabled ? 'sample' : 'live'}:${activePropertyId}`;
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
-  const [selectedDate, setSelectedDate] = useWorkspaceState(`${scopeKey}:date`, '');
-  const requestedDate = selectedDate || today;
-  const [calendarOpen, setCalendarOpen] = useState(false);
-  const [showCompleted, setShowCompleted] = useWorkspaceState(`${scopeKey}:completed`, false);
+  const today = useReportingToday();
+  const [selection, setSelection] = useSavedFilters<DashboardSelection>(`dashboard:${scopeKey}:period`, () => ({ preset: 'today', range: { from: today, to: today } }), isDashboardSelection);
+  const range = selection.preset === 'custom' ? selection.range : presetRange(selection.preset, today);
+  const [customOpen, setCustomOpen] = useState(selection.preset === 'custom');
+  const [draft, setDraft] = useState(range);
+  const [openPicker, setOpenPicker] = useState<'from' | 'to' | null>(null);
+  const draftDays = (new Date(`${draft.to}T00:00:00Z`).getTime() - new Date(`${draft.from}T00:00:00Z`).getTime()) / 86400000 + 1;
+  const validDraft = Boolean(draft.from && draft.to && Number.isInteger(draftDays) && draftDays >= 1 && draftDays <= 366);
+  const [showCompleted, setShowCompleted] = useSavedFilters(`dashboard:${scopeKey}:completed`, () => false, (value): value is boolean => typeof value === 'boolean');
   const [refresh, setRefresh] = useState(0);
   const [state, setState] = useWorkspaceState<{ key: string; data: DashboardSummary } | null>('dashboard:data', null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useWorkspaceState<ScheduleTab>(`${scopeKey}:tab`, 'arrivals');
+  const [tab, setTab] = useSavedFilters<ScheduleTab>(`dashboard:${scopeKey}:tab`, () => 'arrivals', (value): value is ScheduleTab => typeof value === 'string' && ['arrivals', 'departures', 'upcoming_arrivals'].includes(value));
   const [page, setPage] = useWorkspaceState(`${scopeKey}:page`, 1);
   const scheduleRef = useRef<HTMLElement>(null);
   const data = state?.key === scopeKey ? state.data : null;
@@ -64,10 +92,10 @@ export function DashboardPage({
     setLoading(true);
     setError(null);
     const load = previewDataEnabled
-      ? Promise.resolve(createPreviewData(requestedDate).dashboard)
+      ? Promise.resolve(createPreviewData(range.to, range.from).dashboard)
       : api
           .get<DashboardSummary>('/dashboard/summary', {
-            params: { property_id: activePropertyId || undefined, date: requestedDate },
+            params: { property_id: activePropertyId || undefined, from: range.from, to: range.to },
             signal: controller.signal,
           })
           .then((response) => response.data);
@@ -82,7 +110,7 @@ export function DashboardPage({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [scopeKey, requestedDate, refresh]);
+  }, [scopeKey, range.from, range.to, refresh]);
   useEffect(() => {
     if (previewDataEnabled) return;
     const update = () => {
@@ -95,19 +123,26 @@ export function DashboardPage({
       document.removeEventListener('visibilitychange', update);
     };
   }, [previewDataEnabled]);
-  const date = data?.date ?? requestedDate;
-  const isToday = date === today;
-  const updating = loading || (!error && data?.date !== requestedDate);
-  function chooseDate(value: string) {
-    setSelectedDate(value === today ? '' : value);
+  const period = data?.period;
+  const shownRange = period ? { from: period.from, to: period.to } : range;
+  const isSingleDay = shownRange.from === shownRange.to;
+  const isToday = isSingleDay && shownRange.to === today;
+  const periodLabel = isToday ? 'today' : isSingleDay ? shortDate(shownRange.to) : `${shortDate(shownRange.from)} – ${shortDate(shownRange.to)}`;
+  const updating = loading || (!error && (period?.from !== range.from || period?.to !== range.to));
+  function applyPreset(preset: DashboardPreset) {
+    setOpenPicker(null);
+    setCustomOpen(preset === 'custom');
+    if (preset === 'custom') { setDraft(range); return; }
+    setSelection({ preset, range: presetRange(preset, today) });
+    setShowCompleted(preset !== 'today');
     setPage(1);
-    setCalendarOpen(false);
   }
-  function moveDay(offset: number) {
-    chooseDate(
-      new Date(new Date(`${requestedDate}T00:00:00Z`).getTime() + offset * 86400000).toISOString().slice(0, 10),
-    );
-  }
+  useEffect(() => {
+    setCustomOpen(selection.preset === 'custom');
+    setDraft(selection.preset === 'custom' ? selection.range : presetRange(selection.preset, today));
+    setOpenPicker(null);
+  }, [scopeKey]);
+  const schedules = { arrivals: period?.arrivals ?? [], departures: period?.departures ?? [], upcoming_arrivals: data?.current?.upcoming_arrivals ?? [] };
   const scopeName = data
     ? data.properties.length === 1
       ? data.properties[0].name
@@ -122,7 +157,7 @@ export function DashboardPage({
         scheduleRef.current?.focus({ preventScroll: true });
       });
   }
-  const allSchedule = data?.[tab] ?? [];
+  const allSchedule = schedules[tab];
   const completedCount = tab === 'upcoming_arrivals' ? 0 : allSchedule.filter((row) => row.pending_rooms === 0).length;
   const schedule = allSchedule
     .filter((row) => tab === 'upcoming_arrivals' || showCompleted || row.pending_rooms > 0)
@@ -130,9 +165,10 @@ export function DashboardPage({
   const totalPages = Math.max(1, Math.ceil(schedule.length / 5));
   const currentPage = Math.min(page, totalPages);
   const visibleRows = schedule.slice((currentPage - 1) * 5, currentPage * 5);
-  const maxCollection = Math.max(1, ...(data?.collections_trend ?? []).map((point) => Math.abs(point.amount)));
-  const monthGross = data?.revenue_by_ota.reduce((sum, row) => sum + row.collected, 0) ?? 0;
-  const weekTotal = data?.collections_trend.reduce((sum, point) => sum + point.amount, 0) ?? 0;
+  const collectionChart = groupDashboardCollections(period?.collections_trend ?? []);
+  const maxCollection = Math.max(1, ...collectionChart.buckets.map((point) => Math.abs(point.amount)));
+  const periodGross = period?.revenue_by_source.reduce((sum, row) => sum + row.collected, 0) ?? 0;
+  const periodTotal = period?.collections_trend.reduce((sum, point) => sum + point.amount, 0) ?? 0;
   const attention: Array<{
     title: string;
     description: string;
@@ -141,10 +177,10 @@ export function DashboardPage({
     tone: 'amber' | 'slate';
   }> = data
     ? [
-        ...(data.unassigned_arrivals_today
+        ...((data.current?.unassigned_arrivals ?? 0)
           ? [
               {
-                title: `${data.unassigned_arrivals_today} arriving ${data.unassigned_arrivals_today === 1 ? 'room needs' : 'rooms need'} assignment`,
+                title: `${(data.current?.unassigned_arrivals ?? 0)} arriving ${(data.current?.unassigned_arrivals ?? 0) === 1 ? 'room needs' : 'rooms need'} assignment`,
                 description: 'Assign rooms before guests check in.',
                 page: 'bookings' as const,
                 focus: 'unassigned_arrivals' as const,
@@ -163,11 +199,11 @@ export function DashboardPage({
               },
             ]
           : []),
-        ...(data.pending_departures_today
+        ...((data.current?.pending_departures ?? 0)
           ? [
               {
-                title: `${data.pending_departures_today} ${data.pending_departures_today === 1 ? 'room still needs' : 'rooms still need'} checkout`,
-                description: `Review departures and folios for ${isToday ? 'today' : shortDate(date)}.`,
+                title: `${(data.current?.pending_departures ?? 0)} ${(data.current?.pending_departures ?? 0) === 1 ? 'room still needs' : 'rooms still need'} checkout`,
+                description: 'Review departures and folios for today.',
                 page: 'bookings' as const,
                 focus: 'pending_departures' as const,
                 tone: 'slate' as const,
@@ -193,15 +229,15 @@ export function DashboardPage({
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-400">
-            {requestedDate === today ? 'Today at a glance' : 'Your day at a glance'}
+            {range.from === today && range.to === today ? 'Today at a glance' : 'Your period at a glance'}
           </p>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">Dashboard</h1>
           <p className="mt-1.5 text-sm text-slate-500">Your front desk, room status, and collections in one place.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {onNavigate && (
-            <button type="button" className={button} onClick={() => onNavigate('reports')}>
-              View reports
+          {(onOpenReports || onNavigate) && (
+            <button type="button" className={button} disabled={updating || Boolean(error)} onClick={() => onOpenReports ? onOpenReports({ preset: selection.preset, range }) : onNavigate?.('reports')}>
+              View detailed report
               <ArrowUpRight size={14} />
             </button>
           )}
@@ -216,56 +252,38 @@ export function DashboardPage({
           </button>
         </div>
       </header>
-      <div
-        className="flex flex-wrap items-center gap-2"
-        role="group"
-        aria-label="Dashboard date"
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') setCalendarOpen(false);
-        }}
-      >
-        <button type="button" className={button} aria-label="Previous day" onClick={() => moveDay(-1)}>
-          <ChevronLeft size={16} />
-        </button>
-        <InlineCalendarDatePicker
-          label="Dashboard date"
-          value={requestedDate}
-          open={calendarOpen}
-          setOpen={setCalendarOpen}
-          onChange={chooseDate}
-          buttonClassName={button}
-          panelClassName="-translate-x-12 max-w-[calc(100vw-3rem)] sm:translate-x-0"
-          renderTrigger={() => (
-            <>
-              <CalendarDays size={16} />
-              <span>
-                {new Date(`${requestedDate}T00:00:00Z`).toLocaleDateString('en-IN', {
-                  day: 'numeric',
-                  month: 'short',
-                  year: 'numeric',
-                  timeZone: 'UTC',
-                })}
-              </span>
-            </>
-          )}
-        />
-        <button type="button" className={button} aria-label="Next day" onClick={() => moveDay(1)}>
-          <ChevronRight size={16} />
-        </button>
-        <button type="button" className={button} disabled={requestedDate === today} onClick={() => chooseDate(today)}>
-          Today
-        </button>
-      </div>
+      <section aria-label="Dashboard date range" className={`${panel} p-4`}>
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <p className="text-xs font-semibold text-slate-500">Reporting period</p>
+          <button type="button" className="rounded px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100 focus-visible:outline focus-visible:outline-indigo-500" onClick={() => {
+            applyPreset('today'); setDraft(presetRange('today', today)); setTab('arrivals'); setShowCompleted(false);
+          }}>Reset filters</button>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {presets.map(preset => <button key={preset.value} type="button" aria-pressed={customOpen ? preset.value === 'custom' : selection.preset === preset.value}
+            onClick={() => applyPreset(preset.value)}
+            className={`min-h-9 rounded-lg px-3 text-xs font-semibold transition-colors ${(customOpen ? preset.value === 'custom' : selection.preset === preset.value) ? 'bg-slate-800 text-white' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}>
+            {preset.label}
+          </button>)}
+        </div>
+        {customOpen && <div className="mt-4 flex flex-wrap items-end gap-3 border-t border-slate-100 pt-4">
+          {(['from', 'to'] as const).map(field => <div key={field} className="w-40">
+            <CalendarDatePickerField label={field === 'from' ? 'From' : 'To (inclusive)'} value={draft[field]}
+              onChange={value => setDraft(current => ({ ...current, [field]: value }))}
+              open={openPicker === field} setOpen={open => setOpenPicker(open ? field : null)} />
+          </div>)}
+          <button type="button" className={button} disabled={!validDraft} onClick={() => {
+            setSelection({ preset: 'custom', range: { ...draft } });
+            setOpenPicker(null); setPage(1); setShowCompleted(true);
+          }}>Apply dates</button>
+          {!validDraft && <p role="alert" className="text-xs text-rose-600">Choose an end date on or after the start, within 366 days.</p>}
+        </div>}
+      </section>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="inline-flex items-center gap-1.5 font-medium text-slate-700">
             <CalendarDays size={14} />
-            {new Date(`${date}T00:00:00Z`).toLocaleDateString('en-IN', {
-              weekday: 'long',
-              day: 'numeric',
-              month: 'long',
-              timeZone: 'UTC',
-            })}
+            {isSingleDay ? `${shortDate(shownRange.to)}, ${shownRange.to.slice(0, 4)}` : `${shortDate(shownRange.from)}, ${shownRange.from.slice(0, 4)} – ${shortDate(shownRange.to)}, ${shownRange.to.slice(0, 4)}`}
           </span>
           <span>{scopeName}</span>
           <span>IST · Asia/Kolkata</span>
@@ -275,7 +293,7 @@ export function DashboardPage({
             className={`h-1.5 w-1.5 rounded-full ${error ? 'bg-amber-500' : previewDataEnabled ? 'bg-indigo-500' : 'bg-emerald-500'}`}
           />
           {updating && data
-            ? `Updating · showing ${shortDate(date)}`
+            ? `Updating · showing ${periodLabel}`
             : data
               ? `${error ? 'Last successful update' : previewDataEnabled ? 'Sample data' : 'Updated'} · ${new Date(data.generated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`
               : loading
@@ -283,12 +301,10 @@ export function DashboardPage({
                 : 'Unavailable'}
         </span>
       </div>
-      {requestedDate !== today && (
-        <p className="text-xs leading-5 text-slate-500">
-          Arrivals, departures and collections follow the selected date. Room status, housekeeping and outstanding
-          balances are current; reservation progress shows its latest status.
-        </p>
-      )}
+      <p className="text-xs leading-5 text-slate-500">
+        Arrivals, departures, bookings, and collections follow this period. Current room status, housekeeping,
+        outstanding balances, and urgent tasks reflect now. Reservation progress shows its latest status.
+      </p>
       {previewDataEnabled && (
         <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-xs leading-5 text-indigo-800">
           Sample workspace: Harbour Grand Demo. These figures illustrate the dashboard and are separate from your
@@ -314,11 +330,11 @@ export function DashboardPage({
       )}
       {!data && loading && (
         <div
-          className="workspace-skeleton grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4"
+          className="workspace-skeleton grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5"
           aria-busy="true"
           aria-label="Loading dashboard"
         >
-          {[0, 1, 2, 3].map((index) => (
+          {[0, 1, 2, 3, 4].map((index) => (
             <div key={index} className={`${panel} h-40 p-4`}>
               <div className="h-3 w-28 rounded animate-shimmer" />
               <div className="mt-6 h-8 w-20 rounded animate-shimmer" />
@@ -327,7 +343,7 @@ export function DashboardPage({
           ))}
         </div>
       )}
-      {data && (
+      {data && period && (
         <fieldset
           disabled={updating || Boolean(error)}
           aria-busy={updating}
@@ -344,7 +360,7 @@ export function DashboardPage({
               )}
             </div>
           )}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <button
               type="button"
               onClick={() => selectTab('arrivals', true)}
@@ -352,24 +368,24 @@ export function DashboardPage({
             >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-500">
-                  Arrivals {isToday ? 'today' : shortDate(date)}
+                  Arrivals {periodLabel}
                 </span>
                 <LogIn size={18} className="text-indigo-500" />
               </div>
               <div className="mt-3 flex items-baseline gap-2">
                 <strong className="text-2xl font-bold tracking-tight text-slate-900">
-                  {data.reservation_room_arrivals_today}
+                  {period.arrivals_count}
                 </strong>
                 <span className="text-xs text-slate-400">room check-ins</span>
               </div>
               <div className="mt-4 flex items-center justify-between gap-2">
                 <span
-                  className={`rounded-full px-2 py-1 text-xs font-semibold ${data.pending_arrivals_today ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-500'}`}
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${period.pending_arrivals ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-500'}`}
                 >
-                  {data.pending_arrivals_today} remaining
+                  {period.pending_arrivals} remaining
                 </span>
                 <span className="text-xs text-slate-500">
-                  {data.reservation_room_arrivals_today - data.pending_arrivals_today} checked in
+                  {period.arrivals_count - period.pending_arrivals} checked in
                 </span>
               </div>
             </button>
@@ -380,27 +396,35 @@ export function DashboardPage({
             >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-500">
-                  Departures {isToday ? 'today' : shortDate(date)}
+                  Departures {periodLabel}
                 </span>
                 <LogOut size={18} className="text-sky-500" />
               </div>
               <div className="mt-3 flex items-baseline gap-2">
                 <strong className="text-2xl font-bold tracking-tight text-slate-900">
-                  {data.reservation_room_departures_today}
+                  {period.departures_count}
                 </strong>
                 <span className="text-xs text-slate-400">room checkouts</span>
               </div>
               <div className="mt-4 flex items-center justify-between gap-2">
                 <span
-                  className={`rounded-full px-2 py-1 text-xs font-semibold ${data.pending_departures_today ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-500'}`}
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${period.pending_departures ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-500'}`}
                 >
-                  {data.pending_departures_today} remaining
+                  {period.pending_departures} remaining
                 </span>
                 <span className="text-xs text-slate-500">
-                  {data.reservation_room_departures_today - data.pending_departures_today} checked out
+                  {period.departures_count - period.pending_departures} checked out
                 </span>
               </div>
             </button>
+            <div className={`${panel} p-4`}>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-500">Bookings created</span>
+                <CalendarDays size={18} className="text-indigo-500" />
+              </div>
+              <strong className="mt-3 block text-2xl font-bold text-slate-900">{period.bookings_created}</strong>
+              <p className="mt-4 text-xs leading-6 text-slate-500">Created {periodLabel} · all booking sources</p>
+            </div>
             <div className={`${panel} p-4`}>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-500">Current occupancy</span>
@@ -410,7 +434,7 @@ export function DashboardPage({
                 {data.total_rooms ? `${data.occupancy_rate.toFixed(1)}%` : '—'}
               </strong>
               <p className="mt-4 text-xs leading-6 text-slate-500">
-                {data.occupied_rooms} occupied of {data.total_rooms} configured rooms
+                {data.occupied_rooms} occupied of {data.total_rooms} configured rooms · now
               </p>
             </div>
             <button
@@ -421,30 +445,26 @@ export function DashboardPage({
             >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-500">
-                  Net collected {isToday ? 'today' : shortDate(date)}
+                  Net collected {periodLabel}
                 </span>
                 <CreditCard size={18} className="text-violet-500" />
               </div>
               <strong className="mt-3 block text-2xl font-bold tracking-tight text-slate-900">
-                {formatCurrency(data.revenue_today)}
+                {formatCurrency(period.net_collected)}
               </strong>
               <p className="mt-4 flex items-center gap-1 text-xs leading-6 text-slate-500">
-                {data.revenue_today === data.revenue_yesterday ? (
-                  isToday ? (
-                    'Same as yesterday'
-                  ) : (
-                    'Same as the previous day'
-                  )
+                {period.net_collected === period.previous_net_collected ? (
+                  isSingleDay ? 'Same as the previous day' : 'Same as the previous period'
                 ) : (
                   <>
-                    {data.revenue_today > data.revenue_yesterday ? (
+                    {period.net_collected > period.previous_net_collected ? (
                       <ArrowUpRight size={13} />
                     ) : (
                       <ArrowDownLeft size={13} />
                     )}
-                    {formatCurrency(Math.abs(data.revenue_today - data.revenue_yesterday))}{' '}
-                    {data.revenue_today > data.revenue_yesterday ? 'more' : 'less'} than{' '}
-                    {isToday ? 'yesterday' : 'the previous day'}
+                    {formatCurrency(Math.abs(period.net_collected - period.previous_net_collected))}{' '}
+                    {period.net_collected > period.previous_net_collected ? 'more' : 'less'} than{' '}
+                    {isSingleDay ? 'the previous day' : `the previous ${period.days} days`}
                   </>
                 )}
               </p>
@@ -485,7 +505,7 @@ export function DashboardPage({
                     [
                       { id: 'arrivals', label: 'Arrivals' },
                       { id: 'departures', label: 'Departures' },
-                      { id: 'upcoming_arrivals', label: 'Next 6 days' },
+                      { id: 'upcoming_arrivals', label: 'Next 6 days · Current' },
                     ] as const
                   ).map((item) => (
                     <button
@@ -499,7 +519,7 @@ export function DashboardPage({
                       <span
                         className={`ml-2 rounded px-1.5 py-0.5 text-[10px] ${tab === item.id ? 'bg-white/15' : 'bg-slate-100'}`}
                       >
-                        {data[item.id].length}
+                        {schedules[item.id].length}
                       </span>
                     </button>
                   ))}
@@ -556,9 +576,9 @@ export function DashboardPage({
                             ? 'All arrivals checked in'
                             : 'All departures checked out'
                           : tab === 'arrivals'
-                            ? `No arrivals scheduled for ${isToday ? 'today' : shortDate(date)}`
+                            ? `No arrivals scheduled for ${periodLabel}`
                             : tab === 'departures'
-                              ? `No departures scheduled for ${isToday ? 'today' : shortDate(date)}`
+                              ? `No departures scheduled for ${periodLabel}`
                               : 'No arrivals in the next six days'}
                       </p>
                       <p className="mt-1 text-xs">
@@ -571,7 +591,7 @@ export function DashboardPage({
                 )}
                 <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
                   <span>
-                    {data.reservation_groups_today} bookings created {isToday ? 'today' : `on ${shortDate(date)}`} ·{' '}
+                    {period.bookings_created} bookings created {isToday ? 'today' : `during ${periodLabel}`} ·{' '}
                     {data.active_reservation_groups} active groups
                   </span>
                   {totalPages > 1 && (
@@ -603,50 +623,62 @@ export function DashboardPage({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h2 className="text-sm font-bold text-slate-900">
-                      {isToday ? 'Collections over the last 7 days' : `Collections · 7 days ending ${shortDate(date)}`}
+                      Collections · {periodLabel}
                     </h2>
                     <p className="mt-1 text-xs text-slate-500">Payments received, less refunds · payment date in IST</p>
                   </div>
                   <div className="text-right">
-                    <strong className="block text-xl font-bold text-slate-900">{formatCurrency(weekTotal)}</strong>
-                    <span className="text-xs text-slate-500">7-day net total</span>
+                    <strong className="block text-xl font-bold text-slate-900">{formatCurrency(periodTotal)}</strong>
+                    <span className="text-xs text-slate-500">Selected period · net total</span>
                   </div>
                 </div>
-                {data.collections_trend.some((point) => point.amount !== 0) ? (
+                {period.collected !== 0 || period.refunded !== 0 ? (
                   <div className="mt-6">
-                    <div className="mb-2 flex justify-between text-[10px] text-slate-400">
-                      <span>Net collections</span>
-                      <span>Largest daily amount: {formatCurrency(maxCollection)}</span>
+                    <div className="mb-3 flex flex-wrap justify-between gap-2 text-[10px] text-slate-500">
+                      <span className="capitalize">{collectionChart.granularity} net collections</span>
+                      <span>Full selected period</span>
                     </div>
-                    <div className="flex h-28 items-end gap-3 border-b border-slate-100 pb-2">
-                      {data.collections_trend.map((point) => (
-                        <div key={point.date} className="flex h-full min-w-0 flex-1 flex-col justify-end gap-2">
+                    <div role="group" aria-label={`${collectionChart.granularity} net collections chart`} className="flex items-end gap-1 border-b border-slate-100 pb-2 sm:gap-3">
+                      {collectionChart.buckets.map((point, index) => {
+                        const dateLabel = point.from === point.to ? shortDate(point.from) : `${shortDate(point.from)} – ${shortDate(point.to)}`;
+                        const tickLabel = collectionChart.granularity === 'monthly'
+                          ? new Date(`${point.from}T00:00:00Z`).toLocaleDateString('en-IN', { month: 'short', timeZone: 'UTC' })
+                          : shortDate(point.from);
+                        return <div key={point.from} className="flex min-w-0 flex-1 flex-col gap-2">
                           <div
                             tabIndex={0}
                             role="img"
-                            aria-label={`${shortDate(point.date)}: ${formatCurrency(point.amount)}`}
-                            title={`${shortDate(point.date)}: ${formatCurrency(point.amount)}`}
-                            className={`w-full rounded-t-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 ${point.amount < 0 ? 'bg-rose-400' : point.date === data.date ? 'bg-indigo-600' : 'bg-indigo-300'}`}
-                            style={{
-                              height: Math.max(point.amount === 0 ? 0 : 3, (Math.abs(point.amount) / maxCollection) * 78),
-                            }}
-                          />
-                          <span className="whitespace-nowrap text-center text-[10px] text-slate-500">
-                            {shortDate(point.date)}
+                            aria-label={`${dateLabel}: ${formatCurrency(point.amount)}`}
+                            title={`${dateLabel}: ${formatCurrency(point.amount)}`}
+                            className="flex h-40 flex-col items-center justify-end rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500"
+                          >
+                            <span className={`mb-2 max-w-full truncate text-[9px] font-semibold sm:text-[11px] ${point.amount < 0 ? 'text-rose-600' : 'text-slate-700'}`}>
+                              {chartAmount(point.amount)}
+                            </span>
+                            <div
+                              className={`w-full max-w-16 shrink-0 rounded-t ${point.amount < 0 ? 'bg-rose-400' : point.amount === 0 ? 'bg-slate-200' : 'bg-indigo-500'}`}
+                              style={{ height: Math.max(point.amount === 0 ? 2 : 4, (Math.abs(point.amount) / maxCollection) * 120) }}
+                            />
+                          </div>
+                          <span title={dateLabel} className={`whitespace-nowrap text-center text-[9px] text-slate-500 sm:text-[10px] ${collectionChart.buckets.length > 7 && index % 2 !== 0 && index !== collectionChart.buckets.length - 1 ? 'invisible sm:visible' : ''}`}>
+                            {tickLabel}
                           </span>
-                        </div>
-                      ))}
+                        </div>;
+                      })}
                     </div>
-                    <p className="mt-2 text-xs text-slate-400">Refunds exceeding collections appear in rose.</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-400">
+                      {collectionChart.granularity === 'weekly' ? 'Grouped into 7-day periods from the start date. ' : collectionChart.granularity === 'monthly' ? 'Grouped by month within the selected dates. ' : ''}
+                      Refunds exceeding collections appear in rose.
+                    </p>
                   </div>
                 ) : (
-                  <Empty>No payments or refunds in this seven-day period.</Empty>
+                  <Empty>No payments or refunds in this period.</Empty>
                 )}
                 <div className="mt-4 grid grid-cols-3 gap-3 border-t border-slate-100 pt-4">
                   {[
-                    { label: `Received ${isToday ? 'today' : shortDate(date)}`, amount: data.collected_today },
-                    { label: `Refunded ${isToday ? 'today' : shortDate(date)}`, amount: data.refunded_today },
-                    { label: `Month to ${isToday ? 'date' : shortDate(date)} · net`, amount: data.revenue_month_to_date },
+                    { label: `Received ${periodLabel}`, amount: period.collected },
+                    { label: `Refunded ${periodLabel}`, amount: period.refunded },
+                    { label: 'Net collected', amount: period.net_collected },
                   ].map((item) => (
                     <div key={item.label}>
                       <p className="text-xs leading-5 text-slate-500">{item.label}</p>
@@ -654,27 +686,16 @@ export function DashboardPage({
                     </div>
                   ))}
                 </div>
-                <details className="mt-4 text-xs text-slate-500">
-                  <summary className="cursor-pointer font-medium">View daily amounts</summary>
-                  <dl className="mt-3 space-y-2">
-                    {data.collections_trend.map((point) => (
-                      <div key={point.date} className="flex justify-between">
-                        <dt>{shortDate(point.date)}</dt>
-                        <dd>{formatCurrency(point.amount)}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                </details>
               </section>
               <section className={`${panel} order-5 xl:order-none min-w-0 overflow-hidden`}>
                 <div className="p-4">
                   <h2 className="text-sm font-bold text-slate-900">Collections by booking source</h2>
                   <p className="mt-1 text-xs text-slate-500">
-                    Month to {isToday ? 'date' : shortDate(date)} · includes direct and OTA bookings · bar shows share of
+                    Selected period · includes direct and OTA bookings · bar shows share of
                     gross collections
                   </p>
                 </div>
-                {data.revenue_by_ota.length ? (
+                {period.revenue_by_source.length ? (
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-sm">
                       <thead className="bg-slate-50 text-xs text-slate-500">
@@ -687,7 +708,7 @@ export function DashboardPage({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {data.revenue_by_ota.map((row, index) => (
+                        {period.revenue_by_source.map((row, index) => (
                           <tr key={row.label}>
                             <td className="min-w-36 px-5 py-3.5">
                               <span className="text-xs font-semibold text-slate-700">{row.label}</span>
@@ -695,7 +716,7 @@ export function DashboardPage({
                                 <div
                                   className="h-full rounded-full"
                                   style={{
-                                    width: `${monthGross ? (row.collected / monthGross) * 100 : 0}%`,
+                                    width: `${periodGross ? (row.collected / periodGross) * 100 : 0}%`,
                                     background: colors[index % colors.length],
                                   }}
                                 />
@@ -716,19 +737,19 @@ export function DashboardPage({
                     </table>
                   </div>
                 ) : (
-                  <Empty>No collections or refunds for this month through {shortDate(date)}.</Empty>
+                  <Empty>No collections or refunds in this period.</Empty>
                 )}
               </section>
             </div>
             <div className="contents xl:flex xl:min-w-0 xl:flex-col xl:gap-4">
               <aside className={`${panel} order-2 xl:order-none p-4`}>
                 <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-bold text-slate-900">Needs attention</h2>
+                  <h2 className="text-sm font-bold text-slate-900">Needs attention · Current</h2>
                   <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
                     {attention.length}
                   </span>
                 </div>
-                <p className="mt-1 text-xs text-slate-500">Items to review in your property workspace.</p>
+                <p className="mt-1 text-xs text-slate-500">Today’s arrivals and departures, plus current tasks and balances.</p>
                 {attention.length ? (
                   <div className="mt-4 divide-y divide-slate-100">
                     {attention.map((item) => (
@@ -740,7 +761,7 @@ export function DashboardPage({
                           onNavigate?.(item.page, {
                             kind: item.focus,
                             propertyId: previewDataEnabled ? '' : activePropertyId,
-                            date: item.focus === 'overdue_housekeeping' ? today : date,
+                            date: data.current?.date ?? today,
                           })
                         }
                         className="flex w-full items-start gap-3 py-3 text-left enabled:hover:opacity-75"
@@ -770,7 +791,7 @@ export function DashboardPage({
               </aside>
               <section className={`${panel} order-4 xl:order-none p-4`}>
                 <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-bold text-slate-900">Room status</h2>
+                  <h2 className="text-sm font-bold text-slate-900">Room status · Current</h2>
                   <BedDouble size={18} className="text-slate-400" />
                 </div>
                 <p className="mt-1 text-xs text-slate-500">Physical room status right now</p>
@@ -816,7 +837,7 @@ export function DashboardPage({
               </section>
               <section className={`${panel} order-6 xl:order-none p-4`}>
                 <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-bold text-slate-900">Housekeeping</h2>
+                  <h2 className="text-sm font-bold text-slate-900">Housekeeping · Current</h2>
                   <Sparkles size={18} className="text-slate-400" />
                 </div>
                 <div className="mt-4 flex items-baseline gap-2">

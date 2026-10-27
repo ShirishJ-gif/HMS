@@ -90,10 +90,10 @@ function getLocalDate() {
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
-export function HousekeepingPage({ previewDataEnabled = false, initialFocus, onReturn }: { previewDataEnabled?: boolean; initialFocus?: DashboardFocus | null; onReturn?: () => void }) {
+export function HousekeepingPage({ activePropertyId, previewDataEnabled = false, initialFocus, onReturn }: { activePropertyId: string; previewDataEnabled?: boolean; initialFocus?: DashboardFocus | null; onReturn?: () => void }) {
   const [focus, setFocus] = useState(initialFocus);
   const [showModal,    setShowModal]    = useState(false);
-  const [form,         setForm]         = useState(defaultForm);
+  const [form,         setForm]         = useState({ ...defaultForm, property_id: activePropertyId });
   const [submitting,   setSubmitting]   = useState(false);
   const [pendingId,    setPendingId]    = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -106,7 +106,7 @@ export function HousekeepingPage({ previewDataEnabled = false, initialFocus, onR
   const [dueTodayOnly, setDueTodayOnly] = useState(false);
   const [createdTasks, setCreatedTasks] = useState<HousekeepingTask[]>([]);
 
-  const boardState = useAsync(async () => (await api.get<HousekeepingBoard>('/housekeeping/board')).data, []);
+  const boardState = useAsync(async () => (await api.get<HousekeepingBoard>('/housekeeping/board', { params: { property_id: activePropertyId || undefined } })).data, [activePropertyId]);
 
   useEffect(() => {
     setTaskOverrides({});
@@ -182,7 +182,7 @@ export function HousekeepingPage({ previewDataEnabled = false, initialFocus, onR
         notes:       form.notes     || undefined,
         due_date:    form.due_date  || undefined,
       });
-      setForm(defaultForm);
+      setForm({ ...defaultForm, property_id: activePropertyId });
       setShowModal(false);
       setCreatedTasks(current => [response.data, ...current.filter(task => task.id !== response.data.id)]);
       flash('Task created and added to the board.');
@@ -236,7 +236,7 @@ export function HousekeepingPage({ previewDataEnabled = false, initialFocus, onR
         <div>
           <p className="text-[10.5px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Operations</p>
           <h1 className="text-[22px] font-black text-slate-900 tracking-tight leading-none">Housekeeping</h1>
-          <p className="text-[12px] text-slate-400 mt-1">Track cleaning, inspection, and room-readiness across all properties</p>
+          <p className="text-[12px] text-slate-400 mt-1">Track cleaning, inspection, and room readiness</p>
         </div>
         {/* <button type="button" onClick={() => setShowModal(true)}
           className="flex items-center gap-2 h-9 px-4 rounded-xl text-[12.5px] font-bold bg-slate-900 text-white hover:bg-slate-800 transition-colors shadow-sm">

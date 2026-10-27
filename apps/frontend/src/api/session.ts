@@ -1,4 +1,6 @@
 import { AuthResponse, AuthUser } from './types';
+import { queryCache } from './query-cache';
+import { clearSavedFilters } from '../utils/saved-filters';
 
 const sessionUpdatedEventName = 'hms:session-updated';
 
@@ -75,13 +77,24 @@ export function storeAuthSession(auth: AuthResponse) {
     return;
   }
 
+  const previous = getStoredAuthUser();
+  if (previous?.id !== auth.user.id || previous?.organization_id !== auth.user.organization_id) clearSavedFilters();
   storage.setItem(accessTokenStorageKey, auth.access_token);
   storage.setItem(refreshTokenStorageKey, auth.refresh_token);
   storage.setItem(userStorageKey, JSON.stringify(auth.user));
   emitSessionUpdated(auth.user);
 }
 
+export function updateStoredAuthUser(user: AuthUser) {
+  const current = getStoredAuthUser();
+  if (current?.id !== user.id) return;
+  getStorage()?.setItem(userStorageKey, JSON.stringify(user));
+  emitSessionUpdated(user);
+}
+
 export function clearStoredSession(options?: { emit?: boolean; preserveActivePage?: boolean }) {
+  queryCache.invalidate();
+  clearSavedFilters();
   const storage = getStorage();
   if (!storage) {
     return;

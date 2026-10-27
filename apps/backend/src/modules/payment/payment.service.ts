@@ -367,6 +367,25 @@ export class PaymentService {
         .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0))
         .sub(existingRefunds);
 
+      // Legacy refunds without a link could belong to this payment. Reserve
+      // their amounts conservatively; never infer a link from payment method.
+      const successfulPaymentIds = new Set(originalPayment.billing.payments
+        .filter(payment => payment.status === PaymentTransactionStatus.SUCCEEDED).map(payment => payment.id));
+      const selectedRefunds = originalPayment.billing.payments
+        .filter(payment => {
+          if (payment.status !== PaymentTransactionStatus.REFUNDED) return false;
+          const metadata = payment.metadata;
+          const originalId = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+            ? metadata.original_payment_id : undefined;
+          return typeof originalId !== 'string' || !successfulPaymentIds.has(originalId) || originalId === originalPayment.id;
+        })
+        .reduce((total, payment) => total.add(payment.amount), new Prisma.Decimal(0));
+      const selectedRefundable = originalPayment.amount.sub(selectedRefunds);
+
+      if (refundAmount.gt(selectedRefundable)) {
+        throw new BadRequestException('Refund amount exceeds the selected payment’s remaining refundable balance; unlinked historical refunds also reduce this limit');
+      }
+
       if (refundAmount.gt(refundable)) {
         throw new BadRequestException('Refund amount exceeds refundable balance');
       }
@@ -385,7 +404,7 @@ export class PaymentService {
           provider: originalPayment.provider,
           providerReference: providerResult.provider_reference,
           status: PaymentTransactionStatus.REFUNDED,
-          metadata: providerResult.metadata,
+          metadata: { ...providerResult.metadata, original_payment_id: originalPayment.id },
         },
       });
 

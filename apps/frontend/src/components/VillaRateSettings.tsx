@@ -94,11 +94,25 @@ export function VillaRateSettings({ propertyId, onSaved, title = 'Villa sales op
       <div aria-live="polite" className={(!editing && error) || message ? 'border-t border-slate-100 px-5 py-3 text-xs sm:px-6' : ''}>{!editing && error && <p className="text-rose-700">{error}</p>}{message && <p className="text-emerald-700">{message}</p>}</div>
     </section>
     {editing && <FormDialog title="Edit villa sales options" description="Update nightly rates and room limits for your property."
-      busy={saving} error={error} onClose={closeEditor} onSubmit={save} submitLabel="Save sales options" busyLabel="Saving…">
+      compact busy={saving} error={error} onClose={closeEditor} onSubmit={save} submitLabel="Save sales options" busyLabel="Saving…">
       <div className="space-y-4">
-    <label className={labelCls}><span>Whole-villa nightly rate ({currency})</span><input autoFocus type="number" min="0.01" max="99999999.99" step="0.01" required disabled={loading || saving} value={wholeRate} onChange={event => setWholeRate(event.target.value)} className={inputCls} /></label>
-    <label className={labelCls}><span>Per-room nightly rate ({currency}, optional)</span><input type="number" min="0.01" max="99999999.99" step="0.01" required={savedSettings?.per_room_rate != null} disabled={loading || saving} value={roomRate} onChange={event => setRoomRate(event.target.value)} className={inputCls} /></label>
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3"><label className={labelCls}><span>Total rooms</span><input type="number" min="1" max="20" required disabled={loading || saving} value={totalRooms} onChange={event => setTotalRooms(event.target.value)} className={inputCls} /></label><label className={labelCls}><span>Minimum booking</span><input type="number" min="1" max="20" required disabled={loading || saving} value={minRooms} onChange={event => setMinRooms(event.target.value)} className={inputCls} /></label><label className={labelCls}><span>Maximum booking</span><input type="number" min="1" max="20" required disabled={loading || saving} value={maxRooms} onChange={event => setMaxRooms(event.target.value)} className={inputCls} /></label></div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <label className={`${labelCls} min-w-0`}>
+            <span>Whole-villa rate ({currency})</span>
+            <input autoFocus type="number" min="0.01" max="99999999.99" step="0.01" required disabled={loading || saving} value={wholeRate} onChange={event => setWholeRate(event.target.value)} className={inputCls} />
+            <span className="text-[11px] font-normal text-slate-400">Per night · entire property</span>
+          </label>
+          <label className={`${labelCls} min-w-0`}>
+            <span>Per-room rate ({currency})</span>
+            <input type="number" min="0.01" max="99999999.99" step="0.01" required={savedSettings?.per_room_rate != null} disabled={loading || saving} value={roomRate} onChange={event => setRoomRate(event.target.value)} className={inputCls} />
+            <span className="text-[11px] font-normal text-slate-400">Per night · optional</span>
+          </label>
+        </div>
+        <div className="grid grid-cols-1 gap-3 border-t border-slate-100 pt-4 sm:grid-cols-3">
+          <label className={`${labelCls} min-w-0`}><span>Total rooms</span><input type="number" min="1" max="20" required disabled={loading || saving} value={totalRooms} onChange={event => setTotalRooms(event.target.value)} className={inputCls} /></label>
+          <label className={`${labelCls} min-w-0`}><span>Minimum booking</span><input type="number" min="1" max="20" required disabled={loading || saving} value={minRooms} onChange={event => setMinRooms(event.target.value)} className={inputCls} /></label>
+          <label className={`${labelCls} min-w-0`}><span>Maximum booking</span><input type="number" min="1" max="20" required disabled={loading || saving} value={maxRooms} onChange={event => setMaxRooms(event.target.value)} className={inputCls} /></label>
+        </div>
       </div>
     </FormDialog>}
   </>;

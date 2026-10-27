@@ -3,6 +3,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { api, getApiErrorMessage, logoutSession } from './api/client';
 import { fetchAllPages } from './api/pagination';
+import { useCachedQuery } from './hooks/useCachedQuery';
+import { useSavedFilters } from './hooks/useSavedFilters';
+import { isReportingSelection } from './utils/reporting-period';
 import {
   clearStoredSession,
   getStoredActivePage,
@@ -24,11 +27,12 @@ import { ICalCalendarPage } from './pages/ICalCalendarPage';
 import { OtaEmailIngestionPage } from './pages/OtaEmailIngestionPage';
 import { OtaMappingPage } from './pages/OtaMappingPage';
 import { OperationsBoardPage } from './pages/OperationsBoardPage';
+import { ProfilePage } from './pages/ProfilePage';
 import { PaymentsPage } from './pages/PaymentsPage';
 import { PlatformOwnerPage } from './pages/PlatformOwnerPage';
 import { PropertyRoomSetupPage } from './pages/PropertyRoomSetupPage';
 import { OrganizationUsersPage } from './pages/OrganizationUsersPage';
-import { ReportsPage, type ReportSelection } from './pages/ReportsPage';
+import { ReportsPage, rangeFor, type ReportSelection } from './pages/ReportsPage';
 import { RoomsPage } from './pages/RoomsPage';
 import { SupportConsolePage } from './pages/SupportConsolePage';
 import { NotificationsPage } from './pages/NotificationsPage';
@@ -42,7 +46,7 @@ type Page =
   | 'availability' | 'ical-calendar' | 'ota-email-ingestion' | 'mapping' | 'rooms' | 'bookings'
   | 'guests' | 'housekeeping' | 'payments' | 'expenses' | 'channels'
   | 'webhooks' | 'support' | 'audit' | 'notifications'
-  | 'org-users'
+  | 'org-users' | 'profile'
   | 'platform-overview' | 'platform-api-sample' | 'platform-api-monitor' | 'platform-properties' | 'platform-integrations' | 'platform-integration-sample' | 'platform-logs';
 
 const navGroups = [
@@ -166,13 +170,13 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
   const [folioReturnPage, setFolioReturnPage] = useState<'reports' | 'dashboard'>('reports');
   const [dashboardFocus, setDashboardFocus] = useState<DashboardFocus | null>(null);
   const scrollPositions = useRef(new Map<string, number>());
-  const [reportSelection, setReportSelection] = useState<ReportSelection>();
   const [, setOtaMappingFullWorkspace] = useState(false);
   const [previewDataEnabled, setPreviewDataEnabled] = useState(() => readPreviewDataEnabled());
 
   // Property selector state
   const [properties, setProperties] = useState<Property[]>([]);
   const [propertiesLoaded, setPropertiesLoaded] = useState(false);
+  const propertiesQuery = useCachedQuery('properties', () => fetchAllPages<Property>('/properties'), Boolean(user));
   const [selectedPropertyId, setSelectedPropertyId] = useState<string>(
     () => {
       const stored = localStorage.getItem(propertyStorageKey) ?? '';
@@ -180,6 +184,10 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
     },
   );
   const [propertyDropdownOpen, setPropertyDropdownOpen] = useState(false);
+  const [reportSelection, setReportSelection] = useSavedFilters<ReportSelection>(
+    `reports:${selectedPropertyId || 'ALL'}:period`,
+    () => ({ preset: 'this_month', range: rangeFor('this_month') }), isReportingSelection,
+  );
   const propertyDropdownRef = useRef<HTMLDivElement>(null);
 
   // User dropdown state
@@ -193,12 +201,15 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
   const sidebarNavRef = useRef<HTMLElement | null>(null);
   const pageScrollRef = useRef<HTMLElement | null>(null);
   const activeGroup = navGroups.find((g) => g.pages.some((p) => p.id === activePage));
-  const activePageMeta = activePage === 'notifications'
+  const activePageMeta = activePage === 'profile'
+    ? { id: 'profile' as Page, label: 'My Profile', icon: 'guest' }
+    : activePage === 'notifications'
     ? { id: 'notifications' as Page, label: 'Notifications', icon: 'bell' }
     : navGroups.flatMap((g) => g.pages).find((p) => p.id === activePage) ?? navGroups[0].pages[0];
   const searchResults = useMemo(() => {
     const query = searchValue.trim().toLowerCase();
     const pages = visibleNavGroups(user, properties.find((property) => property.id === selectedPropertyId)).flatMap((group) => group.pages.map((page) => ({ ...page, section: group.section })));
+    pages.push({ id: 'profile', label: 'My Profile', icon: 'guest', section: 'Account' });
     if (!query) return [];
     return pages.filter((page) => `${page.label} ${page.section}`.toLowerCase().includes(query)).slice(0, 6);
   }, [searchValue, user, properties, selectedPropertyId]);
@@ -216,7 +227,7 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
 
 
   useEffect(() => {
-    if (user?.role === 'PLATFORM_OWNER' && !isPlatformPage(activePage)) {
+    if (user?.role === 'PLATFORM_OWNER' && !isPlatformPage(activePage) && activePage !== 'profile') {
       setActivePage('platform-overview');
       setStoredActivePage('platform-overview');
       setPageKey((key) => key + 1);
@@ -262,42 +273,37 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
     }
   }, [activePage, properties, propertiesLoaded, selectedPropertyId, user]);
 
-  // Fetch properties for property selector
+  // Share properties with Reservations; navigation itself does not reload them.
   useEffect(() => {
     if (!user) {
       setProperties([]);
       setPropertiesLoaded(false);
       return;
     }
-    setPropertiesLoaded(false);
-    const controller = new AbortController();
-    fetchAllPages<Property>('/properties', { signal: controller.signal })
-      .then((props) => {
-        if (controller.signal.aborted) return;
-        setProperties(props);
-        const storedId = localStorage.getItem(propertyStorageKey);
-        if (storedId && props.some((p) => p.id === storedId)) {
-          setSelectedPropertyId(storedId);
-        } else if (storedId) {
-          localStorage.removeItem(propertyStorageKey);
-          if (requiresSelectedProperty(activePage) && props.length > 0) {
-            setSelectedPropertyId(props[0].id);
-            localStorage.setItem(propertyStorageKey, props[0].id);
-          } else {
-            setSelectedPropertyId('');
-          }
-        } else if (requiresSelectedProperty(activePage) && props.length > 0) {
+    const props = propertiesQuery.data;
+    if (props) {
+      setProperties(props);
+      const storedId = localStorage.getItem(propertyStorageKey);
+      if (storedId && props.some((p) => p.id === storedId)) {
+        setSelectedPropertyId(storedId);
+      } else if (storedId) {
+        localStorage.removeItem(propertyStorageKey);
+        if (requiresSelectedProperty(activePage) && props.length > 0) {
           setSelectedPropertyId(props[0].id);
           localStorage.setItem(propertyStorageKey, props[0].id);
-        } else if (props.length === 1) {
-          setSelectedPropertyId(props[0].id);
-          localStorage.setItem(propertyStorageKey, props[0].id);
+        } else {
+          setSelectedPropertyId('');
         }
-      })
-      .catch(() => {})
-      .finally(() => { if (!controller.signal.aborted) setPropertiesLoaded(true); });
-    return () => controller.abort();
-  }, [activePage, user]);
+      } else if (requiresSelectedProperty(activePage) && props.length > 0) {
+        setSelectedPropertyId(props[0].id);
+        localStorage.setItem(propertyStorageKey, props[0].id);
+      } else if (props.length === 1) {
+        setSelectedPropertyId(props[0].id);
+        localStorage.setItem(propertyStorageKey, props[0].id);
+      }
+      setPropertiesLoaded(true);
+    }
+  }, [propertiesQuery.data, user]);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -425,10 +431,21 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
       nextPropertyId = storedPropertyIsValid ? storedId : (selectedPropertyId || properties[0]?.id || '');
     }
 
+    if (nextPropertyId !== selectedPropertyId) {
+      setDashboardFocus(null);
+      setReportFolioGroupId(null);
+    }
     setSelectedPropertyId(nextPropertyId);
     if (nextPropertyId) localStorage.setItem(propertyStorageKey, nextPropertyId);
     else localStorage.removeItem(propertyStorageKey);
     setPropertyDropdownOpen(false);
+  }
+
+  function handlePropertySaved(property: Property) {
+    // Register the saved property before selecting it so selection validation
+    // cannot reset to the old property while the setup workspace refreshes.
+    setProperties(current => [...current.filter(item => item.id !== property.id), property]
+      .sort((a, b) => a.name.localeCompare(b.name)));
   }
 
   function handleSignOut() {
@@ -584,7 +601,7 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
             inputRef={headerSearchRef}
           />
 
-          {!isPlatformOwner && (
+          {!isPlatformOwner && activePage !== 'profile' && (
           <button
             type="button"
             aria-pressed={previewDataEnabled}
@@ -607,7 +624,7 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
           )}
 
           {/* Property selector — desktop */}
-          {!isPlatformOwner && properties.length > 0 && (
+          {!isPlatformOwner && activePage !== 'profile' && activePage !== 'bookings' && properties.length > 0 && (
             <div className="relative hidden md:block" ref={propertyDropdownRef}>
               <button
                 type="button"
@@ -685,6 +702,8 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
           <div className="relative flex-shrink-0" ref={userDropdownRef}>
             <button
               type="button"
+              aria-label="Account menu"
+              aria-expanded={userDropdownOpen}
               onClick={() => setUserDropdownOpen((v) => !v)}
               className="flex items-center gap-2 hover:bg-slate-50 rounded-lg px-1.5 py-1 transition"
             >
@@ -710,8 +729,10 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
                   </span>
                 </div>
 
+                <button type="button" onClick={() => { setUserDropdownOpen(false); handlePageSelect('profile'); }} className="w-full text-left px-4 py-2.5 text-[13px] text-slate-700 hover:bg-slate-50 transition">My Profile</button>
+
                 {/* Property selector — mobile fallback inside user menu */}
-                {!isPlatformOwner && properties.length > 0 && (
+                {!isPlatformOwner && activePage !== 'profile' && activePage !== 'bookings' && properties.length > 0 && (
                   <div className="md:hidden border-b border-slate-100 py-1">
                     <p className="px-4 pt-1.5 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">Property</p>
                     {!propertyRequired && (
@@ -762,26 +783,23 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
               previewDataEnabled={previewDataEnabled}
               activePropertyId={selectedPropertyId}
               onNavigate={(page, focus) => {
-                if (page === 'reports') {
-                  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
-                  setReportSelection({ preset: 'this_month', range: { from: `${today.slice(0, 7)}-01`, to: today }, property: selectedPropertyId || 'ALL' });
-                }
                 handlePageSelect(page);
                 setDashboardFocus(focus ?? null);
               }}
+              onOpenReports={(selection) => { setReportSelection(selection); handlePageSelect('reports'); }}
               onOpenFolio={(groupId) => { handlePageSelect('payments'); setFolioReturnPage('dashboard'); setReportFolioGroupId(groupId); }}
             />}
             {isPlatformPage(activePage)     && <PlatformOwnerPage section={activePage} />}
+            {activePage === 'profile'      && <ProfilePage />}
             {activePage === 'org-users'    && <OrganizationUsersPage />}
             {activePage === 'notifications' && <NotificationsPage />}
-            {activePage === 'reports'      && <ReportsPage onOpenPayments={() => { handlePageSelect('payments'); setFolioReturnPage('reports'); setReportFolioGroupId(null); }} initialSelection={reportSelection} onSelectionChange={setReportSelection} onOpenFolio={(groupId) => { handlePageSelect('payments'); setFolioReturnPage('reports'); setReportFolioGroupId(groupId); }} />}
+            {activePage === 'reports'      && <ReportsPage activePropertyId={selectedPropertyId} onPropertyChange={handlePropertySelect} onOpenPayments={() => { handlePageSelect('payments'); setFolioReturnPage('reports'); setReportFolioGroupId(null); }} initialSelection={reportSelection} onSelectionChange={setReportSelection} onOpenFolio={(groupId) => { handlePageSelect('payments'); setFolioReturnPage('reports'); setReportFolioGroupId(groupId); }} />}
             {/* {activePage === 'graphs'       && <GraphInsightsPage />} */}
-            {activePage === 'operations'   && <OperationsBoardPage previewDataEnabled={previewDataEnabled} />}
-            {activePage === 'setup'        && <PropertyRoomSetupPage activePropertyId={selectedPropertyId} onPropertyChange={handlePropertySelect} onConfigureOta={() => handlePageSelect('mapping')} />}
+            {activePage === 'operations'   && <OperationsBoardPage key={`${selectedPropertyId}:${previewDataEnabled}`} activePropertyId={selectedPropertyId} previewDataEnabled={previewDataEnabled} />}
+            {activePage === 'setup'        && <PropertyRoomSetupPage activePropertyId={selectedPropertyId} onPropertyChange={handlePropertySelect} onPropertySaved={handlePropertySaved} onConfigureOta={() => handlePageSelect('mapping')} />}
             {activePage === 'availability' && (
               <AvailabilityPage
                 activePropertyId={selectedPropertyId}
-                onPropertyChange={handlePropertySelect}
                 previewDataEnabled={previewDataEnabled}
                 properties={properties}
                 propertiesLoaded={propertiesLoaded}
@@ -789,20 +807,20 @@ function AppWorkspace({ user, setUser }: { user: AuthUser | null; setUser: Dispa
             )}
             {activePage === 'ical-calendar' && (
               <ICalCalendarPage
+                key={selectedPropertyId}
                 activePropertyId={selectedPropertyId}
-                onPropertyChange={handlePropertySelect}
                 properties={properties}
                 propertiesLoaded={propertiesLoaded}
               />
             )}
             {activePage === 'ota-email-ingestion' && <OtaEmailIngestionPage key={selectedPropertyId} activePropertyId={selectedPropertyId} />}
             {activePage === 'mapping' && supportsChannelWorkspace && <OtaMappingPage onFullWorkspaceChange={setOtaMappingFullWorkspace} workspace={channelWorkspace} />}
-            {activePage === 'rooms'        && <RoomsPage />}
-            {activePage === 'bookings'     && <BookingsPage initialFocus={dashboardFocus} onReturn={() => handlePageSelect('dashboard')} previewDataEnabled={previewDataEnabled} />}
+            {activePage === 'rooms'        && <RoomsPage key={selectedPropertyId} propertyId={selectedPropertyId} />}
+            {activePage === 'bookings'     && <BookingsPage key={String(previewDataEnabled)} initialFocus={dashboardFocus} onReturn={() => handlePageSelect('dashboard')} previewDataEnabled={previewDataEnabled} />}
             {activePage === 'guests'       && <GuestsPage activePropertyId={selectedPropertyId} />}
-            {activePage === 'housekeeping' && <HousekeepingPage initialFocus={dashboardFocus} onReturn={() => handlePageSelect('dashboard')} previewDataEnabled={previewDataEnabled} />}
-            {activePage === 'payments'     && <PaymentsPage initialFocus={dashboardFocus} previewDataEnabled={reportFolioGroupId && folioReturnPage === 'reports' ? false : previewDataEnabled} initialFolioGroupId={reportFolioGroupId} returnLabel={!dashboardFocus && folioReturnPage === 'reports' ? 'Reports & Analytics' : 'Dashboard'} onReturn={dashboardFocus ? () => handlePageSelect('dashboard') : reportFolioGroupId ? () => handlePageSelect(folioReturnPage) : undefined} />}
-            {activePage === 'expenses'     && <ExpensesPage activePropertyId={selectedPropertyId} properties={properties} />}
+            {activePage === 'housekeeping' && <HousekeepingPage key={`${selectedPropertyId}:${previewDataEnabled}`} activePropertyId={selectedPropertyId} initialFocus={dashboardFocus} onReturn={() => handlePageSelect('dashboard')} previewDataEnabled={previewDataEnabled} />}
+            {activePage === 'payments'     && <PaymentsPage key={`${selectedPropertyId}:${previewDataEnabled}`} activePropertyId={selectedPropertyId} initialFocus={dashboardFocus} previewDataEnabled={reportFolioGroupId && folioReturnPage === 'reports' ? false : previewDataEnabled} initialFolioGroupId={reportFolioGroupId} returnLabel={!dashboardFocus && folioReturnPage === 'reports' ? 'Reports & Analytics' : 'Dashboard'} onReturn={dashboardFocus ? () => handlePageSelect('dashboard') : reportFolioGroupId ? () => handlePageSelect(folioReturnPage) : undefined} />}
+            {activePage === 'expenses'     && <ExpensesPage key={selectedPropertyId} activePropertyId={selectedPropertyId} properties={properties} />}
             {activePage === 'webhooks' && supportsChannelWorkspace && <WebhookSyncLogsPage workspace={channelWorkspace} />}
             {activePage === 'support' && propertiesLoaded && !isVilla && <SupportConsolePage />}
             {activePage === 'audit'        && <AuditLogsPage />}
@@ -894,7 +912,7 @@ function GlobalSearch({
 }
 
 function isPage(value: string | null): value is Page {
-  return value != null && navGroups.flatMap((g) => g.pages).some((p) => p.id === value);
+  return value === 'profile' || (value != null && navGroups.flatMap((g) => g.pages).some((p) => p.id === value));
 }
 
 function isChannelWorkspacePage(page: Page) {
@@ -979,6 +997,9 @@ function LoginPage({ onLogin }: { onLogin: (user: AuthUser) => void }) {
             admin_email: email,
             password,
           });
+      if (response.data.user.default_property_id && response.data.user.role !== 'PLATFORM_OWNER') {
+        localStorage.setItem(`hms_active_property_id:${response.data.user.id}`, response.data.user.default_property_id);
+      }
       storeAuthSession(response.data);
       onLogin(response.data.user);
     } catch (loginError) {

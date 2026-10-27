@@ -1,4 +1,5 @@
 import { useEffect, useDeferredValue, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import { getApiErrorMessage } from '../api/client';
 import { fetchAllPages } from '../api/pagination';
 import { AuditLog } from '../api/types';
@@ -116,7 +117,7 @@ export function AuditLogsPage() {
 
       {/* ── Header ── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-1.5">
             <span className="text-[9.5px] font-bold uppercase tracking-[0.15em] text-slate-400">Admin</span>
             <span className="text-slate-300">·</span>
@@ -125,17 +126,25 @@ export function AuditLogsPage() {
           <h1 className="text-[24px] font-bold text-slate-900 tracking-tight leading-none">Audit Logs</h1>
           <p className="text-[13px] text-slate-500 mt-1.5">See who changed guest bills, recorded payments, and managed reservations.</p>
         </div>
+        <button
+          type="button"
+          onClick={() => setRefreshKey(key => key + 1)}
+          disabled={logsState.loading}
+          aria-label="Refresh audit logs"
+          title="Refresh audit logs"
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 disabled:opacity-40"
+        >
+          <RefreshCw size={16} aria-hidden="true" className={logsState.loading ? 'animate-spin' : ''} />
+        </button>
 
         {/* Search + filters */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex w-full items-center gap-2 flex-wrap">
           <SearchInput
             value={search}
             onChange={setSearch}
             placeholder="Search guest, invoice, charge, actor…"
             className="w-64 max-w-full"
           />
-          <button type="button" onClick={() => setRefreshKey(key => key + 1)} disabled={logsState.loading}
-            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-[11.5px] font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40">Refresh</button>
           <div className="w-[220px]">
             <CustomSelect
               value={actorFilter}
@@ -154,7 +163,7 @@ export function AuditLogsPage() {
               options={OTHER_ACTION_OPTIONS}
             />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {QUICK_ACTION_CHIPS.map(chip => (
               <button
                 key={chip.value}

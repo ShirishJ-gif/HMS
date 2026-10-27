@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, Query } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { Roles } from './decorators/roles.decorator';
@@ -14,10 +14,27 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { RevokeSessionDto } from './dto/revoke-session.dto';
 import { SignupPropertyDto } from './dto/signup-property.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Get('profile')
+  getProfile(@CurrentUser() user: AuthenticatedUser) {
+    return this.authService.getProfile(user);
+  }
+
+  @Patch('profile')
+  updateProfile(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateProfileDto) {
+    return this.authService.updateProfile(user, dto);
+  }
+
+  @Post('change-password')
+  changePassword(@CurrentUser() user: AuthenticatedUser, @Body() dto: ChangePasswordDto) {
+    return this.authService.changePassword(user, dto);
+  }
 
   @Public()
   @Post('bootstrap')

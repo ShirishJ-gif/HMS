@@ -8,6 +8,7 @@ import { ensureVillaInventory } from '../property/villa-inventory';
 import { InventoryService } from '../inventory/inventory.service';
 import { SyncICalCalendarDto } from './dto/sync-ical-calendar.dto';
 import { parseCalendarBlocks } from './import-calendar';
+import { calendarBlocksToInsert, calendarToday } from './calendar-history';
 
 const maxICalBytes = 2 * 1024 * 1024;
 const fetchTimeoutMs = 12_000;
@@ -24,8 +25,21 @@ export class ICalCalendarService {
     return this.prisma.$transaction(async tx => {
       const villa = await ensureVillaInventory(tx, dto.property_id);
       await this.inventory.acquireInventoryAllocationLock(tx, dto.property_id, villa.category.id);
-      await tx.inventoryBlock.deleteMany({ where: { propertyId: dto.property_id, source } });
-      if (blocks.length) await tx.inventoryBlock.createMany({ data: blocks.map(block => ({
+      const today = calendarToday();
+      const scope = { propertyId: dto.property_id, source };
+      const history = await tx.inventoryBlock.findMany({
+        where: { ...scope, fromDate: { lt: today } },
+        select: { fromDate: true, toDate: true },
+      });
+      const inserts = calendarBlocksToInsert(blocks, history, today);
+      // Retain past blocks and the past portion of stays spanning today. A
+      // missing/cancelled event must release future nights without erasing history.
+      await tx.inventoryBlock.updateMany({
+        where: { ...scope, fromDate: { lt: today }, toDate: { gte: today } },
+        data: { toDate: new Date(today.getTime() - 86_400_000) },
+      });
+      await tx.inventoryBlock.deleteMany({ where: { ...scope, fromDate: { gte: today } } });
+      if (inserts.length) await tx.inventoryBlock.createMany({ data: inserts.map(block => ({
         propertyId: dto.property_id,
         roomCategoryId: villa.category.id,
         fromDate: block.fromDate,

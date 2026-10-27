@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowDownRight, ArrowUpRight, ChevronRight, Download, RefreshCw } from 'lucide-react';
-import { api, getApiErrorMessage } from '../api/client';
+import { api } from '../api/client';
 import { CalendarDatePickerField } from '../components/CalendarDatePicker';
-import { CustomSelect } from '../components/CustomSelect';
 import { groupReportFolios } from '../utils/report-folios';
 import { formatCurrency } from '../utils/format';
 import { useWorkspaceState } from '../hooks/useWorkspaceState';
+import { useCachedQuery } from '../hooks/useCachedQuery';
+import { useSavedFilters } from '../hooks/useSavedFilters';
+import { useReportingToday } from '../hooks/useReportingToday';
+import { reportingRange, type ReportingPreset, type ReportingSelection } from '../utils/reporting-period';
 import { workspacePanel, MetricHelp } from '../components/WorkspaceUI';
 import { ReportTrend } from '../components/ReportTrend';
 import { exportReport } from '../features/reports/export';
 import type { ReportsData } from '../features/reports/types';
 
-type Preset = 'today' | 'yesterday' | 'last_7' | 'this_month' | 'last_month' | 'custom';
-export type ReportSelection = { preset: Preset; range: { from: string; to: string }; property: string };
+type Preset = ReportingPreset;
+export type ReportSelection = ReportingSelection;
 type Detail =
   | { kind: 'reservations'; status?: string }
   | { kind: 'folios'; outstanding?: boolean }
@@ -31,26 +34,7 @@ const action =
 const percent = (value: number | null) => (value == null ? '—' : `${value.toFixed(1)}%`);
 const dateLabel = (value: string) =>
   new Date(`${value}T00:00:00Z`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
-function todayDate() {
-  const now = new Date();
-  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-}
-function addDays(value: string, amount: number) {
-  const date = new Date(`${value}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + amount);
-  return date.toISOString().slice(0, 10);
-}
-function rangeFor(preset: Preset) {
-  const today = todayDate();
-  if (preset === 'yesterday') return { from: addDays(today, -1), to: addDays(today, -1) };
-  if (preset === 'last_7') return { from: addDays(today, -6), to: today };
-  if (preset === 'this_month') return { from: `${today.slice(0, 7)}-01`, to: today };
-  if (preset === 'last_month') {
-    const end = addDays(`${today.slice(0, 7)}-01`, -1);
-    return { from: `${end.slice(0, 7)}-01`, to: end };
-  }
-  return { from: today, to: today };
-}
+export const rangeFor = reportingRange;
 function Comparison({
   current,
   previous,
@@ -143,57 +127,41 @@ function Status({ value }: { value: string | null }) {
 }
 
 export function ReportsPage({
+  activePropertyId,
+  onPropertyChange,
   onOpenFolio,
   onOpenPayments,
   initialSelection,
   onSelectionChange,
 }: {
+  activePropertyId: string;
+  onPropertyChange: (propertyId: string) => void;
   onOpenFolio?: (groupId: string) => void;
   onOpenPayments?: () => void;
-  initialSelection?: ReportSelection;
-  onSelectionChange?: (selection: ReportSelection) => void;
+  initialSelection: ReportSelection;
+  onSelectionChange: (selection: ReportSelection) => void;
 }) {
-  const [preset, setPreset] = useState<Preset>(initialSelection?.preset ?? 'this_month');
-  const [range, setRange] = useState(() => initialSelection?.range ?? rangeFor('this_month'));
+  const today = useReportingToday();
+  const preset = initialSelection.preset;
+  const range = preset === 'custom' ? initialSelection.range : rangeFor(preset, today);
+  const [customOpen, setCustomOpen] = useState(preset === 'custom');
   const [draft, setDraft] = useState(range);
   const [openPicker, setOpenPicker] = useState<'from' | 'to' | null>(null);
-  const [property, setProperty] = useState(initialSelection?.property ?? 'ALL');
-  const [properties, setProperties] = useState<ReportsData['properties']>([]);
-  const [data, setData] = useWorkspaceState<ReportsData | null>('reports:data', null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [refresh, setRefresh] = useState(0);
-  const [detail, setDetail] = useWorkspaceState<Detail | null>('reports:detail', null);
+  const property = activePropertyId || 'ALL';
+  const { data, loading, error, refresh } = useCachedQuery(
+    JSON.stringify(['reports', property, range.from, range.to]),
+    async () => (await api.get<ReportsData>('/reports/analytics', { params: { property_id: property, ...range } })).data,
+  );
+  const properties = data?.properties ?? [];
+  const [detail, setDetail] = useWorkspaceState<Detail | null>(`reports:${property}:detail`, null);
   const detailRef = useRef<HTMLElement>(null);
-  const [detailPage, setDetailPage] = useWorkspaceState('reports:detailPage', 1);
-  const [sort, setSort] = useWorkspaceState<'billed' | 'balance' | 'nights'>('reports:sort', 'billed');
-  const [chartMetric, setChartMetric] = useWorkspaceState<'billed' | 'collected'>('reports:chartMetric', 'billed');
+  const [detailPage, setDetailPage] = useWorkspaceState(`reports:${property}:detailPage`, 1);
+  const [sort, setSort] = useSavedFilters<'billed' | 'balance' | 'nights'>(`reports:${property}:sort`, () => 'billed', (value): value is 'billed' | 'balance' | 'nights' => typeof value === 'string' && ['billed', 'balance', 'nights'].includes(value));
   useEffect(() => {
-    onSelectionChange?.({ preset, range, property });
-  }, [preset, range, property, onSelectionChange]);
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    api
-      .get<ReportsData>('/reports/analytics', {
-        params: { property_id: property, ...range },
-        signal: controller.signal,
-      })
-      .then(({ data: next }) => {
-        if (controller.signal.aborted) return;
-        setData(next);
-        setProperties(next.properties);
-      })
-      .catch((err: unknown) => {
-        if (!controller.signal.aborted) setError(getApiErrorMessage(err));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => controller.abort();
-  }, [property, range.from, range.to, refresh]);
-  // Keep the last successful period mounted during updates, but never show another property's results.
+    setDraft(range); setCustomOpen(preset === 'custom'); setOpenPicker(null);
+  }, [property, preset, range.from, range.to]);
+  // The cache key includes the property and period, so navigation cannot flash
+  // figures from a different selection while the next request completes.
   const report = data?.property_id === property ? data : null;
   const periodMatches = report?.from === range.from && report.to === range.to;
   const updating = loading || (!error && !periodMatches);
@@ -219,11 +187,11 @@ export function ReportsPage({
     });
   }
   function applyPreset(next: Preset) {
-    setPreset(next);
     setOpenPicker(null);
+    setCustomOpen(next === 'custom');
     if (next !== 'custom') {
-      const value = rangeFor(next);
-      setRange(value);
+      const value = rangeFor(next, today);
+      onSelectionChange({ preset: next, range: value });
       setDraft(value);
     } else setDraft(range);
   }
@@ -256,11 +224,11 @@ export function ReportsPage({
             hint: 'Billed room charges per booked room night',
           },
           {
-            label: 'Allocated billed',
+            label: 'Total billed',
             value: formatCurrency(summary.billed_total),
             current: summary.billed_total,
             previous: previous.billed_total,
-            hint: 'Stay-date allocation · includes tax & extras',
+            hint: 'Full booking bills · includes tax & extras',
             detail: { kind: 'folios' } as Detail,
           },
         ]
@@ -314,7 +282,7 @@ export function ReportsPage({
           <p className="mt-1.5 text-sm text-slate-500">Understand your bookings, revenue, and collections.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button className={action} type="button" disabled={updating} onClick={() => setRefresh((value) => value + 1)}>
+          <button className={action} type="button" disabled={updating} onClick={refresh}>
             <RefreshCw size={14} className={updating ? 'animate-spin' : ''} />
             Refresh
           </button>
@@ -332,17 +300,6 @@ export function ReportsPage({
 
       <section aria-label="Report filters" className={`${panel} p-4`}>
         <div className="flex flex-wrap items-center gap-4">
-          <div className="w-full sm:w-56">
-            <label className="mb-1.5 block text-xs font-semibold text-slate-500">Property</label>
-            <CustomSelect
-              value={property}
-              onChange={setProperty}
-              options={[
-                { label: 'All properties', value: 'ALL' },
-                ...properties.map((p) => ({ label: p.name, value: p.id })),
-              ]}
-            />
-          </div>
           <div className="min-w-0 flex-1">
             <p className="mb-1.5 text-xs font-semibold text-slate-500">Reporting period</p>
             <div className="flex flex-wrap gap-1">
@@ -350,17 +307,20 @@ export function ReportsPage({
                 <button
                   type="button"
                   key={p.value}
-                  aria-pressed={preset === p.value}
+                  aria-pressed={customOpen ? p.value === 'custom' : preset === p.value}
                   onClick={() => applyPreset(p.value)}
-                  className={`min-h-9 rounded-lg px-3 text-xs font-semibold transition-colors ${preset === p.value ? 'bg-slate-800 text-white' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
+                  className={`min-h-9 rounded-lg px-3 text-xs font-semibold transition-colors ${(customOpen ? p.value === 'custom' : preset === p.value) ? 'bg-slate-800 text-white' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
                 >
                   {p.label}
                 </button>
               ))}
             </div>
           </div>
+          <button type="button" className="rounded px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100 focus-visible:outline focus-visible:outline-indigo-500" onClick={() => {
+            applyPreset('this_month'); setSort('billed'); setDetail(null); setDetailPage(1);
+          }}>Reset filters</button>
         </div>
-        {preset === 'custom' && (
+        {customOpen && (
           <div className="mt-4 flex flex-wrap items-end gap-3 border-t border-slate-100 pt-4">
             {(['from', 'to'] as const).map((field) => (
               <div key={field} className="w-40">
@@ -378,7 +338,7 @@ export function ReportsPage({
               className={action}
               disabled={!validDraft}
               onClick={() => {
-                setRange({ ...draft });
+                onSelectionChange({ preset: 'custom', range: { ...draft } });
                 setOpenPicker(null);
               }}
             >
@@ -422,7 +382,7 @@ export function ReportsPage({
         <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
           {error}
           {report && ' The last successfully loaded report is still shown below.'}
-          <button type="button" className="ml-3 font-semibold underline" onClick={() => setRefresh((v) => v + 1)}>
+          <button type="button" className="ml-3 font-semibold underline" onClick={refresh}>
             Try again
           </button>
         </div>
@@ -464,8 +424,8 @@ export function ReportsPage({
                   <MetricHelp label={card.label}>
                     {card.label === 'Room occupancy'
                       ? 'Booked room nights divided by available room nights. Maintenance and dated out-of-service periods are excluded; historical capacity uses current inventory.'
-                      : card.label === 'Allocated billed'
-                        ? 'Each stay’s invoice is spread across its nights. This shows the portion within these dates, including tax and billable extras; it is not cash collected.'
+                      : card.label === 'Total billed'
+                        ? 'Full invoices for bookings with at least one stay night in these dates, including tax and extras. Matches Payments & Folios with the same property and dates.'
                         : card.label === 'Average nightly rate'
                           ? 'Billed room charges divided by booked room nights. Tax and extras are excluded.'
                           : 'The number of booked nights across rooms, excluding checkout day, cancellations and blocked imports.'}
@@ -496,11 +456,11 @@ export function ReportsPage({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <button
               type="button"
-              onClick={() => showDetail({ kind: 'transactions' })}
+              onClick={() => showDetail({ kind: 'folios' })}
               className={`${panel} p-4 text-left hover:border-indigo-300`}
             >
               <span className="flex items-center justify-between text-xs font-semibold text-slate-500">
-                Net collected
+                Collected on these bills
                 <ChevronRight size={15} />
               </span>
               <strong className="mt-2 block text-xl text-slate-900">{formatCurrency(summary.paid_total)}</strong>
@@ -521,7 +481,7 @@ export function ReportsPage({
                 {formatCurrency(summary.balance_due)}
               </strong>
               <span className="mt-1 block text-xs leading-5 text-slate-500">
-                Current balance for stays in this period
+                Current balance on the same booking bills
               </span>
             </button>
             <button
@@ -547,71 +507,36 @@ export function ReportsPage({
             </button>
           </div>
 
+          <section className={`${panel} p-4 text-xs leading-6 text-slate-600`} aria-label="Invoice reconciliation">
+            <p className="font-semibold text-slate-800">Booking bill reconciliation</p>
+            <p>Full booking bills for stays overlapping these dates. Collected and outstanding reflect all activity to date. Payments &amp; Folios shows all stay dates for the selected property.</p>
+            <p>Billed {formatCurrency(summary.billed_total)} − collected {formatCurrency(summary.paid_total)} − Airbnb settlement {formatCurrency(summary.settlement_credit)} + credit balances {formatCurrency(summary.credit_balance)} = outstanding {formatCurrency(summary.balance_due)}.</p>
+            <p>Airbnb settlement is a non-cash adjustment. Credit balances are overpayments on individual invoices.</p>
+          </section>
+
           <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]">
             <div className="min-w-0 space-y-4" data-report-column="primary">
               <section className={`${panel} min-w-0 p-5`} aria-label="Revenue trend">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-sm font-bold text-slate-900">Revenue &amp; collections</h2>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {dateLabel(report.from)} – {dateLabel(report.to)} ·{' '}
-                      {chartMetric === 'billed' ? 'Allocated across stay nights' : 'By payment date (UTC)'}
-                    </p>
-                  </div>
-                  <div className="flex gap-1 rounded-lg bg-slate-50 p-1">
-                    {(['billed', 'collected'] as const).map((metric) => (
-                      <button
-                        type="button"
-                        key={metric}
-                        aria-pressed={chartMetric === metric}
-                        className={`rounded-md px-2.5 py-1.5 text-xs font-semibold ${chartMetric === metric ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}
-                        onClick={() => setChartMetric(metric)}
-                      >
-                        {metric === 'billed' ? 'Billed' : 'Collected'}
-                      </button>
-                    ))}
-                  </div>
+                <h2 className="text-sm font-bold text-slate-900">Revenue &amp; collections</h2>
+                <p className="mt-1 text-xs text-slate-500">{dateLabel(report.from)} – {dateLabel(report.to)}</p>
+                <div className="mt-4 grid grid-cols-2 gap-4 border-b border-slate-100 pb-4">
+                  {([
+                    { label: 'Room revenue', amount: summary.room_revenue, color: 'bg-indigo-500', description: 'Stay nights in period · excludes tax & extras' },
+                    { label: 'Period collections', amount: summary.period_net_collected, color: 'bg-emerald-500', description: 'Payments less refunds · transaction dates, UTC' },
+                  ] as const).map(metric => <div key={metric.label} className="min-w-0">
+                    <p className="flex items-center gap-2 text-xs font-medium text-slate-600"><span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${metric.color}`} />{metric.label}</p>
+                    <p className="mt-2 break-words text-lg font-bold tracking-tight text-slate-900 sm:text-2xl">{formatCurrency(metric.amount)}</p>
+                    <p className="mt-1 text-[11px] leading-4 text-slate-500">{metric.description}</p>
+                  </div>)}
                 </div>
-                <div className="mt-5 flex items-baseline gap-2">
-                  <strong className="text-2xl font-bold tracking-tight text-slate-900">
-                    {formatCurrency(chartMetric === 'billed' ? summary.billed_total : summary.paid_total)}
-                  </strong>
-                  <span className="text-xs text-slate-500">selected period</span>
-                </div>
+                <button type="button" onClick={() => showDetail({ kind: 'transactions' })} className="mt-3 text-xs font-semibold text-indigo-600 hover:underline">
+                  View period transactions · {formatCurrency(summary.period_gross_collected)} received · {formatCurrency(summary.period_refunded_total)} refunded
+                </button>
                 <ReportTrend
                   key={`${report.property_id}:${report.from}:${report.to}`}
                   trend={trend}
-                  metric={chartMetric}
                   disabled={resultsUnavailable}
                 />
-                <details className="mt-4 text-xs text-slate-500">
-                  <summary className="cursor-pointer font-medium">View chart data</summary>
-                  <Table
-                    headings={[
-                      'Dates',
-                      'Billed',
-                      'Net collected',
-                      'Previous dates',
-                      'Previous billed',
-                      'Previous collected',
-                    ]}
-                  >
-                    {trend.map((point) => (
-                      <tr key={point.from}>
-                        <td>
-                          {dateLabel(point.from)} – {dateLabel(point.to)}
-                        </td>
-                        <td>{formatCurrency(point.billed)}</td>
-                        <td>{formatCurrency(point.collected)}</td>
-                        <td>
-                          {dateLabel(point.previous_from)} – {dateLabel(point.previous_to)}
-                        </td>
-                        <td>{formatCurrency(point.previous_billed)}</td>
-                        <td>{formatCurrency(point.previous_collected)}</td>
-                      </tr>
-                    ))}
-                  </Table>
-                </details>
               </section>
               {/* <section className={`${panel} overflow-hidden`} aria-label="Expenses by category">
                 <div className="p-5">
@@ -730,7 +655,7 @@ export function ReportsPage({
                 {outstandingReservations.length ? (
                   <>
                     <div className="mt-3 divide-y divide-slate-100">
-                      {outstandingReservations.slice(0, 5).map((reservation) => (
+                      {outstandingReservations.slice(0, 3).map((reservation) => (
                         <div key={reservation.group_id} className="flex items-start justify-between gap-3 py-2 text-xs">
                           <div className="min-w-0">
                             <p className="truncate font-semibold text-slate-800" title={reservation.guest_name}>
@@ -757,7 +682,7 @@ export function ReportsPage({
                         </div>
                       ))}
                     </div>
-                    <p className="mt-3 text-[11px] text-slate-500">Showing {Math.min(5, outstandingReservations.length)} of {outstandingReservations.length} unpaid reservations · latest stays first.</p>
+                    <p className="mt-3 text-[11px] text-slate-500">Showing {Math.min(4, outstandingReservations.length)} of {outstandingReservations.length} unpaid reservations · latest stays first.</p>
                     {onOpenPayments && <button type="button" onClick={onOpenPayments} className="mt-2 text-xs font-semibold text-emerald-600 hover:underline">View all in Payments &amp; Folios →</button>}
                   </>
                 ) : (
@@ -791,10 +716,10 @@ export function ReportsPage({
               {/* <section className={`${panel} min-w-0 overflow-hidden`}>
                 <div className="p-5">
                   <h2 className="text-sm font-bold text-slate-900">Room category performance</h2>
-                  <p className="mt-1 text-xs text-slate-500">Booked nights and allocated billed amounts</p>
+                  <p className="mt-1 text-xs text-slate-500">Booked nights and room revenue, excluding tax and extras</p>
                 </div>
                 {report.room_category_performance.length ? (
-                  <Table headings={['Category', 'Room nights', 'Allocated billed']}>
+                  <Table headings={['Category', 'Room nights', 'Room revenue']}>
                     {report.room_category_performance.map((row) => (
                       <tr key={row.id}>
                         <td className="font-medium">
@@ -830,7 +755,7 @@ export function ReportsPage({
                   value={sort}
                   onChange={(e) => setSort(e.target.value as typeof sort)}
                 >
-                  <option value="billed">Billed revenue</option>
+                  <option value="billed">Total billed</option>
                   <option value="balance">Outstanding balance</option>
                   <option value="nights">Room nights</option>
                 </select>
@@ -844,7 +769,7 @@ export function ReportsPage({
                   'Room nights',
                   'Occupancy',
                   'Avg. nightly rate',
-                  'Allocated billed',
+                  'Total billed',
                   'Balance due',
                 ]}
               >
@@ -856,7 +781,7 @@ export function ReportsPage({
                         <button
                           type="button"
                           className="font-semibold text-indigo-600 hover:underline"
-                          onClick={() => setProperty(row.id)}
+                          onClick={() => onPropertyChange(row.id)}
                         >
                           {row.name}
                         </button>
@@ -968,6 +893,8 @@ export function ReportsPage({
                     'Property',
                     'Booking total',
                     'Net paid',
+                    'Airbnb settlement',
+                    'Credit balance',
                     'Current balance',
                     'Details',
                   ]}
@@ -982,6 +909,8 @@ export function ReportsPage({
                       <td>{row.property_name}</td>
                       <td>{formatCurrency(row.total)}</td>
                       <td>{formatCurrency(row.paid)}</td>
+                      <td>{formatCurrency(row.settlement_credit ?? 0)}</td>
+                      <td>{formatCurrency(row.credit_balance ?? 0)}</td>
                       <td className="font-semibold">{formatCurrency(row.balance)}</td>
                       <td>{folioLink(row.group_id)}</td>
                     </tr>
@@ -1042,9 +971,10 @@ export function ReportsPage({
                 blocked imports do not contribute sold nights or allocated revenue.
               </li>
               <li>
-                Billed amounts are spread evenly across each stay’s nights, including tax and billable extras; OTA
-                metadata charges are excluded. Average nightly rate uses billed room charges only; stays without an
-                invoice contribute nights but no billed revenue.
+                Total billed, collected on these bills, and outstanding use complete booking invoices when any room
+                overlaps the selected stay dates. They include tax, extras, and invoiced cancellations; blocked imports
+                and OTA metadata charges are excluded. Collections on these bills include all successful payments less
+                refunds, regardless of payment date. These are current totals, not historical closing balances.
               </li>
               <li>
                 Occupancy uses the current room inventory and excludes rooms currently in maintenance and dated
@@ -1052,8 +982,9 @@ export function ReportsPage({
                 nights count rooms individually, including rooms in whole-villa bookings.
               </li>
               <li>
-                Collections use payment creation dates in UTC and current transaction statuses. Refunds use the refund
-                transaction’s creation date and reduce net collections.
+                The chart shows room charges allocated across stay nights, excluding tax and extras. Period collections
+                use payment creation dates in UTC, including payments for stays outside the selected dates. Refunds reduce
+                collections on their own transaction date. Full booking totals must not be summed across report periods.
               </li>
               <li>
                 Outstanding balances are current full-folio balances for stays overlapping the selected period,

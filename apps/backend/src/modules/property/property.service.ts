@@ -83,6 +83,13 @@ export class PropertyService {
       });
 
         if (saved.propertyType === PropertyType.RENTAL_VILLAS) await ensureVillaInventory(tx, saved.id);
+        await tx.auditLog.create({ data: {
+          action: 'CREATE', entityType: 'property', entityId: saved.id, propertyId: saved.id,
+          userId: user?.sub ?? null,
+          summary: `Created property "${saved.name}" (${saved.code})`,
+          metadata: { property_id: saved.id, name: saved.name, code: saved.code,
+            property_type: saved.propertyType, organization_id: saved.organizationId ?? null },
+        } });
         return saved;
       });
       return this.toPropertyResponse(property);

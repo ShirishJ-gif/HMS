@@ -68,8 +68,8 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch]         = useState('');
   const [sourceFilter, setSourceFilter] = useState<'ALL' | 'GUEST_REGISTRY' | 'RESERVATION_FEED'>('ALL');
-  const [propertyFilter, setPropertyFilter] = useState(activePropertyId || 'ALL');
   const [page, setPage] = useState(1);
+  const [directoryRevision, setDirectoryRevision] = useState(0);
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   const [directory, setDirectory] = useState<GuestDirectoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -85,8 +85,10 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
   const guestIds = guests.map(g => g.id).join('|');
 
   useEffect(() => {
-    if (activePropertyId) setPropertyFilter(activePropertyId);
-    if (activePropertyId) setGuestForm(current => ({ ...current, property_id: activePropertyId }));
+    setDirectory(null);
+    setSelectedId(null);
+    setShowAddGuest(false);
+    setGuestForm({ ...emptyGuestForm, property_id: activePropertyId });
   }, [activePropertyId]);
 
   useEffect(() => {
@@ -100,7 +102,7 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
 
   useEffect(() => {
     setPage(1);
-  }, [propertyFilter, sourceFilter]);
+  }, [activePropertyId, sourceFilter]);
 
   useEffect(() => {
     let active = true;
@@ -114,7 +116,7 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
           params: {
             limit: guestPageLimit,
             page,
-            property_id: propertyFilter,
+            property_id: activePropertyId || 'ALL',
             search: debouncedSearch.trim() || undefined,
             source: sourceFilter,
           },
@@ -136,7 +138,7 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
       active = false;
       controller.abort();
     };
-  }, [debouncedSearch, page, propertyFilter, sourceFilter]);
+  }, [activePropertyId, debouncedSearch, directoryRevision, page, sourceFilter]);
 
   useEffect(() => {
     if (selectedId && guests.some(g => g.id === selectedId)) return;
@@ -146,9 +148,9 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
   async function createGuest(event: FormEvent) {
     event.preventDefault();
     setGuestFormError(null);
-    const formPropertyId = activePropertyId || (propertyFilter !== 'ALL' ? propertyFilter : '') || guestForm.property_id;
+    const formPropertyId = activePropertyId || guestForm.property_id;
     if (!formPropertyId) {
-      setGuestFormError('Select a property from the top bar or property filter first.');
+      setGuestFormError('Select a property for this guest.');
       return;
     }
     if (!guestForm.name.trim() || !guestForm.phone.trim()) {
@@ -166,26 +168,16 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
         id_proof: 'Not provided',
         address: 'Not provided',
       });
-      setGuestForm({ ...emptyGuestForm, property_id: formPropertyId });
+      setGuestForm(emptyGuestForm);
       setShowAddGuest(false);
       setSourceFilter('GUEST_REGISTRY');
       setPage(1);
       setDirectory(null);
-      setLoading(true);
-      const response = await api.get<GuestDirectoryResponse>('/guests/directory', {
-        params: {
-          limit: guestPageLimit,
-          page: 1,
-          property_id: formPropertyId,
-          source: 'GUEST_REGISTRY',
-        },
-      });
-      setDirectory(response.data);
+      setDirectoryRevision(current => current + 1);
     } catch (saveError) {
       setGuestFormError(getApiErrorMessage(saveError));
     } finally {
       setGuestSubmitting(false);
-      setLoading(false);
     }
   }
 
@@ -200,7 +192,7 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
           <p className="text-[12px] text-slate-400 mt-1">Guest directory</p>
         </div>
         <ActionBtn variant="primary" onClick={() => {
-          setGuestForm(current => ({ ...current, property_id: activePropertyId || (propertyFilter !== 'ALL' ? propertyFilter : current.property_id) }));
+          setGuestForm(current => ({ ...current, property_id: activePropertyId || current.property_id }));
           setGuestFormError(null);
           setShowAddGuest(true);
         }}>
@@ -215,7 +207,7 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
             <form onSubmit={createGuest}>
               <fieldset disabled={guestSubmitting} className="space-y-4 p-5">
                 {guestFormError && <ErrorMsg>{guestFormError}</ErrorMsg>}
-                {!activePropertyId && propertyFilter === 'ALL' ? (
+                {!activePropertyId ? (
                   <label className={labelCls}>
                     <span>Property</span>
                     <select required className={inputCls} value={guestForm.property_id} onChange={event => setGuestForm(current => ({ ...current, property_id: event.target.value }))}>
@@ -223,7 +215,7 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
                       {properties.map(property => <option key={property.id} value={property.id}>{property.name}</option>)}
                     </select>
                   </label>
-                ) : <p className="text-xs text-slate-500">{properties.find(property => property.id === (activePropertyId || propertyFilter))?.name}</p>}
+                ) : <p className="text-xs text-slate-500">{properties.find(property => property.id === activePropertyId)?.name}</p>}
                 <label className={labelCls}>
                   <span>Name <span className="text-rose-500">*</span></span>
                   <input autoFocus required autoComplete="name" className={inputCls} value={guestForm.name} onChange={event => setGuestForm(current => ({ ...current, name: event.target.value }))} />
@@ -264,12 +256,6 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
               ]}
             />
           </div>
-          {properties.length > 1 && (
-            <div className="w-[260px] max-w-full">
-              <CustomSelect onChange={setPropertyFilter} value={propertyFilter}
-                options={[{ label: 'All properties', value: 'ALL' }, ...properties.map(p => ({ label: p.name, value: p.id }))]} />
-            </div>
-          )}
         </div>
 
         <div className="flex items-center justify-between gap-3 pt-2">
@@ -281,7 +267,7 @@ export function GuestsPage({ activePropertyId = '' }: { activePropertyId?: strin
           <div className="py-16 text-center border-y border-slate-200">
             <Users size={32} className="mx-auto mb-3 text-slate-400" />
             <h3 className="text-sm font-semibold text-slate-700">No guests found</h3>
-            <button type="button" onClick={() => { setSearch(''); setSourceFilter('ALL'); setPropertyFilter(activePropertyId || 'ALL'); }} className="mt-3 text-sm font-semibold text-slate-600 hover:text-slate-900">Clear filters</button>
+            <button type="button" onClick={() => { setSearch(''); setSourceFilter('ALL'); }} className="mt-3 text-sm font-semibold text-slate-600 hover:text-slate-900">Clear filters</button>
           </div>
         )}
         <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,290px),1fr))] items-start gap-4" aria-busy={loading}>

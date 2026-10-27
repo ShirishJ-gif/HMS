@@ -363,7 +363,7 @@ function buildInventory(today: string): { availability: AvailabilitySummary; inv
   };
 }
 
-export function createPreviewData(dashboardDate = localToday()) {
+export function createPreviewData(dashboardDate = localToday(), rangeFrom?: string) {
   const today = localToday();
   const reservationGroups = buildGroups(today);
   const housekeeping = buildHousekeeping(today, reservationGroups);
@@ -413,6 +413,53 @@ export function createPreviewData(dashboardDate = localToday()) {
     revenue_by_ota: [...sourceTotals.values()], collections_trend: Array.from({ length: 7 }, (_, index) => ({ date: addDays(dashboardDate, index - 6), amount: netForDate(addDays(dashboardDate, index - 6)) })),
     arrivals, departures, upcoming_arrivals: schedule(reservationGroups.filter(group => group.reservation_status === 'BOOKED' && group.rooms[0].arrival_date > dashboardDate && group.rooms[0].arrival_date < addDays(dashboardDate, 7)), 'arrival'),
   };
+  const currentArrivals = schedule(reservationGroups.filter(group => group.rooms.some(room => room.arrival_date === today && room.reservation_status === 'BOOKED')), 'arrival');
+  const currentDepartures = schedule(reservationGroups.filter(group => group.rooms.some(room => room.departure_date === today && ['BOOKED', 'CHECKED_IN'].includes(room.reservation_status))), 'departure');
+  dashboard.current = {
+    date: today,
+    unassigned_arrivals: currentArrivals.reduce((sum, row) => sum + row.unassigned_rooms, 0),
+    pending_departures: currentDepartures.reduce((sum, row) => sum + row.pending_rooms, 0),
+    upcoming_arrivals: schedule(reservationGroups.filter(group => group.reservation_status === 'BOOKED' && group.rooms[0].arrival_date > today && group.rooms[0].arrival_date < addDays(today, 7)), 'arrival'),
+  };
+  if (rangeFrom) {
+    const days = Math.round((Date.parse(dashboardDate) - Date.parse(rangeFrom)) / 86400000) + 1;
+    const previousFrom = addDays(rangeFrom, -days);
+    const paymentDate = (value: string) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(value));
+    const inRange = (value: string) => value >= rangeFrom && value <= dashboardDate;
+    const rangePayments = sampleTransactions.filter(payment => inRange(paymentDate(payment.created_at)));
+    const net = (payments: typeof sampleTransactions) => payments.reduce((sum, payment) => sum + (payment.status === 'SUCCEEDED' ? payment.amount : payment.status === 'REFUNDED' ? -payment.amount : 0), 0);
+    const rangeArrivals = schedule(reservationGroups.filter(group => group.rooms.some(room => inRange(room.arrival_date) && room.reservation_status !== 'CANCELLED')), 'arrival');
+    const rangeDepartures = schedule(reservationGroups.filter(group => group.rooms.some(room => inRange(room.departure_date) && room.reservation_status !== 'CANCELLED')), 'departure');
+    const rangeSources = new Map<string, { label: string; collected: number; refunded: number; amount: number }>();
+    for (const billing of billings) {
+      const label = reservationGroups.find(group => group.id === billing.reservation_room.reservation_group_id)?.source ?? 'Direct';
+      const row = rangeSources.get(label) ?? { label, collected: 0, refunded: 0, amount: 0 };
+      for (const payment of billing.payments.filter(payment => inRange(paymentDate(payment.created_at)))) {
+        if (payment.status === 'SUCCEEDED') row.collected += payment.amount;
+        if (payment.status === 'REFUNDED') row.refunded += payment.amount;
+      }
+      row.amount = row.collected - row.refunded;
+      if (row.collected || row.refunded) rangeSources.set(label, row);
+    }
+    dashboard.period = {
+      from: rangeFrom, to: dashboardDate, days,
+      bookings_created: reservationGroups.filter(group => inRange(paymentDate(group.created_at))).length,
+      arrivals_count: rangeArrivals.reduce((sum, row) => sum + row.room_count, 0),
+      departures_count: rangeDepartures.reduce((sum, row) => sum + row.room_count, 0),
+      pending_arrivals: rangeArrivals.reduce((sum, row) => sum + row.pending_rooms, 0),
+      pending_departures: rangeDepartures.reduce((sum, row) => sum + row.pending_rooms, 0),
+      net_collected: net(rangePayments),
+      collected: rangePayments.filter(payment => payment.status === 'SUCCEEDED').reduce((sum, payment) => sum + payment.amount, 0),
+      refunded: rangePayments.filter(payment => payment.status === 'REFUNDED').reduce((sum, payment) => sum + payment.amount, 0),
+      previous_net_collected: net(sampleTransactions.filter(payment => paymentDate(payment.created_at) >= previousFrom && paymentDate(payment.created_at) < rangeFrom)),
+      collections_trend: Array.from({ length: days }, (_, index) => {
+        const date = addDays(rangeFrom, index);
+        return { date, amount: net(rangePayments.filter(payment => paymentDate(payment.created_at) === date)) };
+      }),
+      revenue_by_source: [...rangeSources.values()].sort((a, b) => b.amount - a.amount),
+      arrivals: rangeArrivals, departures: rangeDepartures,
+    };
+  }
   const folios = new Map<string, ReservationGroupFolio>();
   for (const group of reservationGroups) {
     const invoices = billings.filter(billing => billing.reservation_room.reservation_group_id === group.id);

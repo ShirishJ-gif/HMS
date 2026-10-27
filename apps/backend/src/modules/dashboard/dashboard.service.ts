@@ -1,6 +1,7 @@
 import { recalculateBilling } from '../billing/billing-calculations';
-import { Injectable } from '@nestjs/common';
-import { BookingStatus, ChannelConnectionStatus, PaymentStatus, Prisma, RoomStatus } from '@prisma/client';
+import { financialGroupVisibilityWhere } from '../billing/financial-scope';
+import { BadRequestException, Injectable } from '@nestjs/common';
+import { BookingStatus, PaymentStatus, Prisma, RoomStatus } from '@prisma/client';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty, propertyIdFilter } from '../auth/property-scope';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -19,18 +20,34 @@ export class DashboardService {
     user?: AuthenticatedUser,
     requestedPropertyId?: string,
     requestedDate?: string,
+    requestedRange?: { from?: string; to?: string },
   ) {
     if (requestedPropertyId) assertCanAccessProperty(user, requestedPropertyId);
     const scopedPropertyId = requestedPropertyId ?? propertyIdFilter(user);
     const currentDate = new Date(`${this.formatAsiaKolkataDate(referenceDate)}T00:00:00Z`);
-    const serviceDate = requestedDate ?? this.formatAsiaKolkataDate(referenceDate);
+    if (requestedRange && (requestedDate || !requestedRange.from || !requestedRange.to)) {
+      throw new BadRequestException('Provide both from and to, without date.');
+    }
+    const serviceDate = requestedRange?.to ?? requestedDate ?? this.formatAsiaKolkataDate(referenceDate);
+    const rangeFrom = requestedRange?.from ?? serviceDate;
+    const periodStartDate = new Date(`${rangeFrom}T00:00:00Z`);
+    const periodEndDate = new Date(`${serviceDate}T00:00:00Z`);
+    const periodDays = (periodEndDate.getTime() - periodStartDate.getTime()) / DAY + 1;
+    if (!Number.isInteger(periodDays) || periodDays < 1 || periodDays > 366 ||
+        periodStartDate.toISOString().slice(0, 10) !== rangeFrom || periodEndDate.toISOString().slice(0, 10) !== serviceDate) {
+      throw new BadRequestException('Choose an end date on or after the start, within 366 days.');
+    }
+    const periodStart = new Date(`${rangeFrom}T00:00:00+05:30`);
+    const periodEnd = new Date(new Date(`${serviceDate}T00:00:00+05:30`).getTime() + DAY);
+    const previousStart = new Date(periodStart.getTime() - periodDays * DAY);
+    const currentNextWeek = new Date(currentDate.getTime() + 7 * DAY);
     const date = new Date(`${serviceDate}T00:00:00Z`);
     const startOfDay = new Date(`${serviceDate}T00:00:00+05:30`);
     const endOfDay = new Date(startOfDay.getTime() + DAY);
     const startOfWeek = new Date(startOfDay.getTime() - 6 * DAY);
     const startOfMonth = new Date(`${serviceDate.slice(0, 7)}-01T00:00:00+05:30`);
     const nextWeek = new Date(date.getTime() + 7 * DAY);
-    const visibility = this.reservationGroupVisibilityWhere();
+    const visibility = financialGroupVisibilityWhere();
     const roomScope = { propertyId: scopedPropertyId, reservationGroup: visibility };
     const [properties, rooms, groups, stayRooms, payments, billings, tasks] = await Promise.all([
       this.prisma.property.findMany({
@@ -55,7 +72,7 @@ export class DashboardService {
           AND: [
             {
               OR: [
-                { createdAt: { gte: startOfDay, lt: endOfDay } },
+                { createdAt: { gte: periodStart, lt: periodEnd } },
                 { status: { in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN] } },
               ],
             },
@@ -72,7 +89,10 @@ export class DashboardService {
               arrivalDate: { gte: date, lt: nextWeek },
               status: { in: [BookingStatus.BOOKED, BookingStatus.CHECKED_IN, BookingStatus.CHECKED_OUT] },
             },
-            { departureDate: date },
+            { arrivalDate: { gte: periodStartDate, lte: periodEndDate } },
+            { departureDate: { gte: periodStartDate, lte: periodEndDate } },
+            { arrivalDate: { gte: currentDate, lt: currentNextWeek } },
+            { departureDate: currentDate },
           ],
         },
         orderBy: [{ arrivalDate: 'asc' }, { id: 'asc' }],
@@ -99,7 +119,7 @@ export class DashboardService {
       }),
       this.prisma.paymentTransaction.findMany({
         where: {
-          createdAt: { gte: new Date(Math.min(startOfWeek.getTime(), startOfMonth.getTime())), lt: endOfDay },
+          createdAt: { gte: new Date(Math.min(startOfWeek.getTime(), startOfMonth.getTime(), previousStart.getTime())), lt: endOfDay },
           status: { in: ['SUCCEEDED', 'REFUNDED'] },
           billing: { reservationRoom: roomScope },
         },
@@ -229,7 +249,49 @@ export class DashboardService {
             b.pending_rooms - a.pending_rooms,
         );
     };
+    const periodPayments = visiblePayments.filter(payment => payment.createdAt >= periodStart && payment.createdAt < periodEnd);
+    const periodArrivals = visibleStays.filter(room => room.arrivalDate >= periodStartDate && room.arrivalDate <= periodEndDate && room.status !== BookingStatus.CANCELLED);
+    const periodDepartures = visibleStays.filter(room => room.departureDate >= periodStartDate && room.departureDate <= periodEndDate && room.status !== BookingStatus.CANCELLED);
+    const periodSources = new Map<string, { label: string; collected: number; refunded: number; amount: number }>();
+    const dailyNet = new Map<string, number>();
+    for (const payment of periodPayments) {
+      const label = this.sourceLabel(payment.billing.reservationRoom?.reservationGroup);
+      const row = periodSources.get(label) ?? { label, collected: 0, refunded: 0, amount: 0 };
+      if (payment.status === 'SUCCEEDED') row.collected += payment.amount.toNumber();
+      else row.refunded += payment.amount.toNumber();
+      row.amount += signedAmount(payment);
+      periodSources.set(label, row);
+      const key = this.formatAsiaKolkataDate(payment.createdAt);
+      dailyNet.set(key, (dailyNet.get(key) ?? 0) + signedAmount(payment));
+    }
     return {
+      period: {
+        from: rangeFrom,
+        to: serviceDate,
+        days: periodDays,
+        bookings_created: visibleGroups.filter(group => group.createdAt >= periodStart && group.createdAt < periodEnd).length,
+        arrivals_count: periodArrivals.length,
+        departures_count: periodDepartures.length,
+        pending_arrivals: periodArrivals.filter(room => room.status === BookingStatus.BOOKED).length,
+        pending_departures: periodDepartures.filter(room => room.status !== BookingStatus.CHECKED_OUT).length,
+        net_collected: round(periodPayments.reduce((sum, payment) => sum + signedAmount(payment), 0)),
+        collected: round(periodPayments.filter(payment => payment.status === 'SUCCEEDED').reduce((sum, payment) => sum + payment.amount.toNumber(), 0)),
+        refunded: round(periodPayments.filter(payment => payment.status === 'REFUNDED').reduce((sum, payment) => sum + payment.amount.toNumber(), 0)),
+        previous_net_collected: round(visiblePayments.filter(payment => payment.createdAt >= previousStart && payment.createdAt < periodStart).reduce((sum, payment) => sum + signedAmount(payment), 0)),
+        collections_trend: Array.from({ length: periodDays }, (_, index) => {
+          const date = new Date(periodStartDate.getTime() + index * DAY).toISOString().slice(0, 10);
+          return { date, amount: round(dailyNet.get(date) ?? 0) };
+        }),
+        revenue_by_source: [...periodSources.values()].map(row => ({ ...row, collected: round(row.collected), refunded: round(row.refunded), amount: round(row.amount) })).sort((a, b) => b.amount - a.amount),
+        arrivals: schedule(periodArrivals, 'arrival'),
+        departures: schedule(periodDepartures, 'departure'),
+      },
+      current: {
+        date: this.formatAsiaKolkataDate(referenceDate),
+        unassigned_arrivals: visibleStays.filter(room => room.arrivalDate.getTime() === currentDate.getTime() && room.status === BookingStatus.BOOKED && !room.roomId).length,
+        pending_departures: visibleStays.filter(room => room.departureDate.getTime() === currentDate.getTime() && ['BOOKED', 'CHECKED_IN'].includes(room.status)).length,
+        upcoming_arrivals: schedule(visibleStays.filter(room => room.arrivalDate > currentDate && room.arrivalDate < currentNextWeek && room.status === BookingStatus.BOOKED), 'arrival'),
+      },
       date: serviceDate,
       timezone: 'Asia/Kolkata',
       generated_at: referenceDate.toISOString(),
@@ -319,19 +381,6 @@ export class DashboardService {
       .filter(Boolean)
       .map((part) => part[0].toUpperCase() + part.slice(1).toLowerCase())
       .join(' ');
-  }
-  private reservationGroupVisibilityWhere(): Prisma.ReservationGroupWhereInput {
-    if (
-      process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY === 'true' ||
-      process.env.ZODOMUS_ENVIRONMENT?.trim() === 'production'
-    )
-      return {};
-    return {
-      OR: [
-        { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
-        { channelConnectionId: null, source: { in: ['DIRECT', 'WALK_IN'] } },
-      ],
-    };
   }
   private formatAsiaKolkataDate(date: Date) {
     return new Intl.DateTimeFormat('en-CA', {

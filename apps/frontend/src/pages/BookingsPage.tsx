@@ -1,7 +1,7 @@
 import { FocusBanner, type DashboardFocus } from '../components/WorkspaceUI';
 import { type Dispatch, type FormEvent, Fragment, type SetStateAction, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, ChevronRight, Pencil } from 'lucide-react';
+import { ChevronDown, ChevronRight, Pencil, RefreshCw } from 'lucide-react';
 import { api, getApiErrorMessage } from '../api/client';
 import { fetchAllPages, PaginatedResponse } from '../api/pagination';
 import { AvailabilitySummary, BookingStatus, PaymentProvider, Property, RatePlan, ReservationGroup, Room, RoomCategory } from '../api/types';
@@ -9,7 +9,9 @@ import { CalendarDatePickerField, InlineCalendarDatePicker } from '../components
 import { CustomSelect } from '../components/CustomSelect';
 import { Spinner } from '../components/Spinner';
 import { TimePolicyPicker } from '../components/TimePolicyPicker';
-import { useAsync } from '../hooks/useAsync';
+import { useCachedQuery } from '../hooks/useCachedQuery';
+import { useWorkspaceState } from '../hooks/useWorkspaceState';
+import { queryCache } from '../api/query-cache';
 import { capitalizeFirstLetter, formatCurrency } from '../utils/format';
 import {
   ErrorMsg,
@@ -503,53 +505,50 @@ function renderTimelineCells({
   });
 }
 
-/* ─── Cache ────────────────────────────────────────────── */
-let _allGroupsCache: ReservationGroup[] | null = null;
-let _allGroupsCacheKey = '';
-let _allGroupsCacheAt = 0;
-const CACHE_TTL = 60_000;
-
 /* ══════════════════════════════════════════════════════════
    BookingsPage
 ══════════════════════════════════════════════════════════ */
 export function BookingsPage({ previewDataEnabled = false, initialFocus, onReturn }: { previewDataEnabled?: boolean; initialFocus?: DashboardFocus | null; onReturn?: () => void }) {
   const [focus, setFocus] = useState(initialFocus);
   const today = getTodayDate();
+  const workspaceKey = `bookings:${previewDataEnabled ? 'sample' : 'live'}:${initialFocus ? JSON.stringify(initialFocus) : 'all'}`;
 
   /* ── View & filter state ── */
-  const [viewMode, setViewMode] = useState<'timeline' | 'ledger'>(initialFocus ? 'ledger' : 'timeline');
+  const [viewMode, setViewMode] = useWorkspaceState<'timeline' | 'ledger'>(`${workspaceKey}:view`, initialFocus ? 'ledger' : 'timeline');
   const [ledgerEditMode, setLedgerEditMode] = useState(false);
-  const [propertyFilter, setPropertyFilter] = useState(initialFocus?.propertyId || 'ALL');
-  const [statusFilter, setStatusFilter] = useState<BookingStatus | 'ALL'>('ALL');
-  const [windowStart, setWindowStart] = useState(() => addDays(today, -2));
-  const [collapsedRoomTypes, setCollapsedRoomTypes] = useState<Set<string>>(() => new Set());
+  // This calendar shows all accessible properties together, independent of the top bar.
+  const propertyFilter = 'ALL';
+  const [statusFilter, setStatusFilter] = useWorkspaceState<BookingStatus | 'ALL'>(`${workspaceKey}:status`, 'ALL');
+  const [windowStart, setWindowStart] = useWorkspaceState(`${workspaceKey}:start`, () => addDays(today, -2));
+  const [collapsedRoomTypes, setCollapsedRoomTypes] = useWorkspaceState<Set<string>>(`${workspaceKey}:collapsed`, () => new Set());
 
   /* ── Tape-chart data (all groups) ── */
-  const [reloadKey, setReloadKey] = useState(0);
-  const [allGroups, setAllGroups] = useState<ReservationGroup[]>(_allGroupsCache ?? []);
-  const [allLoading, setAllLoading] = useState(!_allGroupsCache);
+  const timelineDateTo = addDays(windowStart, WINDOW_DAYS - 1);
+  const timelineGroupsParams = { date_from: windowStart, date_to: timelineDateTo, status: statusFilter !== 'ALL' ? statusFilter : undefined };
+  const groupsState = useCachedQuery(JSON.stringify(['bookings/groups', timelineGroupsParams]),
+    () => fetchAllPages<ReservationGroup>('/bookings/groups', { params: timelineGroupsParams }), !previewDataEnabled);
+  const allGroups = groupsState.data ?? [];
+  const allLoading = groupsState.loading;
+  const allError = groupsState.error;
   const [showTimelineLoader, setShowTimelineLoader] = useState(false);
-  const [allError, setAllError] = useState<string | null>(null);
+  const [showDirectReservationModal, setShowDirectReservationModal] = useState(false);
 
   /* ── Room inventory (full list, shows all rooms even with no bookings) ── */
-  const roomsState = useAsync(async () => fetchAllPages<Room>('/rooms'), []);
-  const propertiesState = useAsync(async () => fetchAllPages<Property>('/properties'), []);
-  const categoriesState = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), []);
-  const ratePlansState = useAsync(async () => fetchAllPages<RatePlan>('/rate-plans'), []);
+  const roomsState = useCachedQuery('rooms', () => fetchAllPages<Room>('/rooms'), !previewDataEnabled);
+  const propertiesState = useCachedQuery('properties', () => fetchAllPages<Property>('/properties'), !previewDataEnabled);
+  const categoriesState = useCachedQuery('room-categories', () => fetchAllPages<RoomCategory>('/room-categories'), !previewDataEnabled && showDirectReservationModal);
+  const ratePlansState = useCachedQuery('rate-plans', () => fetchAllPages<RatePlan>('/rate-plans'), !previewDataEnabled && showDirectReservationModal);
   const previewData = previewDataEnabled ? createPreviewData() : null;
   const displayedGroups = previewData?.reservationGroups ?? allGroups;
   const allRooms = previewData?.rooms ?? roomsState.data ?? [];
   const reservationProperties = propertiesState.data ?? [];
+  const timelineProperties = [...(previewData?.properties ?? reservationProperties)].sort((a, b) => a.name.localeCompare(b.name));
   const reservationCategories = categoriesState.data ?? [];
   const reservationRatePlans = ratePlansState.data ?? [];
-  const inventoryBlocksState = useAsync(async () => {
-    if (previewData || reservationProperties.length === 0) return [] as InventoryBlock[];
-    const selected = propertyFilter === 'ALL'
-      ? reservationProperties
-      : reservationProperties.filter(property => property.id === propertyFilter);
-    const responses = await Promise.all(selected.map(property => api.get<InventoryBlock[]>('/inventory/blocks', { params: { property_id: property.id } })));
+  const inventoryBlocksState = useCachedQuery(JSON.stringify(['inventory/blocks', reservationProperties.map(property => property.id).sort()]), async () => {
+    const responses = await Promise.all(reservationProperties.map(property => api.get<InventoryBlock[]>('/inventory/blocks', { params: { property_id: property.id } })));
     return responses.flatMap(response => response.data);
-  }, [previewDataEnabled, propertiesState.data, propertyFilter, reloadKey]);
+  }, !previewDataEnabled && reservationProperties.length > 0);
 
   /* ── Detail drawer ── */
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -559,7 +558,6 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [reminderPendingId, setReminderPendingId] = useState<string | null>(null);
-  const [showDirectReservationModal, setShowDirectReservationModal] = useState(false);
   const [editingDirectReservationId, setEditingDirectReservationId] = useState<string | null>(null);
   const [directReservationSubmitting, setDirectReservationSubmitting] = useState(false);
   const [directReservationError, setDirectReservationError] = useState<string | null>(null);
@@ -613,49 +611,21 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
   }
 
   /* ── Ledger feed (paginated) ── */
-  const [feedPage, setFeedPage] = useState(1);
-  const feedState = useAsync(
+  const [feedPage, setFeedPage] = useWorkspaceState(`${workspaceKey}:page`, 1);
+  const feedState = useCachedQuery(JSON.stringify(['bookings/feed', feedPage]),
     async () => (await api.get<PaginatedResponse<ReservationGroup>>('/bookings/feed', { params: { page: feedPage, limit: 10 } })).data,
-    [reloadKey, feedPage]
+    !previewDataEnabled && viewMode === 'ledger' && !focus,
   );
-  const focusState = useAsync(async () => focus && !previewDataEnabled ? fetchAllPages<ReservationGroup>('/bookings/groups', { params: { property_id: focus.propertyId || undefined, date_from: addDays(focus.date, -1), date_to: focus.date } }) : [], [focus, previewDataEnabled, reloadKey]);
+  const focusState = useCachedQuery(JSON.stringify(['bookings/focus', focus]), async () => focus ? fetchAllPages<ReservationGroup>('/bookings/groups', { params: { property_id: focus.propertyId || undefined, date_from: addDays(focus.date, -1), date_to: focus.date } }) : [], Boolean(focus) && !previewDataEnabled);
   const focusedGroups = (previewData?.reservationGroups ?? focusState.data ?? []).filter(group => focus && !group.import_blocked && group.reservation_status !== 'CANCELLED' && (!focus.propertyId || group.property.id === focus.propertyId) && group.rooms.some(room => focus.kind === 'unassigned_arrivals' ? room.arrival_date === focus.date && room.reservation_status === 'BOOKED' && !room.room.id : room.departure_date === focus.date && ['BOOKED', 'CHECKED_IN'].includes(room.reservation_status)));
   const feedTotalPages = focus ? Math.max(1, Math.ceil(focusedGroups.length / 10)) : feedState.data?.meta.total_pages ?? 1;
   const selectedGroup = selectedGroupId ? (focusedGroups.find(g => g.id === selectedGroupId) ?? displayedGroups.find(g => g.id === selectedGroupId) ?? feedState.data?.data.find(g => g.id === selectedGroupId) ?? null) : null;
-  const timelineDateTo = addDays(windowStart, WINDOW_DAYS - 1);
-  const timelineGroupsParams = {
-    date_from: windowStart,
-    date_to: timelineDateTo,
-    property_id: propertyFilter !== 'ALL' ? propertyFilter : undefined,
-    status: statusFilter !== 'ALL' ? statusFilter : undefined,
-  };
-  const timelineGroupsCacheKey = JSON.stringify(timelineGroupsParams);
-
   useEffect(() => {
-    let active = true;
-    let loaderTimer: number | undefined;
-    const controller = new AbortController();
-    const fresh = _allGroupsCache && _allGroupsCacheKey === timelineGroupsCacheKey && reloadKey === 0 && Date.now() - _allGroupsCacheAt < CACHE_TTL;
-    if (fresh) { setAllGroups(_allGroupsCache!); setAllLoading(false); setShowTimelineLoader(false); return; }
-    setAllLoading(true);
     setShowTimelineLoader(false);
-    loaderTimer = window.setTimeout(() => {
-      if (active) setShowTimelineLoader(true);
-    }, TIMELINE_LOADER_DELAY_MS);
-    setAllError(null);
-    const finishLoading = () => {
-      setAllLoading(false);
-      setShowTimelineLoader(false);
-    };
-    fetchAllPages<ReservationGroup>('/bookings/groups', { params: timelineGroupsParams, signal: controller.signal })
-      .then(data => { if (!active) return; _allGroupsCache = data; _allGroupsCacheKey = timelineGroupsCacheKey; _allGroupsCacheAt = Date.now(); setAllGroups(data); finishLoading(); })
-      .catch((e: unknown) => { if (!active || controller.signal.aborted) return; setAllError(getApiErrorMessage(e)); finishLoading(); });
-    return () => {
-      active = false;
-      controller.abort();
-      if (loaderTimer) window.clearTimeout(loaderTimer);
-    };
-  }, [reloadKey, timelineGroupsCacheKey]);
+    if (!allLoading || groupsState.data) return;
+    const timer = window.setTimeout(() => setShowTimelineLoader(true), TIMELINE_LOADER_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [allLoading, groupsState.data]);
 
   useEffect(() => {
     if (!actionStatus) return;
@@ -664,12 +634,13 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
   }, [actionStatus]);
 
   useEffect(() => {
-    if (directReservationForm.property_id || reservationProperties.length !== 1) return;
+    const property = (reservationProperties.length === 1 ? reservationProperties[0] : null);
+    if (directReservationForm.property_id || !property) return;
     setDirectReservationForm((current) => ({
       ...current,
-      property_id: reservationProperties[0].id,
-      check_in_time: reservationProperties[0].default_check_in_time,
-      check_out_time: reservationProperties[0].default_check_out_time,
+      property_id: property.id,
+      check_in_time: property.default_check_in_time,
+      check_out_time: property.default_check_out_time,
     }));
   }, [directReservationForm.property_id, reservationProperties]);
 
@@ -699,7 +670,7 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
 
   useEffect(() => {
     const { property_id, check_in_date, check_out_date } = directReservationForm;
-    if (!property_id || !check_in_date || !check_out_date || check_out_date <= check_in_date || previewDataEnabled) {
+    if (!showDirectReservationModal || !property_id || !check_in_date || !check_out_date || check_out_date <= check_in_date || previewDataEnabled) {
       setDirectReservationAvailability(null);
       setDirectReservationAvailabilityLoading(false);
       setDirectReservationAvailabilityError(null);
@@ -732,13 +703,14 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
     directReservationForm.check_in_date,
     directReservationForm.check_out_date,
     previewDataEnabled,
+    showDirectReservationModal,
   ]);
 
   /* ── Actions ── */
   async function checkOut(id: string) {
     if (isPreviewId(id)) { setActionError('Sample preview records are read-only. Turn off sample data to work with live records.'); return; }
     setActionError(null); setPendingId(id);
-    try { await api.put(`/bookings/groups/rooms/${id}/checkout`); _allGroupsCache = null; setReloadKey(v => v + 1); }
+    try { await api.put(`/bookings/groups/rooms/${id}/checkout`); }
     catch (e) { setActionError(getApiErrorMessage(e)); } finally { setPendingId(null); }
   }
   async function sendReminder(id: string) {
@@ -894,15 +866,13 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
         ? await api.put<ReservationGroup>(`/reservations/direct/${editingDirectReservationId}`, payload)
         : await api.post<ReservationGroup>('/reservations/direct', payload);
 
-      _allGroupsCache = null;
       setFeedPage(1);
       setViewMode('ledger');
       setSelectedGroupId(data.id);
-      setReloadKey((value) => value + 1);
       setShowDirectReservationModal(false);
       setEditingDirectReservationId(null);
       setOpenDirectReservationDatePicker(null);
-      setDirectReservationForm(createDirectReservationForm(today, reservationProperties.length === 1 ? reservationProperties[0] : null));
+      setDirectReservationForm(createDirectReservationForm(today, (reservationProperties.length === 1 ? reservationProperties[0] : null)));
       setActionStatus(editingDirectReservationId ? 'Walk-in reservation updated.' : 'Walk-in reservation created. Inventory sync has been queued for active OTA connections.');
     } catch (e) {
       setDirectReservationError(getApiErrorMessage(e));
@@ -912,9 +882,6 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
   }
 
   /* ── Derived data ── */
-  const properties = Array.from(
-    new Map(allRooms.map(r => [r.property.id, r.property])).values()
-  ).sort((a, b) => a.name.localeCompare(b.name));
   const directReservationCategories = reservationCategories
     .filter((category) =>
       !directReservationForm.property_id || category.property_id === directReservationForm.property_id,
@@ -955,7 +922,6 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
   const windowEnd = addDays(windowStart, WINDOW_DAYS);
 
   const filteredGroups = displayedGroups.filter(g => {
-    if (propertyFilter !== 'ALL' && g.property.id !== propertyFilter) return false;
     if (statusFilter !== 'ALL') {
       if (!g.rooms.some(r => r.reservation_status === statusFilter)) return false;
     }
@@ -963,12 +929,10 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
   });
 
   /* Room rows come from real room inventory; unassigned bookings stay in dedicated TBD lanes until check-in assigns a room. */
-  const villaPropertyIds = new Set(reservationProperties.filter(property => property.property_type === 'RENTAL_VILLAS').map(property => property.id));
-  const timelineProperties = reservationProperties.filter(property => propertyFilter === 'ALL' || property.id === propertyFilter);
-  const isVillaTimeline = !previewDataEnabled && timelineProperties.length > 0 && timelineProperties.every(property => villaPropertyIds.has(property.id));
+  const villaPropertyIds = new Set(timelineProperties.filter(property => property.property_type === 'RENTAL_VILLAS').map(property => property.id));
   const roomRows = sortRoomRows([
     ...buildRoomRows(allRooms.filter(room => !villaPropertyIds.has(room.property.id)), propertyFilter),
-    ...reservationProperties.filter(property => villaPropertyIds.has(property.id) && (propertyFilter === 'ALL' || propertyFilter === property.id)).map(property => ({ roomKey: property.id, roomNum: 'Villa', category: 'Rental villas', propertyName: property.name, propertyId: property.id, isVilla: true })),
+    ...timelineProperties.filter(property => villaPropertyIds.has(property.id)).map(property => ({ roomKey: property.id, roomNum: 'Villa', category: 'Rental villas', propertyName: property.name, propertyId: property.id, isVilla: true })),
   ]);
   const unassignedRows = buildUnassignedTimelineRows(filteredGroups.filter(group => !villaPropertyIds.has(group.property.id)), propertyFilter, days);
   const blockedRows: BlockTimelineRow[] = (inventoryBlocksState.data ?? [])
@@ -983,20 +947,29 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
         block,
       };
     });
-  const groupedRooms = Object.entries(
-    roomRows.reduce<Record<string, PhysRoomRow[]>>((acc, r) => { (acc[r.category] ??= []).push(r); return acc; }, {})
-  );
+  const propertyRows = timelineProperties.map(property => ({
+    property,
+    unassignedRows: unassignedRows.filter(row => row.propertyId === property.id),
+    blockedRows: blockedRows.filter(row => row.propertyId === property.id),
+    groupedRooms: Object.entries(roomRows.filter(row => row.propertyId === property.id).reduce<Record<string, PhysRoomRow[]>>((acc, row) => {
+      (acc[row.category] ??= []).push(row);
+      return acc;
+    }, {})),
+  }));
 
-  /* Occupancy per day */
+  /* Occupancy across the shared calendar: each room or whole villa counts once. */
   const occByDay: Record<string, number> = {};
   for (const day of days) {
-    const occ = displayedGroups.filter(g =>
-      g.rooms.some((r) => {
-        const stayWindow = getTimelineStayWindow(r);
-        return stayWindow.start <= day && stayWindow.end > day && r.reservation_status !== 'CHECKED_OUT' && r.reservation_status !== 'CANCELLED';
-      })
-    ).length;
-    occByDay[day] = roomRows.length > 0 ? Math.round((occ / Math.max(roomRows.length, 1)) * 100) : 0;
+    const occupied = new Set<string>();
+    for (const group of displayedGroups) {
+      for (const room of group.rooms) {
+        const stay = getTimelineStayWindow(room);
+        if (stay.start <= day && stay.end > day && !['CHECKED_OUT', 'CANCELLED'].includes(room.reservation_status)) {
+          occupied.add(villaPropertyIds.has(group.property.id) ? group.property.id : room.room.id || room.id);
+        }
+      }
+    }
+    occByDay[day] = roomRows.length ? Math.min(100, Math.round(occupied.size / roomRows.length * 100)) : 0;
   }
 
   /* KPIs */
@@ -1025,34 +998,28 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
             <span className="text-[9.5px] font-bold uppercase tracking-[0.15em] text-slate-400">Reservations</span>
           </div>
           <h1 className="text-[24px] font-bold text-slate-900 tracking-tight leading-none">Reservations</h1>
+          <p className="mt-2 text-xs text-slate-500">All your properties and villas in one calendar.</p>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          {!previewDataEnabled && <button type="button" className={secondaryBtn}
+            disabled={allLoading || roomsState.loading || propertiesState.loading}
+            onClick={() => queryCache.invalidate()}>
+            <RefreshCw size={14} /> Refresh
+          </button>}
           <button
             type="button"
             onClick={() => {
               setDirectReservationError(null);
               setDirectReservationFieldErrors({});
               setEditingDirectReservationId(null);
-              setDirectReservationForm(createDirectReservationForm(today, reservationProperties.length === 1 ? reservationProperties[0] : null));
+              setDirectReservationForm(createDirectReservationForm(today, (reservationProperties.length === 1 ? reservationProperties[0] : null)));
               setShowDirectReservationModal(true);
             }}
             className={`${primaryBtn} !h-9 !px-3.5 !py-0 text-[11.5px]`}
           >
             + Walk-in reservation
           </button>
-
-          {/* Property selector */}
-          <div className="flex items-center gap-2">
-            {/* <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap select-none">Property</span> */}
-            <div className="w-44">
-              <CustomSelect
-                options={[{ label: 'All properties', value: 'ALL' }, ...properties.map(p => ({ label: p.name, value: p.id }))]}
-                value={propertyFilter}
-                onChange={setPropertyFilter}
-              />
-            </div>
-          </div>
 
           {/* Date navigator */}
           <div className="bg-white border border-black/[0.07] rounded-lg flex items-center shadow-sm relative">
@@ -1130,6 +1097,10 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
       </div>
 
       {allError && <ErrorMsg>{allError}</ErrorMsg>}
+      {propertiesState.error && <ErrorMsg>{propertiesState.error}</ErrorMsg>}
+      {roomsState.error && <ErrorMsg>{roomsState.error}</ErrorMsg>}
+      {inventoryBlocksState.error && <ErrorMsg>{inventoryBlocksState.error}</ErrorMsg>}
+      {propertiesState.loading && !previewData && <LoadingMsg>Loading properties…</LoadingMsg>}
       {actionError && <ErrorMsg>{actionError}</ErrorMsg>}
 
       {/* ════════════════════════════════════════════════
@@ -1147,92 +1118,97 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
               </button>
             ))}
             <span className="ml-auto text-[11px] text-slate-400">
-              {roomRows.length} rooms · {filteredGroups.reduce((s, g) => s + g.rooms.length, 0)} stays · {blockedRows.length} blocked
+              {timelineProperties.length} properties · {roomRows.length} rooms / villas · {filteredGroups.reduce((s, g) => s + g.rooms.length, 0)} stays · {blockedRows.length} blocked
             </span>
           </div>
 
           {/* ── Tape chart ── */}
-          <div className="relative bg-white rounded-xl border border-black/[0.06] flex flex-col overflow-hidden" style={{ maxHeight: 'calc(100vh - 240px)', minHeight: isVillaTimeline ? undefined : 720 }}>
+          <div className="relative bg-white rounded-xl border border-black/[0.06] flex flex-col overflow-hidden" aria-label="All properties reservation calendar" style={{ maxHeight: 'calc(100vh - 240px)' }}>
             {showTimelineLoader && allLoading && !previewData && (
               <div className="absolute inset-0 z-30 flex items-center justify-center bg-white/65 backdrop-blur-[1px]">
                 <Spinner size="lg" />
               </div>
             )}
 
-              <div className={`${isVillaTimeline ? 'flex-auto' : 'flex-1'} min-h-0 overflow-y-auto scrollbar-none`}>
-                {roomRows.length === 0 && unassignedRows.length === 0 && blockedRows.length === 0 ? (
+              <div className="flex-auto min-h-0 overflow-y-auto scrollbar-none">
+                {timelineProperties.length === 0 ? (
                   <div className="py-16 text-center">
-                    <p className="text-[13px] font-semibold text-slate-500">No rooms found for the selected filters.</p>
+                    <p className="text-[13px] font-semibold text-slate-500">{propertiesState.loading ? 'Loading properties…' : 'No properties are assigned to your account yet.'}</p>
                   </div>
                 ) : (
                   <div className="grid" style={{ gridTemplateColumns: `${SIDEBAR_W}px minmax(0, 1fr)` }}>
                     <div className="border-r border-slate-100 bg-white">
                       <div className="bg-slate-50 border-b border-slate-100 flex items-end px-4 pb-2.5" style={{ height: 80 }}>
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Room</span>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Property / room</span>
                       </div>
-                      {unassignedRows.length > 0 && (
-                        <>
-                          <div className="bg-sky-50/80 border-b border-sky-100 flex items-center px-4" style={{ height: 28 }}>
-                            <span className="text-[9.5px] font-bold uppercase tracking-wider text-sky-700">Unassigned / TBD</span>
-                          </div>
-                          {unassignedRows.map((row) => (
-                            <div key={row.rowKey} className="border-b border-sky-100 flex items-center gap-2.5 px-4 bg-sky-50/30" style={{ height: ROW_H }}>
-                              <span className="w-8 h-8 rounded-lg bg-sky-100 flex items-center justify-center text-[10px] font-extrabold text-sky-700 flex-shrink-0">
-                                TBD
-                              </span>
-                              <div className="min-w-0">
-                                <p className="text-[11.5px] font-bold text-slate-800 leading-tight">
-                                  {row.category}
-                                </p>
-                                <p className="text-[9.5px] text-slate-400 truncate">
-                                  {properties.length > 1 ? `${row.propertyName} · ` : ''}Awaiting front-desk room assignment
-                                </p>
+                      {propertyRows.map(({ property, unassignedRows, blockedRows, groupedRooms }) => (
+                        <Fragment key={property.id}>
+                          {property.property_type !== 'RENTAL_VILLAS' && <div className="flex items-center border-b border-slate-200 bg-slate-100 px-4" style={{ height: 36 }}>
+                            <h2 className="truncate text-[11px] font-bold text-slate-800" title={property.name}>{property.name}</h2>
+                          </div>}
+                          {groupedRooms.length === 0 && unassignedRows.length === 0 && blockedRows.length === 0 && <div className="flex items-center border-b border-slate-100 px-4 text-xs text-slate-400" style={{ height: ROW_H }}>No rooms configured</div>}
+                          {unassignedRows.length > 0 && (
+                            <>
+                              <div className="bg-sky-50/80 border-b border-sky-100 flex items-center px-4" style={{ height: 28 }}>
+                                <span className="text-[9.5px] font-bold uppercase tracking-wider text-sky-700">Unassigned / TBD</span>
                               </div>
-                            </div>
-                          ))}
-                        </>
-                      )}
-                      {blockedRows.length > 0 && (
-                        <>
-                          {blockedRows.map(row => (
-                            <div key={row.rowKey} className="border-b border-amber-100 flex items-center gap-2.5 px-4 bg-amber-50/30" style={{ height: ROW_H }}>
-                              <span className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center text-[10px] font-extrabold text-amber-700 flex-shrink-0">!</span>
-                              <div className="min-w-0"><p className="text-[11.5px] font-bold text-slate-800 leading-tight">{row.block.source_name || (row.block.source.startsWith('ICAL_IMPORT:') ? 'Imported calendar' : 'Manual')}</p><p className="text-[9.5px] text-slate-400 truncate">{row.propertyName} · {row.block.from_date} to {row.block.to_date}</p></div>
-                            </div>
-                          ))}
-                        </>
-                      )}
-                      {groupedRooms.map(([category, rooms]) => {
-                        const collapsed = collapsedRoomTypes.has(category);
-                        return (
-                          <Fragment key={category}>
-                            <div className="bg-slate-50/95 border-b border-slate-100 flex items-center px-4" style={{ height: rooms[0]?.isVilla ? 36 : 28 }}>
-                              <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-500">{category}</span>
-                              <span className="ml-1.5 text-[9px] font-semibold text-slate-400">· {rooms.length} {rooms[0]?.isVilla ? 'villas' : 'rooms'}</span>
-                              <button type="button" onClick={() => toggleRoomType(category)}
-                                className="ml-2 flex h-5 w-5 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors"
-                                aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${category} rooms`}>
-                                {collapsed ? <ChevronRight size={13} strokeWidth={2.4} /> : <ChevronDown size={13} strokeWidth={2.4} />}
-                              </button>
-                            </div>
-                            {!collapsed && rooms.map(room => (
-                              <div key={room.roomKey} className="border-b border-slate-100 flex items-center gap-2.5 px-4 bg-white" style={{ height: room.isVilla ? VILLA_ROW_H : ROW_H }}>
-                                <span className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-[11px] font-extrabold text-slate-600 flex-shrink-0">
-                                  {room.roomNum ?? '?'}
-                                </span>
-                                <div className="min-w-0">
-                                  <p className="text-[11.5px] font-bold text-slate-800 leading-tight">
-                                    {room.isVilla ? room.propertyName : `Room ${room.roomNum}`}
-                                  </p>
-                                  {properties.length > 1 && (
-                                    <p className="text-[9.5px] text-slate-400 truncate">{room.propertyName.split(' ')[0]}</p>
-                                  )}
+                              {unassignedRows.map((row) => (
+                                <div key={row.rowKey} className="border-b border-sky-100 flex items-center gap-2.5 px-4 bg-sky-50/30" style={{ height: ROW_H }}>
+                                  <span className="w-8 h-8 rounded-lg bg-sky-100 flex items-center justify-center text-[10px] font-extrabold text-sky-700 flex-shrink-0">
+                                    TBD
+                                  </span>
+                                  <div className="min-w-0">
+                                    <p className="text-[11.5px] font-bold text-slate-800 leading-tight">
+                                      {row.category}
+                                    </p>
+                                    <p className="text-[9.5px] text-slate-400 truncate">
+                                      Awaiting front-desk room assignment
+                                    </p>
+                                  </div>
                                 </div>
-                              </div>
-                            ))}
-                          </Fragment>
-                        );
-                      })}
+                              ))}
+                            </>
+                          )}
+                          {blockedRows.length > 0 && (
+                            <>
+                              {blockedRows.map(row => (
+                                <div key={row.rowKey} className="border-b border-amber-100 flex items-center gap-2.5 px-4 bg-amber-50/30" style={{ height: ROW_H }}>
+                                  <span className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center text-[10px] font-extrabold text-amber-700 flex-shrink-0">!</span>
+                                  <div className="min-w-0"><p className="text-[11.5px] font-bold text-slate-800 leading-tight">{row.block.source_name || (row.block.source.startsWith('ICAL_IMPORT:') ? 'Imported calendar' : 'Manual')}</p><p className="text-[9.5px] text-slate-400 truncate">{row.propertyName} · {row.block.from_date} to {row.block.to_date}</p></div>
+                                </div>
+                              ))}
+                            </>
+                          )}
+                          {groupedRooms.map(([category, rooms]) => {
+                            const collapsed = collapsedRoomTypes.has(`${property.id}::${category}`);
+                            return (
+                              <Fragment key={category}>
+                                {!rooms[0]?.isVilla && <div className="bg-slate-50/95 border-b border-slate-100 flex items-center px-4" style={{ height: 28 }}>
+                                  <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-500">{category}</span>
+                                  <span className="ml-1.5 text-[9px] font-semibold text-slate-400">· {rooms.length} rooms</span>
+                                  <button type="button" onClick={() => toggleRoomType(`${property.id}::${category}`)}
+                                    className="ml-2 flex h-5 w-5 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+                                    aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${property.name} ${category} rooms`}>
+                                    {collapsed ? <ChevronRight size={13} strokeWidth={2.4} /> : <ChevronDown size={13} strokeWidth={2.4} />}
+                                  </button>
+                                </div>}
+                                {!collapsed && rooms.map(room => (
+                                  <div key={room.roomKey} className="border-b border-slate-100 flex items-center gap-2.5 px-4 bg-white" style={{ height: room.isVilla ? VILLA_ROW_H : ROW_H }}>
+                                    <span className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-[11px] font-extrabold text-slate-600 flex-shrink-0">
+                                      {room.roomNum ?? '?'}
+                                    </span>
+                                    <div className="min-w-0">
+                                      <p className="text-[11.5px] font-bold text-slate-800 leading-tight">
+                                        {room.isVilla ? room.propertyName : `Room ${room.roomNum}`}
+                                      </p>
+                                    </div>
+                                  </div>
+                                ))}
+                              </Fragment>
+                            );
+                          })}
+                        </Fragment>
+                      ))}
                     </div>
 
                     <div className="overflow-x-auto scrollbar-none overscroll-x-contain">
@@ -1255,67 +1231,75 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
                             );
                           })}
                         </div>
-                        {unassignedRows.length > 0 && (
-                          <>
-                            <div className="flex bg-sky-50/70 border-b border-sky-100" style={{ height: 28 }}>
-                              {days.map((day) => (
-                                <div key={day} className={`flex-shrink-0 ${day === today ? 'bg-sky-100/60' : isWeekend(day) ? 'bg-sky-50/50' : ''}`}
-                                  style={{ width: COL_W }} />
-                              ))}
-                            </div>
-                            {unassignedRows.map((row) => (
-                              <div key={row.rowKey} className="flex border-b border-sky-100 group" style={{ height: ROW_H }}>
-                                {renderTimelineCells({
-                                  days,
-                                  today,
-                                  selectedGroupId,
-                                  onSelectGroup: (id) => setSelectedGroupId((current) => current === id ? null : id),
-                                  getBarForDay: (day) => getUnassignedBar(row, day),
-                                })}
-                              </div>
-                            ))}
-                          </>
-                        )}
-
-                        {blockedRows.length > 0 && (
-                          <>
-                            {blockedRows.map(row => (
-                              <div key={row.rowKey} className="flex border-b border-amber-100 group" style={{ height: ROW_H }}>
-                                {renderTimelineCells({ days, today, selectedGroupId, onSelectGroup: () => undefined, getBarForDay: day => {
-                                  const start = row.block.from_date;
-                                  const end = addDays(row.block.to_date, 1);
-                                  return start <= day && end > day ? { block: row.block } : undefined;
-                                } })}
-                              </div>
-                            ))}
-                          </>
-                        )}
-
-                        {groupedRooms.map(([category, rooms]) => {
-                          const collapsed = collapsedRoomTypes.has(category);
-                          return (
-                            <Fragment key={category}>
-                              <div className="flex bg-slate-50/80 border-b border-slate-100" style={{ height: rooms[0]?.isVilla ? 36 : 28 }}>
-                                {days.map(day => (
-                                  <div key={day} className={`flex-shrink-0 ${day === today ? 'bg-indigo-50/60' : isWeekend(day) ? 'bg-slate-50/50' : ''}`}
-                                    style={{ width: COL_W }} />
-                                ))}
-                              </div>
-                              {!collapsed && rooms.map(room => (
-                                <div key={room.roomKey} className="flex border-b border-slate-100 group" style={{ height: room.isVilla ? VILLA_ROW_H : ROW_H }}>
-                                  {renderTimelineCells({
-                                    days,
-                                    today,
-                                    selectedGroupId,
-                                    onSelectGroup: (id) => setSelectedGroupId((current) => current === id ? null : id),
-                                    getBarForDay: (day) => getAssignedRoomBar(filteredGroups, room, day, propertyFilter),
-                                    rowHeight: room.isVilla ? VILLA_ROW_H : ROW_H,
-                                  })}
+                        {propertyRows.map(({ property, unassignedRows, blockedRows, groupedRooms }) => (
+                          <Fragment key={property.id}>
+                            {property.property_type !== 'RENTAL_VILLAS' && <div className="flex border-b border-slate-200 bg-slate-100" style={{ height: 36 }}>
+                              {days.map(day => <div key={day} className="shrink-0" style={{ width: COL_W }} />)}
+                            </div>}
+                            {groupedRooms.length === 0 && unassignedRows.length === 0 && blockedRows.length === 0 && <div className="border-b border-slate-100" style={{ height: ROW_H }} />}
+                            {unassignedRows.length > 0 && (
+                              <>
+                                <div className="flex bg-sky-50/70 border-b border-sky-100" style={{ height: 28 }}>
+                                  {days.map((day) => (
+                                    <div key={day} className={`flex-shrink-0 ${day === today ? 'bg-sky-100/60' : isWeekend(day) ? 'bg-sky-50/50' : ''}`}
+                                      style={{ width: COL_W }} />
+                                  ))}
                                 </div>
-                              ))}
-                            </Fragment>
-                          );
-                        })}
+                                {unassignedRows.map((row) => (
+                                  <div key={row.rowKey} className="flex border-b border-sky-100 group" style={{ height: ROW_H }}>
+                                    {renderTimelineCells({
+                                      days,
+                                      today,
+                                      selectedGroupId,
+                                      onSelectGroup: (id) => setSelectedGroupId((current) => current === id ? null : id),
+                                      getBarForDay: (day) => getUnassignedBar(row, day),
+                                    })}
+                                  </div>
+                                ))}
+                              </>
+                            )}
+
+                            {blockedRows.length > 0 && (
+                              <>
+                                {blockedRows.map(row => (
+                                  <div key={row.rowKey} className="flex border-b border-amber-100 group" style={{ height: ROW_H }}>
+                                    {renderTimelineCells({ days, today, selectedGroupId, onSelectGroup: () => undefined, getBarForDay: day => {
+                                      const start = row.block.from_date;
+                                      const end = addDays(row.block.to_date, 1);
+                                      return start <= day && end > day ? { block: row.block } : undefined;
+                                    } })}
+                                  </div>
+                                ))}
+                              </>
+                            )}
+
+                            {groupedRooms.map(([category, rooms]) => {
+                              const collapsed = collapsedRoomTypes.has(`${property.id}::${category}`);
+                              return (
+                                <Fragment key={category}>
+                                  {!rooms[0]?.isVilla && <div className="flex bg-slate-50/80 border-b border-slate-100" style={{ height: 28 }}>
+                                    {days.map(day => (
+                                      <div key={day} className={`flex-shrink-0 ${day === today ? 'bg-indigo-50/60' : isWeekend(day) ? 'bg-slate-50/50' : ''}`}
+                                        style={{ width: COL_W }} />
+                                    ))}
+                                  </div>}
+                                  {!collapsed && rooms.map(room => (
+                                    <div key={room.roomKey} className="flex border-b border-slate-100 group" style={{ height: room.isVilla ? VILLA_ROW_H : ROW_H }}>
+                                      {renderTimelineCells({
+                                        days,
+                                        today,
+                                        selectedGroupId,
+                                        onSelectGroup: (id) => setSelectedGroupId((current) => current === id ? null : id),
+                                        getBarForDay: (day) => getAssignedRoomBar(filteredGroups, room, day, property.id),
+                                        rowHeight: room.isVilla ? VILLA_ROW_H : ROW_H,
+                                      })}
+                                    </div>
+                                  ))}
+                                </Fragment>
+                              );
+                            })}
+                          </Fragment>
+                        ))}
                       </div>
                     </div>
                   </div>
@@ -1323,7 +1307,7 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
               </div>
 
               {/* ── Legend ── */}
-              <div className="flex-shrink-0 border-t border-slate-100 px-4 py-2.5 flex items-center gap-6 bg-white rounded-b-xl">
+              <div className="flex-shrink-0 border-t border-slate-100 px-4 py-2.5 flex flex-wrap items-center gap-x-5 gap-y-2 bg-white rounded-b-xl">
                 {(['BOOKED', 'CHECKED_IN', 'CHECKED_OUT'] as const).map(s => (
                   <span key={s} className="flex items-center gap-1.5 text-[10.5px] font-medium text-slate-500">
                     <span className={`w-4 h-2.5 rounded-sm flex-shrink-0 ${STATUS_BAR[s].split(' ')[0]}`} />
@@ -1333,7 +1317,7 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
                 <span className="flex items-center gap-1.5 text-[10.5px] font-medium text-slate-400 ml-2">
                   <span className="w-4 h-2.5 rounded-sm bg-indigo-100 flex-shrink-0" />Today
                 </span>
-                  <span className="ml-auto text-[10.5px] text-slate-400">Click a bar to view reservation details</span>
+                  <span className="ml-auto hidden text-[10.5px] text-slate-400 sm:block">Click a bar to view reservation details</span>
                 </div>
           </div>
         </>
@@ -1632,7 +1616,7 @@ export function BookingsPage({ previewDataEnabled = false, initialFocus, onRetur
           setDirectReservationError(null);
           setDirectReservationFieldErrors({});
           setOpenDirectReservationDatePicker(null);
-          setDirectReservationForm(createDirectReservationForm(today, reservationProperties.length === 1 ? reservationProperties[0] : null));
+          setDirectReservationForm(createDirectReservationForm(today, (reservationProperties.length === 1 ? reservationProperties[0] : null)));
         }}
         onSubmit={saveDirectReservation}
         onChange={(value) => {

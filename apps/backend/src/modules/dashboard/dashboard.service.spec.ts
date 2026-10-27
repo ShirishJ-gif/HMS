@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { DashboardService } from './dashboard.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
@@ -111,6 +111,53 @@ describe('DashboardService', () => {
     expect(result.revenue_today).toBe(900);
     expect(result.revenue_yesterday).toBe(200);
     expect(result.collections_trend.at(-1)).toEqual({ date: '2026-09-23', amount: 900 });
+  });
+  it('includes villa Airbnb bookings without a channel connection in every dashboard query', async () => {
+    const environment = process.env.ZODOMUS_ENVIRONMENT;
+    const detachedHistory = process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+    process.env.ZODOMUS_ENVIRONMENT = 'sandbox';
+    delete process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+    try {
+      prisma.property.findMany.mockResolvedValue([{ ...property, propertyType: 'VILLA' }]);
+      await service.getSummary(now);
+      const permitsUnconnectedAirbnb = expect.objectContaining({
+        OR: expect.arrayContaining([
+          expect.objectContaining({ channelConnectionId: null, source: { in: expect.arrayContaining(['AIRBNB']) } }),
+        ]),
+      });
+      const groupWhere = prisma.reservationGroup.findMany.mock.calls[0][0].where;
+      const roomWhere = prisma.reservationRoom.findMany.mock.calls[0][0].where;
+      const paymentWhere = prisma.paymentTransaction.findMany.mock.calls[0][0].where;
+      const billingWhere = prisma.billing.findMany.mock.calls[0][0].where;
+      expect(groupWhere).toEqual(permitsUnconnectedAirbnb);
+      expect(roomWhere.reservationGroup).toEqual(permitsUnconnectedAirbnb);
+      expect(paymentWhere.billing.reservationRoom.reservationGroup).toEqual(permitsUnconnectedAirbnb);
+      expect(billingWhere.reservationRoom.reservationGroup).toEqual(permitsUnconnectedAirbnb);
+    } finally {
+      if (environment === undefined) delete process.env.ZODOMUS_ENVIRONMENT;
+      else process.env.ZODOMUS_ENVIRONMENT = environment;
+      if (detachedHistory === undefined) delete process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY;
+      else process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY = detachedHistory;
+    }
+  });
+  it('counts an Airbnb booking before payout, and only counts recorded cash on the payout date', async () => {
+    prisma.property.findMany.mockResolvedValue([{ ...property, propertyType: 'VILLA' }]);
+    prisma.reservationGroup.findMany.mockResolvedValue([
+      { id: 'airbnb', status: 'BOOKED', createdAt: now, rawPayload: {} },
+    ]);
+    prisma.reservationRoom.findMany.mockResolvedValue([stay('airbnb')]);
+    const beforePayout = await service.getSummary(now);
+    expect(beforePayout.period).toMatchObject({ bookings_created: 1, arrivals_count: 1, net_collected: 0 });
+
+    prisma.paymentTransaction.findMany.mockResolvedValue([
+      payment(900, 'SUCCEEDED', '2026-09-25T06:00:00Z', 'AIRBNB'),
+    ]);
+    expect((await service.getSummary(now)).period.net_collected).toBe(0);
+    const afterPayout = await service.getSummary(new Date('2026-09-25T08:00:00Z'));
+    expect(afterPayout.period).toMatchObject({
+      bookings_created: 0, collected: 900, net_collected: 900,
+      revenue_by_source: [{ label: 'Airbnb', collected: 900, refunded: 0, amount: 900 }],
+    });
   });
   it('keeps the seven-day trend at a month boundary but limits source totals to this month', async () => {
     prisma.paymentTransaction.findMany.mockResolvedValue([
@@ -259,9 +306,95 @@ describe('DashboardService', () => {
     expect(result).toMatchObject({ reservation_room_departures_today: 1, pending_departures_today: 1 });
     expect(result.departures[0]).toMatchObject({ id: 'future', pending_rooms: 1 });
   });
+  it('aggregates an inclusive range across months using IST boundaries and compares the prior equal-length period', async () => {
+    prisma.paymentTransaction.findMany.mockResolvedValue([
+      payment(999, 'SUCCEEDED', '2026-08-27T18:29:59Z'), // outside the prior three days
+      payment(400, 'SUCCEEDED', '2026-08-27T18:30:00Z'),
+      payment(100, 'REFUNDED', '2026-08-30T18:29:59Z'),
+      payment(1000, 'SUCCEEDED', '2026-08-30T18:30:00Z'),
+      payment(200, 'REFUNDED', '2026-09-01T18:29:59Z'),
+      payment(500, 'SUCCEEDED', '2026-09-02T18:29:59Z', 'WALK_IN'),
+      payment(777, 'SUCCEEDED', '2026-09-02T18:30:00Z'), // after the inclusive end
+    ]);
+    prisma.reservationGroup.findMany.mockResolvedValue([
+      { id: 'start', createdAt: new Date('2026-08-30T18:30:00Z'), status: 'CHECKED_OUT', rawPayload: {} },
+      { id: 'end', createdAt: new Date('2026-09-02T18:29:59Z'), status: 'BOOKED', rawPayload: {} },
+      { id: 'outside', createdAt: new Date('2026-09-02T18:30:00Z'), status: 'BOOKED', rawPayload: {} },
+    ]);
+    const result = await service.getSummary(now, undefined, undefined, undefined, { from: '2026-08-31', to: '2026-09-02' });
+    expect(result.period).toMatchObject({ from: '2026-08-31', to: '2026-09-02', days: 3, bookings_created: 2, collected: 1500, refunded: 200, net_collected: 1300, previous_net_collected: 300 });
+    expect(result.period.collections_trend).toEqual([
+      { date: '2026-08-31', amount: 1000 }, { date: '2026-09-01', amount: -200 }, { date: '2026-09-02', amount: 500 },
+    ]);
+    expect(result.period.revenue_by_source).toEqual([
+      { label: 'Direct', collected: 1000, refunded: 200, amount: 800 },
+      { label: 'Walk In', collected: 500, refunded: 0, amount: 500 },
+    ]);
+    expect(prisma.paymentTransaction.findMany.mock.calls[0][0].where.createdAt.lt).toEqual(new Date('2026-09-02T18:30:00Z'));
+    expect(prisma.paymentTransaction.findMany.mock.calls[0][0].where.createdAt.gte.getTime()).toBeLessThanOrEqual(new Date('2026-08-27T18:30:00Z').getTime());
+  });
+
+  it('keeps current attention and occupancy independent of a historical range, including completed stays in that range', async () => {
+    prisma.reservationRoom.findMany.mockResolvedValue([
+      stay('past-start', 'CHECKED_OUT', '2026-07-01', '2026-07-02'),
+      stay('past-end', 'CHECKED_OUT', '2026-07-03', '2026-07-04'),
+      stay('outside', 'CHECKED_OUT', '2026-06-30', '2026-07-05'),
+      stay('current-arrival', 'BOOKED'),
+      stay('current-departure', 'CHECKED_IN', '2026-09-20', '2026-09-23'),
+      stay('upcoming', 'BOOKED', '2026-09-24', '2026-09-25'),
+    ]);
+    prisma.room.findMany.mockResolvedValue([{ id: 'occupied', status: 'OCCUPIED', outOfServicePeriods: [] }]);
+    const result = await service.getSummary(now, undefined, undefined, undefined, { from: '2026-07-01', to: '2026-07-03' });
+    expect(result.period).toMatchObject({ arrivals_count: 2, departures_count: 1, pending_arrivals: 0, pending_departures: 0 });
+    expect(result.period.arrivals.map(row => row.id)).toEqual(['past-start', 'past-end']);
+    expect(result.current).toMatchObject({ date: '2026-09-23', unassigned_arrivals: 1, pending_departures: 1 });
+    expect(result.current.upcoming_arrivals.map(row => row.id)).toEqual(['upcoming']);
+    expect(result.occupied_rooms).toBe(1);
+    expect(prisma.reservationRoom.findMany.mock.calls[0][0].where.OR).toEqual(expect.arrayContaining([
+      { arrivalDate: { gte: day('2026-07-01'), lte: day('2026-07-03') } },
+      { departureDate: { gte: day('2026-07-01'), lte: day('2026-07-03') } },
+      { departureDate: day('2026-09-23') },
+    ]));
+  });
+
+  it('returns a single daily bucket for today and zero-filled buckets across leap day', async () => {
+    expect((await service.getSummary(now, undefined, undefined, undefined, { from: '2026-09-23', to: '2026-09-23' })).period.collections_trend).toEqual([{ date: '2026-09-23', amount: 0 }]);
+    const leap = await service.getSummary(now, undefined, undefined, undefined, { from: '2028-02-28', to: '2028-03-01' });
+    expect(leap.period.collections_trend.map(point => point.date)).toEqual(['2028-02-28', '2028-02-29', '2028-03-01']);
+  });
+
+  it.each([
+    { from: '2026-01-01' }, { to: '2026-01-01' }, { from: '2026-01-02', to: '2026-01-01' },
+    { from: '2025-01-01', to: '2026-01-02' }, { from: 'invalid', to: '2026-01-01' },
+    { from: '2026-02-30', to: '2026-03-03' },
+  ])('rejects invalid ranges before querying: %j', async range => {
+    await expect(service.getSummary(now, undefined, undefined, undefined, range)).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.property.findMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects mixed day and range parameters', async () => {
+    await expect(service.getSummary(now, undefined, undefined, '2026-09-23', { from: '2026-09-01', to: '2026-09-23' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('preserves organization-owner access to all owned properties in range mode', async () => {
+    const user = { role: 'ORG_OWNER', property_id: 'property-a', property_ids: ['property-a', 'property-b'] } as AuthenticatedUser;
+    await service.getSummary(now, user, undefined, undefined, { from: '2026-09-01', to: '2026-09-23' });
+    expect(prisma.reservationRoom.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ propertyId: { in: ['property-a', 'property-b'] } }) }));
+    await expect(service.getSummary(now, user, 'outside', undefined, { from: '2026-09-01', to: '2026-09-23' })).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
 });
 
 describe('Dashboard calendar query', () => {
+  it('validates both range dates and forwards the selected range', async () => {
+    expect(await validate(Object.assign(new DashboardQueryDto(), { from: '2026-09-01', to: '2026-09-23' }))).toHaveLength(0);
+    expect((await validate(Object.assign(new DashboardQueryDto(), { from: '2026-02-30', to: '2026-09-23T00:00:00Z' }))).length).toBeGreaterThan(0);
+    const getSummary = jest.fn();
+    const controller = new DashboardController({ getSummary } as unknown as DashboardService);
+    const user = { role: 'SUPER_ADMIN' } as AuthenticatedUser;
+    controller.getSummary(user, { from: '2026-09-01', to: '2026-09-23', property_id: 'property-a' });
+    expect(getSummary).toHaveBeenCalledWith(expect.any(Date), user, 'property-a', undefined, { from: '2026-09-01', to: '2026-09-23' });
+  });
   it('accepts real calendar dates and rejects timestamps and impossible dates', async () => {
     for (const date of ['2026-07-03', '2028-02-29', undefined]) {
       expect(await validate(Object.assign(new DashboardQueryDto(), { date }))).toHaveLength(0);

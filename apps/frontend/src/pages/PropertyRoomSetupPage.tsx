@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { BedDouble, Building2 } from 'lucide-react';
 import { PropertySetupPage } from './PropertySetupPage';
 import { RoomsPage } from './RoomsPage';
+import type { Property } from '../api/types';
 
 type SetupTab = 'property' | 'rooms';
 
@@ -9,10 +10,12 @@ export function PropertyRoomSetupPage({
   activePropertyId,
   onPropertyChange,
   onConfigureOta,
+  onPropertySaved,
 }: {
   activePropertyId: string;
   onPropertyChange: (propertyId: string) => void;
   onConfigureOta: () => void;
+  onPropertySaved: (property: Property) => void;
 }) {
   const [tab, setTab] = useState<SetupTab>('property');
 
@@ -22,7 +25,7 @@ export function PropertyRoomSetupPage({
         <div>
           <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Configuration</p>
           <h1 className="text-[22px] font-bold text-slate-900">{tab === 'property' ? 'Property Setup' : 'Rooms & Inventory'}</h1>
-          <p className="mt-1 max-w-2xl text-[12px] text-slate-500">{tab === 'property' ? 'Manage your property profile, settings, and rates.' : 'Manage physical rooms and room categories.'}</p>
+          <p className="mt-1 max-w-2xl text-[12px] text-slate-500">{tab === 'property' ? 'View all your properties and manage their profiles, settings, and rates.' : 'Manage physical rooms and room categories.'}</p>
         </div>
         <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm" role="tablist" aria-label="Setup sections">
           <button type="button" role="tab" aria-selected={tab === 'property'} onClick={() => setTab('property')} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-semibold transition ${tab === 'property' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}>
@@ -40,6 +43,7 @@ export function PropertyRoomSetupPage({
           onSelectedPropertyIdChange={(id) => { if (id) onPropertyChange(id); }}
           onAddRooms={() => setTab('rooms')}
           onConfigureOta={onConfigureOta}
+          onPropertySaved={onPropertySaved}
         />
       ) : (
         <RoomsPage propertyId={activePropertyId || null} showHeading={false} />

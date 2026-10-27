@@ -1,6 +1,7 @@
-import { recalculateBilling } from '../billing/billing-calculations';
+import { financialRange, folioStayWhere, isImportBlocked, financialGroupVisibilityWhere } from '../billing/financial-scope';
+import { recalculateBilling, isOtaMetadataCharge } from '../billing/billing-calculations';
 import { Injectable } from '@nestjs/common';
-import { BookingStatus, ChannelConnectionStatus, PaymentStatus, PaymentTransactionStatus, Prisma } from '@prisma/client';
+import { BookingStatus, PaymentTransactionStatus, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthenticatedUser } from '../auth/auth.guard';
 import { assertCanAccessProperty, propertyIdFilter } from '../auth/property-scope';
@@ -11,18 +12,21 @@ export class FinanceService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getOverview(query: GetFinanceOverviewDto, user?: AuthenticatedUser) {
+    const range = financialRange(query.from, query.to);
+    const stayWhere = folioStayWhere(range);
     const requestedPropertyId = query.property_id && query.property_id !== 'ALL' ? query.property_id : undefined;
     if (requestedPropertyId) assertCanAccessProperty(user, requestedPropertyId);
 
-    const scopedPropertyId = requestedPropertyId ?? propertyIdFilter(user);
-    const reservationGroupVisibilityWhere = this.reservationGroupVisibilityWhere();
-    const reservationRoomVisibilityWhere = this.reservationRoomVisibilityWhere();
+    const scopedPropertyId = requestedPropertyId ?? (user?.role === UserRole.ORG_OWNER ? { in: user.property_ids ?? [] } : propertyIdFilter(user));
+    const reservationGroupVisibilityWhere = financialGroupVisibilityWhere();
+    const reservationRoomVisibilityWhere = { reservationGroup: reservationGroupVisibilityWhere };
 
-    const [billings, reservationGroups, transactionCount] = await Promise.all([
+    const [billings, reservationGroups] = await Promise.all([
       this.prisma.billing.findMany({
         where: {
           reservationRoom: {
             ...reservationRoomVisibilityWhere,
+            AND: [{ reservationGroup: stayWhere }],
             ...(scopedPropertyId ? { propertyId: scopedPropertyId } : {}),
           },
         },
@@ -48,6 +52,7 @@ export class FinanceService {
       this.prisma.reservationGroup.findMany({
         where: {
           ...reservationGroupVisibilityWhere,
+          AND: [stayWhere],
           propertyId: scopedPropertyId,
           rooms: {
             some: {
@@ -74,34 +79,27 @@ export class FinanceService {
         },
         orderBy: { createdAt: 'desc' },
       }),
-      this.prisma.paymentTransaction.count({
-        where: {
-          billing: {
-            reservationRoom: {
-              ...reservationRoomVisibilityWhere,
-              ...(scopedPropertyId ? { propertyId: scopedPropertyId } : {}),
-            },
-          },
-        },
-      }),
     ]);
 
-    const invoiceResponses = billings.map((billing) => this.toBillingResponse(billing));
+    const visibleBillings = billings.filter(billing => !isImportBlocked(billing.reservationRoom?.reservationGroup.rawPayload));
+    const invoiceResponses = visibleBillings.map((billing) => this.toBillingResponse(billing));
     const totalBilled = invoiceResponses.reduce((total, billing) => total + billing.total, 0);
     const totalCollected = invoiceResponses.reduce((total, billing) => total + billing.paid_total - billing.refunded_total, 0);
     const totalBalance = invoiceResponses.reduce((total, billing) => total + billing.balance_due, 0);
 
     return {
       summary: {
-        total_billed: totalBilled,
-        total_collected: totalCollected,
-        total_balance: totalBalance,
+        total_billed: Number(totalBilled.toFixed(2)),
+        total_collected: Number(totalCollected.toFixed(2)),
+        total_balance: Number(totalBalance.toFixed(2)),
+        settlement_credit: Number(invoiceResponses.reduce((sum, invoice) => sum + invoice.settlement_credit, 0).toFixed(2)),
+        credit_balance: Number(invoiceResponses.reduce((sum, invoice) => sum + invoice.credit_balance, 0).toFixed(2)),
         open_invoice_count: invoiceResponses.filter((billing) => billing.balance_due > 0).length,
         invoice_count: invoiceResponses.length,
-        transaction_count: transactionCount,
+        transaction_count: visibleBillings.reduce((sum, billing) => sum + billing.payments.length, 0),
       },
       billings: invoiceResponses,
-      reservation_groups: reservationGroups.map((group) => this.toReservationGroupResponse(group)),
+      reservation_groups: reservationGroups.filter(group => !isImportBlocked(group.rawPayload)).map((group) => this.toReservationGroupResponse(group)),
     };
   }
 
@@ -140,11 +138,8 @@ export class FinanceService {
       throw new Error('Invoice is missing a reservation room subject');
     }
 
-    const paidTotal = this.sumPayments(billing.payments, PaymentTransactionStatus.SUCCEEDED);
-    const refundedTotal = this.sumPayments(billing.payments, PaymentTransactionStatus.REFUNDED);
-    const billableExtraCharges = billing.extraCharges.filter((charge) => !this.isOtaMetadataCharge(charge.description));
-    const billableExtraChargesTotal = billableExtraCharges.reduce((total, charge) => total + charge.amount.toNumber(), 0);
-    const visibleTotal = billing.amount.toNumber() + billing.tax.toNumber() + billableExtraChargesTotal;
+    const billableExtraCharges = billing.extraCharges.filter((charge) => !isOtaMetadataCharge(charge.description));
+    const billableExtraChargesTotal = billableExtraCharges.reduce((total, charge) => total.add(charge.amount), new Prisma.Decimal(0)).toNumber();
     const calculation = recalculateBilling(billing);
     const balanceDue = calculation.balance.toNumber();
 
@@ -154,10 +149,12 @@ export class FinanceService {
       amount: billing.amount.toNumber(),
       tax: billing.tax.toNumber(),
       extra_charges_total: billableExtraChargesTotal,
-      paid_total: paidTotal,
-      refunded_total: refundedTotal,
+      paid_total: calculation.paid.toNumber(),
+      refunded_total: calculation.refunded.toNumber(),
       balance_due: balanceDue,
-      total: visibleTotal,
+      settlement_credit: calculation.settlementCredit.toNumber(),
+      credit_balance: calculation.creditBalance.toNumber(),
+      total: calculation.total.toNumber(),
       payment_status: calculation.paymentStatus,
       ota_payment_breakdown: this.extractOtaPaymentBreakdown(billing),
       reservation_room: {
@@ -241,10 +238,6 @@ export class FinanceService {
     return typeof value === 'string' ? value : null;
   }
 
-  private isOtaMetadataCharge(description: string) {
-    const normalized = description.trim().toUpperCase();
-    return normalized.startsWith('OTA ') || normalized.includes('TAX WITHHOLDING');
-  }
 
   private toReservationGroupResponse(group: {
     id: string;
@@ -346,25 +339,6 @@ export class FinanceService {
     };
   }
 
-  private reservationGroupVisibilityWhere(): Prisma.ReservationGroupWhereInput {
-    if (this.shouldShowDetachedOtaReservationHistory()) return {};
-    return {
-      OR: [
-        { channelConnection: { is: { status: ChannelConnectionStatus.ACTIVE } } },
-        { channelConnectionId: null, source: { in: ['DIRECT', 'WALK_IN', 'AIRBNB', 'BOOKING_COM', 'EXPEDIA', 'MAKEMYTRIP', 'GOIBIBO', 'AGODA', 'WEBSITE', 'OTHER'] } },
-      ],
-    };
-  }
-
-  private reservationRoomVisibilityWhere(): Prisma.ReservationRoomWhereInput {
-    if (this.shouldShowDetachedOtaReservationHistory()) return {};
-    return { reservationGroup: this.reservationGroupVisibilityWhere() };
-  }
-
-  private sumPayments(payments: Array<{ amount: Prisma.Decimal; status: PaymentTransactionStatus }>, status: PaymentTransactionStatus) {
-    return payments.filter((payment) => payment.status === status).reduce((total, payment) => total + payment.amount.toNumber(), 0);
-  }
-
   private formatDate(value: Date) {
     return value.toISOString().slice(0, 10);
   }
@@ -388,10 +362,4 @@ export class FinanceService {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   }
 
-  private shouldShowDetachedOtaReservationHistory() {
-    return (
-      process.env.SHOW_DETACHED_OTA_RESERVATION_HISTORY === 'true' ||
-      process.env.ZODOMUS_ENVIRONMENT?.trim() === 'production'
-    );
-  }
 }

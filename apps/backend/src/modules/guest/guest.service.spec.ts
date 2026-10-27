@@ -1,3 +1,6 @@
+import { ForbiddenException } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
+import { AuthenticatedUser } from '../auth/auth.guard';
 import { GuestService } from './guest.service';
 
 describe('GuestService', () => {
@@ -11,6 +14,8 @@ describe('GuestService', () => {
       findMany: jest.fn(),
       count: jest.fn(),
     },
+    property: { findMany: jest.fn() },
+    reservationGroup: { findMany: jest.fn() },
   };
 
   let service: GuestService;
@@ -71,7 +76,7 @@ describe('GuestService', () => {
       name: 'Aarav Mehta',
       phone: '+919876543210',
       email: 'aarav.mehta@example.com',
-      id_proof: 'AADHAAR-XXXX-1234',
+      id_proof: '****234',
       address: 'Bandra West, Mumbai, Maharashtra',
       property,
       created_at: guest.createdAt,
@@ -107,7 +112,6 @@ describe('GuestService', () => {
     expect(prisma.guest.findMany).toHaveBeenCalledWith({
       where: {
         NOT: {
-          idProof: 'CHANNEL_IMPORT',
           address: 'Imported from Zodomus',
         },
       },
@@ -135,5 +139,72 @@ describe('GuestService', () => {
         where: {},
       }),
     );
+  });
+
+  describe('directory property selection', () => {
+    const propertyIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+    const owner: AuthenticatedUser = {
+      sub: 'owner',
+      email: 'owner@example.com',
+      role: UserRole.ORG_OWNER,
+      organization_id: 'organization',
+      property_id: null,
+      property_ids: propertyIds,
+    };
+
+    beforeEach(() => {
+      prisma.guest.findMany.mockResolvedValue([]);
+      prisma.property.findMany.mockResolvedValue([]);
+      prisma.reservationGroup.findMany.mockResolvedValue([]);
+    });
+
+    it.each(propertyIds)('narrows registry and reservation guests to the selected organization property %s', async (propertyId) => {
+      await service.getDirectory({ page: 1, limit: 50, property_id: propertyId }, owner);
+
+      for (const query of [prisma.guest.findMany, prisma.reservationGroup.findMany]) {
+        expect(query).toHaveBeenCalledWith(expect.objectContaining({
+          where: expect.objectContaining({ propertyId }),
+        }));
+      }
+      expect(prisma.property.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: { in: propertyIds } },
+      }));
+    });
+
+    it.each(['ALL', undefined])('limits an unfiltered directory (%s) to organization properties', async (propertyId) => {
+      await service.getDirectory({ page: 1, limit: 50, property_id: propertyId }, owner);
+
+      for (const query of [prisma.guest.findMany, prisma.reservationGroup.findMany]) {
+        expect(query).toHaveBeenCalledWith(expect.objectContaining({
+          where: expect.objectContaining({ propertyId: { in: propertyIds } }),
+        }));
+      }
+    });
+
+    it('rejects a property outside the organization before querying guests', async () => {
+      await expect(service.getDirectory({ page: 1, limit: 50, property_id: 'outside-property' }, owner)).rejects.toThrow(ForbiddenException);
+
+      expect(prisma.guest.findMany).not.toHaveBeenCalled();
+      expect(prisma.reservationGroup.findMany).not.toHaveBeenCalled();
+    });
+
+    it('keeps staff scoped to their assigned property when all properties are requested', async () => {
+      await service.getDirectory({ page: 1, limit: 50, property_id: 'ALL' }, { ...owner, role: UserRole.STAFF, property_id: propertyIds[0] });
+
+      for (const query of [prisma.guest.findMany, prisma.reservationGroup.findMany]) {
+        expect(query).toHaveBeenCalledWith(expect.objectContaining({
+          where: expect.objectContaining({ propertyId: propertyIds[0] }),
+        }));
+      }
+    });
+
+    it('rejects staff selecting a different property', async () => {
+      await expect(service.getDirectory({ page: 1, limit: 50, property_id: propertyIds[1] }, {
+        ...owner, role: UserRole.STAFF, property_id: propertyIds[0],
+      })).rejects.toThrow(ForbiddenException);
+
+      expect(prisma.guest.findMany).not.toHaveBeenCalled();
+      expect(prisma.reservationGroup.findMany).not.toHaveBeenCalled();
+    });
   });
 });

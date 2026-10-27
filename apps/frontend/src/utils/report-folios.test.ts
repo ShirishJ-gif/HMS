@@ -35,3 +35,13 @@ test('sorts recent stays first and retains the full stay date range', () => {
   assert.equal(rows[1].from, '2026-09-25');
   assert.equal(rows[1].to, '2026-09-28');
 });
+
+test('keeps non-cash settlement and overpayment credits separate when combining invoices', () => {
+  const [row] = groupReportFolios([
+    folio('1', 'booking-1', { total: 125, paid: 70, settlement_credit: 20, credit_balance: 0, balance: 35 }),
+    folio('2', 'booking-1', { total: 220, paid: 230, settlement_credit: 0, credit_balance: 10, balance: 0 }),
+  ]);
+  assert.equal(row.settlement_credit, 20);
+  assert.equal(row.credit_balance, 10);
+  assert.equal(row.total - row.paid - row.settlement_credit! + row.credit_balance!, row.balance);
+});

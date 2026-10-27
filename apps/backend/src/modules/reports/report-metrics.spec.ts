@@ -47,10 +47,11 @@ const calculate = (
 ) => calculatePeriod(rooms, payments, stock, date(from), date(to));
 
 describe('Report metrics', () => {
-  it('clips sold nights and billed revenue to the report period', () => {
+  it('clips room revenue to the period while keeping complete invoice totals', () => {
     const result = calculate();
     expect(result.summary.room_nights_sold).toBe(1);
-    expect(result.summary.billed_total).toBe(1100);
+    expect(result.summary.billed_total).toBe(5500);
+    expect(result.summary.room_revenue).toBe(1000);
     expect(result.summary.average_daily_rate).toBe(1000);
     expect(result.summary.balance_due).toBe(5500);
     expect(result.folios[0].total).toBe(5500);
@@ -69,7 +70,8 @@ describe('Report metrics', () => {
     });
     const result = calculate([cancelled, blocked]);
     expect(result.summary.room_nights_sold).toBe(0);
-    expect(result.summary.billed_total).toBe(0);
+    expect(result.summary.billed_total).toBe(5500);
+    expect(result.summary.room_revenue).toBe(0);
     expect(result.summary.cancelled_reservation_groups).toBe(1);
     expect(result.summary.blocked_reservation_groups).toBe(1);
     expect(result.folios).toHaveLength(1); // A cancellation can still have an unpaid invoice.
@@ -100,7 +102,8 @@ describe('Report metrics', () => {
         payment(100, 'FAILED', '2026-09-22'),
       ],
     );
-    expect(result.summary.paid_total).toBe(1000);
+    expect(result.summary.paid_total).toBe(0);
+    expect(result.summary.period_net_collected).toBe(1000);
     expect(result.summary.room_nights_sold).toBe(0);
   });
   it('subtracts refund events on their own date and reconciles full-folio balance', () => {
@@ -113,7 +116,8 @@ describe('Report metrics', () => {
       [subject],
       [payment(2000, 'SUCCEEDED', '2026-09-21'), payment(400, 'REFUNDED', '2026-09-22')],
     );
-    expect(result.summary.paid_total).toBe(-400);
+    expect(result.summary.paid_total).toBe(1600);
+    expect(result.summary.period_net_collected).toBe(-400);
     expect(result.summary.refunded_total).toBe(400);
     expect(result.folios[0].paid).toBe(1600);
     expect(result.summary.balance_due).toBe(3900);
@@ -127,7 +131,8 @@ describe('Report metrics', () => {
       { description: 'Breakfast', amount: amount(500) },
     ];
     const result = calculate([subject]);
-    expect(result.summary.billed_total).toBe(1200);
+    expect(result.summary.billed_total).toBe(6000);
+    expect(result.summary.room_revenue).toBe(1000);
     expect(result.summary.balance_due).toBe(6000);
     expect(result.folios[0].total).toBe(6000);
   });
@@ -153,4 +158,29 @@ describe('Report metrics', () => {
     expect(result.summary.cancellation_rate).toBeNull();
     expect(result.summary.billed_total).toBe(0);
   });
+  it('includes sibling invoices outside the date range in full booking totals', () => {
+    const sibling = room({ id: 'sibling', arrivalDate: date('2026-10-01'), departureDate: date('2026-10-03') });
+    sibling.billings[0].id = 'sibling-invoice';
+    const result = calculate([room(), sibling]);
+    expect(result.summary).toMatchObject({ room_nights_sold: 1, room_revenue: 1000, billed_total: 11000, balance_due: 11000 });
+    expect(result.folios).toHaveLength(2);
+  });
+  it('reconciles Airbnb settlement, separately payable extras, refunds and invoice overpayments', () => {
+    const airbnb = room();
+    airbnb.billings[0].extraCharges = [{ description: 'Food', amount: amount(500) }];
+    airbnb.billings[0].payments = [
+      { amount: amount(4500), status: 'SUCCEEDED', metadata: { source: 'airbnb_payout_email' } },
+      { amount: amount(100), status: 'REFUNDED' },
+    ];
+    const overpaid = room({ id: 'overpaid', reservationGroup: { ...room().reservationGroup, id: 'second' } });
+    overpaid.billings[0].payments = [{ amount: amount(5600), status: 'SUCCEEDED' }];
+    const { summary } = calculate([airbnb, overpaid]);
+    expect(summary).toMatchObject({ billed_total: 11500, paid_total: 10000, settlement_credit: 1000, credit_balance: 100, balance_due: 600 });
+    expect(summary.billed_total - summary.paid_total - summary.settlement_credit + summary.credit_balance).toBe(summary.balance_due);
+  });
+  it('excludes payments on blocked imports from period collections', () => {
+    const blocked = room({ reservationGroup: { ...room().reservationGroup, rawPayload: { importBlocked: true } } });
+    expect(calculate([], [payment(500, 'SUCCEEDED', '2026-09-22', blocked)]).summary.period_net_collected).toBe(0);
+  });
+
 });

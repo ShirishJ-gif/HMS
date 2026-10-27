@@ -14,6 +14,7 @@ export type AuthenticatedUser = {
   organization_id: string | null;
   property_id: string | null;
   property_ids?: string[] | null;
+  token_version?: number;
 };
 
 @Injectable()
@@ -47,6 +48,19 @@ export class AuthGuard implements CanActivate {
     } catch {
       throw new UnauthorizedException('Invalid or expired token');
     }
+
+    const account = await this.prisma.user.findUnique({
+      where: { id: request.user.sub },
+      select: { isActive: true, tokenVersion: true, email: true, role: true, propertyId: true, organizationId: true },
+    });
+    if (!account?.isActive || account.tokenVersion !== (request.user.token_version ?? 0)) {
+      throw new UnauthorizedException('Session expired. Please sign in again.');
+    }
+    request.user = {
+      ...request.user, email: account.email, role: account.role,
+      property_id: account.propertyId, organization_id: account.organizationId,
+      property_ids: account.propertyId ? [account.propertyId] : [],
+    };
 
     if (request.user.role === UserRole.ORG_OWNER && request.user.organization_id) {
       const properties = await this.prisma.property.findMany({

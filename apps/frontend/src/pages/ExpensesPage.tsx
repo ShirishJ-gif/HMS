@@ -1,6 +1,6 @@
 import { DatePickerInput } from '../components/DatePickerInput';
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
-import { Ban, Check, ChevronLeft, ChevronRight, Download, Pencil, Plus, ReceiptText, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Search, SlidersHorizontal, X } from 'lucide-react';
+import { Ban, Check, ChevronLeft, ChevronRight, Download, Info, Pencil, Plus, ReceiptText, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Search, SlidersHorizontal, X } from 'lucide-react';
 import { api, getApiErrorMessage } from '../api/client';
 import { PaginatedResponse } from '../api/pagination';
 import { Property, ReservationGroup } from '../api/types';
@@ -40,7 +40,7 @@ function Badge({ value }: { value: string }) {
 }
 
 function ExpensePayment({ expense }: { expense: Expense }) {
-  if (expense.amount_paid == null) return <span className="text-xs text-slate-400">Not recorded</span>;
+  if (expense.amount_paid == null) return <span className="inline-flex items-center gap-1.5 rounded bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-500"><Info size={12} aria-hidden="true" />Not recorded</span>;
   return <div className="space-y-1.5">
     <Badge value={expense.payment_status} />
     <p className={`text-[11px] tabular-nums ${expense.balance_due != null && expense.balance_due > 0 ? 'text-amber-700' : 'text-slate-500'}`}>
@@ -221,7 +221,7 @@ export function ExpensesPage({ activePropertyId = '', properties }: { activeProp
   const session = getStoredAccessToken();
   if (expenseCacheSession !== session) { expenseCache.clear(); expenseCacheSession = session; }
   const stateKey = `expenses:${activePropertyId}`;
-  const [filters, setFilters] = useWorkspaceState(`${stateKey}:filters`, { property_id: activePropertyId, date_from: '', date_to: '', category: '', status: 'ACTIVE', payment_status: '', search: '' });
+  const [filters, setFilters] = useWorkspaceState(`${stateKey}:filters`, { date_from: '', date_to: '', category: '', status: 'ACTIVE', payment_status: '', search: '' });
   const [search, setSearch] = useWorkspaceState(`${stateKey}:search`, filters.search);
   const [sort, setSort] = useWorkspaceState<{ by: 'date' | 'amount' | 'vendor'; direction: 'asc' | 'desc' }>(`${stateKey}:sort`, { by: 'date', direction: 'desc' });
   const [showFilters, setShowFilters] = useWorkspaceState(`${stateKey}:moreFilters`, false);
@@ -237,7 +237,7 @@ export function ExpensesPage({ activePropertyId = '', properties }: { activeProp
   const [toast, setToast] = useState<string | null>(null);
   const user = getStoredAuthUser();
   const manager = Boolean(user && user.role !== 'STAFF');
-  const params = { ...Object.fromEntries(Object.entries({ ...filters, search, property_id: activePropertyId || filters.property_id }).filter(([, value]) => value !== '')), page, limit: 25, sort_by: sort.by, sort_direction: sort.direction };
+  const params = { ...Object.fromEntries(Object.entries({ ...filters, search, property_id: activePropertyId }).filter(([, value]) => value !== '')), page, limit: 25, sort_by: sort.by, sort_direction: sort.direction };
   const requestKey = JSON.stringify(params);
   const [result, setResult] = useState(() => ({ key: requestKey, data: expenseCache.get(requestKey)?.data ?? null }));
   const [loading, setLoading] = useState(!expenseCache.has(requestKey));
@@ -272,7 +272,7 @@ export function ExpensesPage({ activePropertyId = '', properties }: { activeProp
   useEffect(() => { setEditor(null); setDetails(null); setAction(null); }, [activePropertyId]);
   function filter(key: keyof typeof filters, value: string) { setFilters(current => ({ ...current, [key]: value })); setPage(1); }
   function refreshExpenses() { expenseCache.clear(); setReload(value => value + 1); }
-  function clearFilters() { setFilters({ property_id: activePropertyId, date_from: '', date_to: '', category: '', status: 'ACTIVE', payment_status: '', search: '' }); setSearch(''); setPage(1); }
+  function clearFilters() { setFilters({ date_from: '', date_to: '', category: '', status: 'ACTIVE', payment_status: '', search: '' }); setSearch(''); setPage(1); }
   async function exportCsv() {
     setBusy(true); setError(null);
     try { const response = await api.get('/expenses/export.csv', { params, responseType: 'blob' }); downloadBlob(response.data, `expenses-${today()}.csv`); }
@@ -286,13 +286,13 @@ export function ExpensesPage({ activePropertyId = '', properties }: { activeProp
     } catch (err) { setError(getApiErrorMessage(err)); } finally { setBusy(false); }
   }
   const rows = data?.data ?? [];
-  const hasFilters = Boolean(filters.search || filters.date_from || filters.date_to || filters.category || filters.payment_status || filters.status !== 'ACTIVE' || (!activePropertyId && filters.property_id));
+  const unknownPayments = data?.summary.totals.filter(total => total.unknown_payment_count > 0) ?? [];
+  const hasFilters = Boolean(filters.search || filters.date_from || filters.date_to || filters.category || filters.payment_status || filters.status !== 'ACTIVE');
   const advancedFilters: Array<{ key: keyof typeof filters; text: string }> = [];
-  if (!activePropertyId && filters.property_id) advancedFilters.push({ key: 'property_id', text: properties.find(property => property.id === filters.property_id)?.name || 'Selected property' });
   if (filters.category) advancedFilters.push({ key: 'category', text: label(filters.category) });
   if (filters.status !== 'ACTIVE') advancedFilters.push({ key: 'status', text: filters.status === 'ALL' ? 'All entries' : label(filters.status) });
   if (filters.payment_status) advancedFilters.push({ key: 'payment_status', text: `Payment: ${label(filters.payment_status)}` });
-  const showProperty = !activePropertyId && !filters.property_id;
+  const showProperty = !activePropertyId;
   function rowActions(expense: Expense) {
     const items = [{ label: 'View details', icon: <ReceiptText size={15} />, onClick: () => { setDetails(expense); setReceiptWarning(undefined); } }];
     if (expense.status !== 'VOID' && (manager || (expense.status === 'PENDING' && expense.created_by_user_id === user?.id))) items.push({ label: 'Edit expense', icon: <Pencil size={15} />, onClick: () => setEditor(expense) });
@@ -303,16 +303,16 @@ export function ExpensesPage({ activePropertyId = '', properties }: { activeProp
     return <div className="min-w-0">
       <button type="button" onClick={() => { setDetails(expense); setReceiptWarning(undefined); }} className="max-w-full rounded text-left text-[13px] font-semibold leading-5 text-slate-900 hover:text-emerald-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"><span className="line-clamp-2 break-words">{expense.description}</span></button>
       <p className="mt-1 truncate text-xs text-slate-500" title={[expense.vendor, expense.invoice_number].filter(Boolean).join(' · ')}>{expense.vendor || 'No vendor'}{expense.invoice_number ? ` · ${expense.invoice_number}` : ''}</p>
-      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-slate-500"><span className="rounded border border-slate-200 px-1.5 py-0.5">{label(expense.category)}</span>{expense.receipts.length > 0 && <span className="inline-flex items-center gap-1"><ReceiptText size={12} />{expense.receipts.length} {expense.receipts.length === 1 ? 'receipt' : 'receipts'}</span>}{expense.reservation_reference && <span className="max-w-full truncate" title={expense.reservation_reference}>{expense.reservation_reference}</span>}</div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-slate-500"><span className="rounded bg-slate-100 px-1.5 py-0.5">{label(expense.category)}</span>{expense.receipts.length > 0 && <span className="inline-flex items-center gap-1"><ReceiptText size={12} />{expense.receipts.length} {expense.receipts.length === 1 ? 'receipt' : 'receipts'}</span>}{expense.reservation_reference && <span className="max-w-full truncate" title={expense.reservation_reference}>{expense.reservation_reference}</span>}</div>
       {showProperty && <p className="mt-1.5 truncate text-[11px] text-slate-500" title={expense.property.name}>{expense.property.name}</p>}
     </div>;
   }
   const expenseDate = (expense: Expense) => new Date(`${expense.expense_date}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
   function expenseAmount(expense: Expense) {
-    return <p className="break-words text-sm font-semibold tabular-nums text-slate-900"><span className="mr-1.5 text-[10px] font-medium text-slate-400">{expense.currency}</span>{expense.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>;
+    return <div className="space-y-0.5"><p className="break-words text-sm font-semibold tabular-nums text-slate-900">{expense.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p><p className="text-[10px] font-medium text-slate-400">{expense.currency}</p></div>;
   }
   function changeSort(by: 'date' | 'amount' | 'vendor') { setSort(current => ({ by, direction: current.by === by ? current.direction === 'asc' ? 'desc' : 'asc' : by === 'vendor' ? 'asc' : 'desc' })); setPage(1); }
-  function sortHeading(by: 'date' | 'amount' | 'vendor', title: string) { const Icon = sort.by !== by ? ArrowUpDown : sort.direction === 'asc' ? ArrowUp : ArrowDown; return <button type="button" onClick={() => changeSort(by)} className="inline-flex items-center gap-1.5 font-semibold" aria-label={`Sort by ${title.toLowerCase()}`} title={`Sort by ${title.toLowerCase()}`} >{title}<Icon size={12} /></button>; }
+  function sortHeading(by: 'date' | 'amount' | 'vendor', title: string) { const Icon = sort.by !== by ? ArrowUpDown : sort.direction === 'asc' ? ArrowUp : ArrowDown; return <button type="button" onClick={() => changeSort(by)} className={`inline-flex items-center gap-1.5 rounded font-semibold hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${sort.by === by ? 'text-slate-900' : ''}`} aria-label={`Sort by ${by}`} title={`Sort by ${by}`} >{title}<Icon size={12} /></button>; }
   const iconButton = 'grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:opacity-40';
   return <div className="mx-auto max-w-[1600px] space-y-5">
     <FloatingSuccessToast message={toast} onClose={() => setToast(null)} />
@@ -331,7 +331,6 @@ export function ExpensesPage({ activePropertyId = '', properties }: { activeProp
         <button type="button" aria-expanded={showFilters} aria-controls="expense-more-filters" onClick={() => setShowFilters(value => !value)} className={`flex h-[42px] items-center justify-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${showFilters ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}><SlidersHorizontal size={15} />{showFilters ? 'Hide filters' : 'More filters'}{advancedFilters.length > 0 && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-800">{advancedFilters.length}</span>}</button>
       </div>
       {showFilters && <div id="expense-more-filters" className="mt-4 grid gap-4 border-t border-slate-100 pt-4 sm:grid-cols-2 xl:grid-cols-4">
-        {!activePropertyId && <label className={labelCls}>Property<select value={filters.property_id} onChange={event => filter('property_id', event.target.value)} className={inputCls}><option value="">All properties</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
         <label className={labelCls}>Category<select value={filters.category} onChange={event => filter('category', event.target.value)} className={inputCls}><option value="">All categories</option>{categories.map(c => <option key={c} value={c}>{label(c)}</option>)}</select></label>
         <label className={labelCls}>Entry status<select value={filters.status} onChange={event => filter('status', event.target.value)} className={inputCls}>{['ACTIVE', 'PENDING', 'APPROVED', 'VOID', 'ALL'].map(s => <option key={s} value={s}>{s === 'ACTIVE' ? 'Active entries' : s === 'ALL' ? 'All entries' : label(s)}</option>)}</select></label>
         <label className={labelCls}>Payment status<select value={filters.payment_status} onChange={event => filter('payment_status', event.target.value)} className={inputCls}><option value="">All payments</option>{['UNPAID', 'PARTIAL', 'PAID', 'UNKNOWN'].map(s => <option key={s} value={s}>{label(s)}</option>)}</select></label>
@@ -343,30 +342,58 @@ export function ExpensesPage({ activePropertyId = '', properties }: { activeProp
       </div>
     </section>
     <fieldset disabled={updating || Boolean(error)} aria-busy={updating} className="workspace-results min-w-0 space-y-5 border-0 p-0">
-    <section aria-label="Expense summary" className="workspace-panel grid divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white sm:grid-cols-2 xl:grid-cols-4 sm:divide-x sm:divide-y-0">
-      <div className="px-6 py-5"><p className="text-[11px] font-semibold text-slate-500">Matching expenses</p><p className="mt-3 text-xl font-semibold tabular-nums tracking-tight text-slate-900">{data?.meta.total ?? '—'}</p></div>
-      {([{ title: 'Total expenses', field: 'total_amount', tone: 'text-slate-900' }, { title: 'Recorded paid', field: 'recorded_paid', tone: 'text-emerald-700' }, { title: 'Outstanding', field: 'outstanding', tone: 'text-amber-700' }] as const).map(metric => <div key={metric.field} className="min-w-0 px-6 py-5"><p className="text-[11px] font-semibold text-slate-500">{metric.title}</p><div className={`mt-3 space-y-1 break-words text-xl font-semibold tabular-nums tracking-tight ${metric.tone}`}>{data?.summary.totals.length ? data.summary.totals.map(total => <p key={total.currency}>{money(total[metric.field], total.currency)}</p>) : <p>—</p>}</div>{metric.field === 'outstanding' && <div className="mt-2 space-y-1 text-[11px] leading-5 text-slate-500"><p>Known balances · voided excluded</p>{data?.summary.totals.filter(total => total.unknown_payment_count > 0).map(total => <p key={total.currency}>{total.unknown_payment_count} {total.unknown_payment_count === 1 ? 'entry' : 'entries'} with unknown payments ({money(total.unknown_payment_amount, total.currency)}) excluded.</p>)}</div>}</div>)}
+    <section aria-label="Expense summary" className="workspace-panel overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <dl className="grid grid-cols-2 gap-px bg-slate-100 xl:grid-cols-4">
+        <div className="min-w-0 bg-white p-4 lg:px-5">
+          <dt className="text-xs font-medium text-slate-500">Matching expenses</dt>
+          <dd className="mt-2 text-2xl font-semibold tabular-nums tracking-tight text-slate-900">{data?.meta.total ?? '—'}</dd>
+          <dd className="mt-1 text-[11px] text-slate-400">Across current filters</dd>
+        </div>
+        {([
+          { title: 'Total expenses', field: 'total_amount', tone: 'text-slate-900', hint: 'Voided entries excluded' },
+          { title: 'Recorded paid', field: 'recorded_paid', tone: 'text-emerald-700', hint: 'Payments recorded so far' },
+          { title: 'Known outstanding', field: 'outstanding', tone: 'text-amber-700', hint: 'Recorded balances due' },
+        ] as const).map(metric => <div key={metric.field} className="min-w-0 bg-white p-4 lg:px-5">
+          <dt className="text-xs font-medium text-slate-500">{metric.title}</dt>
+          <dd className={`mt-2 space-y-1 text-lg font-semibold tabular-nums tracking-tight sm:text-2xl ${metric.tone}`}>
+            {data?.summary.totals.length ? data.summary.totals.map(total => <div key={total.currency} className="flex flex-wrap items-baseline gap-x-1.5">
+              <span className="text-[10px] font-medium tracking-normal text-slate-400">{total.currency}</span>
+              <span className="[overflow-wrap:anywhere]">{total[metric.field].toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>) : '—'}
+          </dd>
+          <dd className="mt-1 text-[11px] leading-4 text-slate-400">{metric.hint}</dd>
+        </div>)}
+      </dl>
+      {unknownPayments.length > 0 && <div className="flex items-start gap-2.5 border-t border-amber-100 bg-amber-50/60 px-4 py-3 lg:px-5">
+        <Info size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-amber-600" />
+        <div className="min-w-0 text-xs leading-5 text-amber-900">
+          <p><span className="font-semibold">Payment details missing</span>{' · '}{unknownPayments.map(total => `${total.unknown_payment_count} ${total.unknown_payment_count === 1 ? 'expense' : 'expenses'} (${money(total.unknown_payment_amount, total.currency)})`).join(' · ')}</p>
+          <p className="text-[11px] text-amber-800/80">These entries are excluded from paid and outstanding totals until payments are recorded.</p>
+        </div>
+      </div>}
     </section>
     <section aria-label="Expense records" className="workspace-panel overflow-hidden rounded-xl border border-slate-200 bg-white">
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4"><div className="flex items-center gap-2.5"><h2 id="expense-register-heading" className="text-sm font-semibold text-slate-900">Expense register</h2><span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-500">{data?.meta.total ?? '—'}</span></div><p className="text-[11px] text-slate-500">{updating ? 'Updating… keeping previous results visible' : 'Select an expense to view details & receipts'}</p></div>
-    <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-3 text-xs text-slate-500 xl:hidden"><label>Sort by <select aria-label="Sort expenses by" value={sort.by} onChange={event => changeSort(event.target.value as typeof sort.by)} className="ml-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5"><option value="date">Date</option><option value="amount">Amount</option><option value="vendor">Vendor</option></select></label><button type="button" onClick={() => changeSort(sort.by)} className="rounded-lg border border-slate-200 px-2 py-1.5">{sort.direction === 'asc' ? 'Ascending ↑' : 'Descending ↓'}</button></div>
+    <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-3 text-xs text-slate-500 lg:hidden"><label>Sort by <select aria-label="Sort expenses by" value={sort.by} onChange={event => changeSort(event.target.value as typeof sort.by)} className="ml-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5"><option value="date">Date</option><option value="amount">Amount</option><option value="vendor">Vendor</option></select></label><button type="button" onClick={() => changeSort(sort.by)} className="rounded-lg border border-slate-200 px-2 py-1.5">{sort.direction === 'asc' ? 'Ascending ↑' : 'Descending ↓'}</button></div>
     <div aria-busy={updating} className="">
       {rows.length > 0 && <>
-        <table aria-labelledby="expense-register-heading" className="hidden w-full table-fixed text-left xl:table">
-          <colgroup>{[34, 13, 17, 18, 12, 6].map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup>
-          <thead className="border-b border-slate-200 bg-slate-50/80 text-[10px] uppercase tracking-wider text-slate-500"><tr>{['Expense / vendor', 'Date', 'Amount', 'Payment', 'Approval', 'Actions'].map(heading => <th scope="col" aria-sort={(heading === 'Date' && sort.by === 'date') || (heading === 'Amount' && sort.by === 'amount') || (heading === 'Expense / vendor' && sort.by === 'vendor') ? sort.direction === 'asc' ? 'ascending' : 'descending' : undefined} key={heading} className={`px-4 py-3 font-semibold first:pl-5 ${heading === 'Amount' ? 'text-right' : ''}`}>{heading === 'Date' ? sortHeading('date', heading) : heading === 'Amount' ? sortHeading('amount', heading) : heading === 'Expense / vendor' ? sortHeading('vendor', heading) : <span className={heading === 'Actions' ? 'sr-only' : ''}>{heading}</span>}</th>)}</tr></thead>
+        <div role="region" aria-label="Expense table" tabIndex={0} className="hidden overflow-x-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500 lg:block">
+        <table aria-labelledby="expense-register-heading" className="w-full min-w-[900px] table-fixed text-left">
+          <colgroup>{[11, 30, 16, 18, 12, 13].map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup>
+          <thead className="border-b border-slate-200 bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500"><tr>{['Date', 'Expense / vendor', 'Amount', 'Payment', 'Approval', 'Actions'].map(heading => <th scope="col" aria-sort={(heading === 'Date' && sort.by === 'date') || (heading === 'Amount' && sort.by === 'amount') || (heading === 'Expense / vendor' && sort.by === 'vendor') ? sort.direction === 'asc' ? 'ascending' : 'descending' : undefined} key={heading} className={`px-4 py-3 font-semibold first:pl-5 ${heading === 'Amount' || heading === 'Actions' ? 'text-right' : ''}`}>{heading === 'Date' ? sortHeading('date', heading) : heading === 'Amount' ? sortHeading('amount', heading) : heading === 'Expense / vendor' ? sortHeading('vendor', heading) : heading}</th>)}</tr></thead>
           <tbody className="divide-y divide-slate-100">
             {rows.map(expense => <tr key={expense.id} className={`transition-colors hover:bg-slate-50/70 focus-within:bg-slate-50/70 ${expense.status === 'VOID' ? 'bg-slate-50/60' : ''}`}>
-              <td className="py-4 pl-5 pr-4">{expenseIdentity(expense)}</td>
-              <td className="px-4 py-4 text-xs text-slate-600"><time dateTime={expense.expense_date}>{expenseDate(expense)}</time></td>
-              <td className="px-4 py-4 text-right">{expenseAmount(expense)}</td>
-              <td className="px-4 py-4"><ExpensePayment expense={expense} /></td>
-              <td className="px-4 py-4"><Badge value={expense.status} /></td>
-              <td className="py-4 pr-4">{rowActions(expense)}</td>
+              <td className="py-3.5 pl-5 pr-4 text-xs"><time dateTime={expense.expense_date} aria-label={expenseDate(expense)}><span className="block whitespace-nowrap font-medium text-slate-700">{new Date(`${expense.expense_date}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span><span className="mt-1 block text-[11px] text-slate-400">{expense.expense_date.slice(0, 4)}</span></time></td>
+              <td className="px-4 py-3.5">{expenseIdentity(expense)}</td>
+              <td className="px-4 py-3.5 text-right">{expenseAmount(expense)}</td>
+              <td className="px-4 py-3.5"><ExpensePayment expense={expense} /></td>
+              <td className="px-4 py-3.5"><Badge value={expense.status} /></td>
+              <td className="py-3.5 pr-4"><div className="flex items-center justify-end gap-1"><button type="button" aria-label={`View expense: ${expense.description}`} onClick={() => { setDetails(expense); setReceiptWarning(undefined); }} className="rounded-md px-2 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">View</button>{rowActions(expense)}</div></td>
             </tr>)}
           </tbody>
         </table>
-        <ul aria-label="Expense entries" className="divide-y divide-slate-100 xl:hidden">
+        </div>
+        <ul aria-label="Expense entries" className="divide-y divide-slate-100 lg:hidden">
           {rows.map(expense => <li key={expense.id} className={`space-y-4 p-5 ${expense.status === 'VOID' ? 'bg-slate-50/60' : ''}`}>
             <div className="flex items-start justify-between gap-3">{expenseIdentity(expense)}{rowActions(expense)}</div>
             <div className="flex flex-wrap items-start justify-between gap-4 rounded-lg bg-slate-50 px-3 py-3">
@@ -382,7 +409,7 @@ export function ExpensesPage({ activePropertyId = '', properties }: { activeProp
     <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-3 text-[11px] text-slate-500"><span>{data?.meta.total ? `Showing ${(data.meta.page - 1) * data.meta.limit + 1}–${(data.meta.page - 1) * data.meta.limit + rows.length} of ${data.meta.total}` : '0 expenses'}</span><div className="flex items-center gap-3"><span>Page {data?.meta.page ?? page} of {Math.max(1, data?.meta.total_pages ?? 1)}</span><div className="flex gap-1.5"><button type="button" aria-label="Previous page" title="Previous page" disabled={updating || page <= 1} onClick={() => setPage(value => value - 1)} className={iconButton}><ChevronLeft size={16} /></button><button type="button" aria-label="Next page" title="Next page" disabled={updating || page >= (data?.meta.total_pages ?? 1)} onClick={() => setPage(value => value + 1)} className={iconButton}><ChevronRight size={16} /></button></div></div></footer>
     </section>
     </fieldset>
-    {editor && <ExpenseForm expense={editor === 'new' ? undefined : editor} properties={properties} propertyId={activePropertyId || filters.property_id} close={() => setEditor(null)} onSaved={(expense, warning) => { setEditor(null); setDetails(expense); setReceiptWarning(warning); refreshExpenses(); setToast('Expense saved.'); }} />}
+    {editor && <ExpenseForm expense={editor === 'new' ? undefined : editor} properties={properties} propertyId={activePropertyId} close={() => setEditor(null)} onSaved={(expense, warning) => { setEditor(null); setDetails(expense); setReceiptWarning(warning); refreshExpenses(); setToast('Expense saved.'); }} />}
     {details && <ExpenseDetails initialWarning={receiptWarning} expense={details} close={() => setDetails(null)} updated={expense => { setDetails(expense); setReceiptWarning(undefined); refreshExpenses(); }} />}
     {action && <Dialog title={action.type === 'void' ? 'Void expense' : 'Approve expense'} close={() => setAction(null)} busy={busy}><form onSubmit={performAction} className="space-y-4">{error && <ErrorMsg>{error}</ErrorMsg>}<p className="break-words text-sm font-semibold">{action.expense.description} / {money(action.expense.amount, action.expense.currency)}</p><label className={labelCls}>Reason<input required maxLength={300} value={reason} onChange={event => setReason(event.target.value)} className={inputCls} /></label><div className="flex justify-end gap-2"><ActionBtn disabled={busy} onClick={() => setAction(null)}>Cancel</ActionBtn><ActionBtn type="submit" disabled={busy} variant={action.type === 'void' ? 'danger' : 'primary'}>{busy ? 'Saving...' : action.type === 'void' ? 'Void expense' : 'Approve expense'}</ActionBtn></div></form></Dialog>}
   </div>;

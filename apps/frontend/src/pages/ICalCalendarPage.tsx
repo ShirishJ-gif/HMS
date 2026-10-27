@@ -30,6 +30,7 @@ type ICalEvent = {
   feedName: string;
   color: FeedColor;
   availabilityWindowClosed: boolean;
+  imported?: boolean;
 };
 
 type FetchICalCalendarResponse = {
@@ -88,18 +89,15 @@ const feedSwatches: Record<FeedColor, string> = {
 
 export function ICalCalendarPage({
   activePropertyId = '',
-  onPropertyChange,
   properties = [],
   propertiesLoaded = false,
 }: {
   activePropertyId?: string;
-  onPropertyChange?: (propertyId: string) => void;
   properties?: Property[];
   propertiesLoaded?: boolean;
 }) {
   const restoredFeeds = useMemo(() => readPersistedFeeds(), []);
   const [feeds, setFeeds] = useState<CalendarFeed[]>(restoredFeeds);
-  const [localPropertyId, setLocalPropertyId] = useState(activePropertyId);
   const [feedName, setFeedName] = useState('');
   const [icalUrl, setIcalUrl] = useState('');
   const [icalText, setIcalText] = useState('');
@@ -139,25 +137,10 @@ export function ICalCalendarPage({
     else shareDialogRef.current?.close();
   }, [shareOpen]);
   const [selectedDate, setSelectedDate] = useState(() => dateKey(new Date()));
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
   const [monthCursor, setMonthCursor] = useState(() => startOfMonth(new Date()));
   const categoriesState = useAsync(async () => fetchAllPages<RoomCategory>('/room-categories'), []);
-  const propertyId = activePropertyId || localPropertyId;
-
-  const setPropertyId = (nextPropertyId: string) => {
-    setLocalPropertyId(nextPropertyId);
-    onPropertyChange?.(nextPropertyId);
-  };
-
-  useEffect(() => {
-    if (activePropertyId && activePropertyId !== localPropertyId) {
-      setLocalPropertyId(activePropertyId);
-    }
-  }, [activePropertyId, localPropertyId]);
-
-  useEffect(() => {
-    if (!propertiesLoaded || propertyId || properties.length === 0) return;
-    setPropertyId(properties[0].id);
-  }, [properties, propertiesLoaded, propertyId]);
+  const propertyId = activePropertyId;
 
   const roomCategories = useMemo(
     () => (categoriesState.data ?? []).filter((category) => !propertyId || category.property_id === propertyId),
@@ -310,7 +293,7 @@ export function ICalCalendarPage({
           ? refreshed
           : item
       )));
-      setNotice(targetPropertyId ? 'Calendar and villa availability synced.' : 'Calendar refreshed.');
+      setNotice(targetPropertyId ? 'Calendar and villa availability synced. Past imported dates are kept as history.' : 'Calendar refreshed.');
     } catch (loadError) {
       setError(getApiErrorMessage(loadError));
     } finally {
@@ -371,6 +354,7 @@ export function ICalCalendarPage({
     try {
       if (feed.propertyId) await syncFeedInventory(feed, feed.propertyId, true);
       updateFeeds(feeds.filter((item) => item.id !== feedId));
+      if (feed.propertyId) setNotice('Feed removed. Current and future imported blocks were released; past dates remain as history.');
     } catch (error) { setError(getApiErrorMessage(error)); }
     finally { setSyncingFeedId(null); }
   }
@@ -397,6 +381,7 @@ export function ICalCalendarPage({
       setManualPasteOpen(false);
       setError(null);
       updateFeeds(feeds.filter(feed => !clearedFeeds.includes(feed)));
+      setNotice('Feeds cleared. Past imported dates remain as history for linked properties.');
     } catch (error) { setError(getApiErrorMessage(error)); }
     finally { setLoading(false); }
   }
@@ -760,20 +745,7 @@ export function ICalCalendarPage({
           <Panel className="p-4">
             <SectionHeading title="Block dates" eyebrow="HMS inventory" />
             <form className="space-y-2.5" onSubmit={createDateBlock}>
-              <label className="block">
-                <span className="mb-1 block text-xs font-semibold text-slate-600">Property</span>
-                <select
-                  value={propertyId}
-                  onChange={(event) => setPropertyId(event.target.value)}
-                  className={inputCls}
-                  disabled={properties.length === 0}
-                >
-                  <option value="">{propertiesLoaded ? 'Select property' : 'Loading properties...'}</option>
-                  {properties.map((property) => (
-                    <option key={property.id} value={property.id}>{property.name}</option>
-                  ))}
-                </select>
-              </label>
+              <p className="text-xs text-slate-500">{selectedProperty?.name || (propertiesLoaded ? 'Select a property in the top bar.' : 'Loading property...')}</p>
               <div className="grid grid-cols-2 gap-2">
                 <label className="block">
                   <span className="mb-1 block text-xs font-semibold text-slate-600">From</span>
@@ -1006,6 +978,9 @@ export function ICalCalendarPage({
                 const key = dateKey(cell.date);
                 const dayEvents = eventsByDate.get(key) ?? [];
                 const daySources = Array.from(new Set(dayEvents.map(event => event.feedName)));
+                const dayStatus = dayEvents.some(event => event.feedId === 'hms-reservation-feed') ? 'Booked'
+                  : dayEvents.some(event => event.imported) ? key < today ? 'History' : 'Unavailable'
+                  : 'Blocked';
                 const active = key === selectedDate;
                 const isCurrentMonth = cell.date.getMonth() === monthCursor.getMonth();
                 return (
@@ -1025,7 +1000,7 @@ export function ICalCalendarPage({
                         'absolute right-2 top-2 inline-flex max-w-[68%] truncate rounded-full px-2 py-0.5 text-[10px] font-bold leading-tight text-white',
                         dayEvents[0].availabilityWindowClosed ? 'bg-amber-500' : 'bg-emerald-600',
                       ].join(' ')}>
-                        {dayEvents[0].availabilityWindowClosed ? 'Availability closed' : dayEvents.every(event => event.uid.startsWith('hms-block-')) ? 'Blocked' : 'Booked'}
+                        {dayEvents[0].availabilityWindowClosed ? 'Availability closed' : dayStatus}
                       </span>
                     )}
                     <div className="absolute left-3 right-3 top-10 space-y-1">
@@ -1184,6 +1159,7 @@ function eventFromFields(fields: Record<string, string>, index: number, feed: Pi
     feedName: feed.name,
     color: feed.color,
     availabilityWindowClosed: isAvailabilityWindowClosedEvent(title, unescapeICalText(fields.DESCRIPTION), start.date, feed.availabilityWindowDays),
+    imported: feed.id !== 'hms-reservation-feed',
   };
 }
 
@@ -1336,7 +1312,8 @@ function buildPropertyICalLink(propertyId: string) {
 function inventoryBlockToEvent(block: InventoryBlock): ICalEvent {
   const imported = block.source.startsWith('ICAL_IMPORT:');
   const sourceName = imported ? block.source_name?.trim() || 'Imported calendar' : 'HMS Manual';
-  const title = `Blocked${block.room_category_name ? ` - ${block.room_category_name}` : ''}`;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  const title = imported ? block.to_date < today ? 'Previously unavailable' : 'Unavailable' : `Blocked${block.room_category_name ? ` - ${block.room_category_name}` : ''}`;
   return {
     uid: `hms-block-${block.id}`,
     title,
@@ -1344,16 +1321,18 @@ function inventoryBlockToEvent(block: InventoryBlock): ICalEvent {
     end: addDays(parseDateKey(block.to_date), 1),
     allDay: true,
     location: '',
-    description: block.reason,
+    description: imported && block.to_date < today ? `${block.reason}\nHistorical calendar entry retained after refresh. This does not confirm a booking.` : block.reason,
     feedId: imported ? block.source : 'hms-inventory-blocks',
     feedName: sourceName,
     color: sourceName.toLowerCase().includes('airbnb') ? 'rose' : 'indigo',
     availabilityWindowClosed: false,
+    imported,
   };
 }
 
 function getEventTitle(event: ICalEvent) {
   if (event.availabilityWindowClosed) return 'Availability closed';
+  if (event.imported) return event.title === 'Previously unavailable' ? event.title : 'Unavailable';
   if (isGenericUnavailableTitle(event.title, event.description)) return 'Not available';
   return event.title;
 }
@@ -1370,7 +1349,7 @@ function getProviderPillClass(feedName: string) {
 }
 
 function shouldShowEventTitle(event: ICalEvent) {
-  return !isGenericUnavailableTitle(event.title, event.description);
+  return event.imported || !isGenericUnavailableTitle(event.title, event.description);
 }
 
 function buildMonthCells(month: Date) {

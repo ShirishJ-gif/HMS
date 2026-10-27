@@ -103,7 +103,7 @@ export class GuestService {
     if (requestedPropertyId && requestedPropertyId !== 'ALL') {
       assertCanAccessProperty(user, requestedPropertyId);
     }
-    const selectedPropertyId = scopedPropertyId ?? (requestedPropertyId && requestedPropertyId !== 'ALL' ? requestedPropertyId : null);
+    const selectedPropertyId = requestedPropertyId && requestedPropertyId !== 'ALL' ? requestedPropertyId : scopedPropertyId;
     const propertyWhere: Prisma.PropertyWhereInput = scopedPropertyId ? { id: scopedPropertyId } : {};
     const search = query.search?.trim();
     const source = query.source ?? 'ALL';

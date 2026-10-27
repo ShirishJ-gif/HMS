@@ -4,6 +4,12 @@ export type ReportSummary = {
   available_room_nights: number;
   occupancy_rate: number | null;
   average_daily_rate: number | null;
+  room_revenue: number;
+  period_net_collected: number;
+  period_gross_collected: number;
+  period_refunded_total: number;
+  settlement_credit: number;
+  credit_balance: number;
   billed_total: number;
   paid_total: number;
   gross_collected: number;
@@ -85,6 +91,8 @@ export type ReportsData = {
     total: number;
     paid: number;
     balance: number;
+    settlement_credit?: number;
+    credit_balance?: number;
   }>;
   transactions: Array<{
     id: string;

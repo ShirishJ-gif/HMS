@@ -10,6 +10,9 @@ export class DashboardController {
 
   @Get('summary')
   getSummary(@CurrentUser() user: AuthenticatedUser, @Query() query: DashboardQueryDto) {
+    if (query.from !== undefined || query.to !== undefined) {
+      return this.dashboardService.getSummary(new Date(), user, query.property_id, query.date, { from: query.from, to: query.to });
+    }
     return this.dashboardService.getSummary(new Date(), user, query.property_id, query.date);
   }
 }

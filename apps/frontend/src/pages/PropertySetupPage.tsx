@@ -253,12 +253,14 @@ export function PropertySetupPage({
   onAddRooms,
   onConfigureOta,
   onSelectedPropertyIdChange,
+  onPropertySaved,
 }: {
   controlledSelectedPropertyId?: string | null;
   embedded?: boolean;
   onAddRooms?: () => void;
   onConfigureOta: () => void;
   onSelectedPropertyIdChange?: (propertyId: string | null) => void;
+  onPropertySaved?: (property: Property) => void;
 }) {
   /* ── global state ── */
   const [reloadKey, setReloadKey] = useState(0);
@@ -418,6 +420,7 @@ export function PropertySetupPage({
     if (pendingAction) return;
     await runAction('create-property', async () => {
       const { data } = await api.post<Property>('/properties', { ...propertyForm, nightly_rate: propertyForm.property_type === 'RENTAL_VILLAS' && newVillaNightlyRate ? Number(newVillaNightlyRate) : undefined, phone: propertyForm.phone || undefined, email: propertyForm.email || undefined });
+      onPropertySaved?.(data);
       setPropertyForm(defaultPropertyForm); setAddingProperty(false);
       setActionStatus('Property created.'); reload();
       selectPropertyId(data.id);
@@ -469,7 +472,7 @@ export function PropertySetupPage({
     event.preventDefault();
     if (!selectedProperty || pendingAction) return;
     await runAction(`update-property:${selectedProperty.id}`, async () => {
-      await api.patch(`/properties/${selectedProperty.id}`, {
+      const { data } = await api.patch<Property>(`/properties/${selectedProperty.id}`, {
         property_type: propertyEditForm.property_type,
         name: propertyEditForm.name,
         phone: propertyEditForm.phone || undefined,
@@ -479,6 +482,7 @@ export function PropertySetupPage({
         default_check_in_time: propertyEditForm.default_check_in_time,
         default_check_out_time: propertyEditForm.default_check_out_time,
       });
+      onPropertySaved?.(data);
       setEditingProperty(false);
       setActionStatus('Property details updated.');
       reload();
@@ -754,6 +758,50 @@ export function PropertySetupPage({
           <LoadingMsg>Loading property data…</LoadingMsg>
         )}
 
+        {!embedded && !isLoadingProperties && (
+          <section aria-labelledby="setup-properties-heading" className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 id="setup-properties-heading" className="text-[15px] font-bold text-slate-900">Your properties <span className="ml-1 text-[12px] font-medium text-slate-400">{properties.length}</span></h2>
+                <p className="mt-1 text-[12px] text-slate-500">Choose a property below to manage its details, rooms, and rates.</p>
+              </div>
+              <button type="button" onClick={startAddingProperty} disabled={addingProperty}
+                className="inline-flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50">
+                <span aria-hidden="true" className="text-lg font-normal">+</span> Add property
+              </button>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {properties.map((property, index) => {
+                const selected = property.id === selectedPropertyId;
+                const setup = computeSetup(property, categories, ratePlans, pricingRules, rooms);
+                const steps = property.property_type === 'RENTAL_VILLAS'
+                  ? SETUP_STEPS.filter(step => ['property', 'ratePlans'].includes(step.key)) : SETUP_STEPS;
+                const done = steps.filter(step => isSetupStepComplete(setup, step.key)).length;
+                const roomCount = rooms.filter(room => room.property_id === property.id).length;
+                return (
+                  <button key={property.id} type="button" aria-pressed={selected}
+                    aria-label={`Manage ${property.name}`} onClick={() => selectPropertyId(property.id)}
+                    className={`flex min-w-0 flex-col rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 ${selected ? 'border-slate-700 bg-slate-50' : 'border-slate-200 bg-white hover:border-slate-400 hover:bg-slate-50/50'}`}>
+                    <div className="flex w-full items-start gap-3">
+                      <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold text-white ${getColor(index).bg}`}>{property.code.slice(0, 3)}</span>
+                      <div className="min-w-0 flex-1">
+                        <h3 className="break-words text-[14px] font-bold text-slate-900">{property.name}</h3>
+                        <p className="mt-0.5 text-[11px] text-slate-500">{PROPERTY_TYPE_OPTIONS.find(option => option.value === property.property_type)?.label} · {property.code}</p>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${property.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{property.is_active ? 'Active' : 'Archived'}</span>
+                    </div>
+                    <p className="mb-4 mt-3 line-clamp-2 text-[12px] leading-relaxed text-slate-500">{property.address || 'No address added'}</p>
+                    <div className="mt-auto flex w-full flex-wrap items-center justify-between gap-2 border-t border-slate-200/70 pt-3 text-[11px]">
+                      <span className="text-slate-500">{property.property_type === 'RENTAL_VILLAS' ? 'Entire villa' : `${roomCount} room${roomCount === 1 ? '' : 's'}`} · Setup {done}/{steps.length}</span>
+                      <span className={`font-semibold ${selected ? 'text-slate-900' : 'text-slate-500'}`}>{selected ? 'Managing below' : 'Manage property →'}</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {!isLoading && addingProperty && (
           <FormDialog title="Add property" description="Enter your property details and arrival policy."
             busy={pendingAction === 'create-property'} error={actionError} onClose={closePropertyDialog}
@@ -797,21 +845,21 @@ export function PropertySetupPage({
         {!isLoading && !selectedProperty && (
           <div className="flex flex-col items-center justify-center py-32 text-center">
             <p className="text-[14px] font-semibold text-slate-500 mb-1">No property selected</p>
-            <p className="text-[12px] text-slate-400">{embedded ? 'Use the Add property button in the sidebar to create your first property.' : 'Use Add property below to create your first property.'}</p>
+            <p className="text-[12px] text-slate-400">{properties.length > 0 ? 'Choose a property to manage its settings.' : 'Use Add property to create your first property.'}</p>
           </div>
         )}
 
         {!isLoading && selectedProperty && (
           <>
             {/* Property header */}
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex items-center gap-4">
+            <div className={`flex flex-wrap items-start justify-between gap-4 ${!embedded ? 'border-t border-slate-200 pt-6' : ''}`}>
+              <div className="flex min-w-0 flex-1 items-center gap-4">
                 <div className={`w-12 h-12 rounded-xl flex-shrink-0 flex items-center justify-center text-[11px] font-bold text-white ${selectedColor.bg}`}>
                   {selectedProperty.code.slice(0, 3)}
                 </div>
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <h1 className="text-[22px] font-bold text-slate-900 tracking-tight leading-none">{selectedProperty.name}</h1>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <h2 className="break-words text-[22px] font-bold text-slate-900 tracking-tight leading-tight">{selectedProperty.name}</h2>
                     <span className={`text-[10.5px] font-bold px-2.5 py-0.5 rounded-full ${selectedProperty.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                       {selectedProperty.is_active ? 'Active' : 'Archived'}
                     </span>
@@ -829,11 +877,13 @@ export function PropertySetupPage({
                     Edit
                   </button>
                 )}
+                {/* Hidden until archiving is enforced across property operations.
                 <button type="button" disabled={pendingAction === `toggle-property:${selectedProperty.id}`}
                   onClick={() => void togglePropertyArchive(selectedProperty)}
                   className={`h-8 px-3 rounded-lg text-[11.5px] font-semibold border transition-colors disabled:opacity-50 ${selectedProperty.is_active ? 'border-slate-200 text-slate-700 bg-white hover:bg-slate-50' : 'border-emerald-100 text-emerald-700 bg-emerald-50 hover:bg-emerald-100'}`}>
                   {pendingAction === `toggle-property:${selectedProperty.id}` ? 'Saving…' : selectedProperty.is_active ? 'Archive' : 'Restore'}
                 </button>
+                */}
                 <button type="button" disabled={pendingAction === `delete-property:${selectedProperty.id}`}
                   onClick={() => void deleteProperty(selectedProperty)}
                   className="h-8 px-3 rounded-lg text-[11.5px] font-semibold border border-rose-100 text-rose-600 bg-white hover:bg-rose-50 disabled:opacity-50 transition-colors">
@@ -1337,15 +1387,6 @@ export function PropertySetupPage({
           </>
         )}
 
-        {!embedded && !isLoading && (
-          <div className="flex min-h-32 items-center justify-center py-8">
-            <button type="button" onClick={startAddingProperty} disabled={addingProperty}
-              className="inline-flex items-center gap-2.5 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:opacity-50">
-              <span aria-hidden="true" className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-50 text-lg font-normal leading-none text-emerald-600">+</span>
-              Add property
-            </button>
-          </div>
-        )}
       </div>
 
 

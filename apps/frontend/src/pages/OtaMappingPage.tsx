@@ -1014,12 +1014,7 @@ function OtaConnectionSetup({
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <label className={labelCls}>
           <span>Hotel property</span>
-          <CustomSelect
-            onChange={workspace.setPropertyId}
-            options={workspace.properties.map(property => ({ label: property.name, value: property.id }))}
-            placeholder="Select property"
-            value={workspace.propertyId}
-          />
+          <span className="text-sm font-medium text-slate-900">{workspace.properties.find(property => property.id === workspace.propertyId)?.name || 'Select a property in the top bar'}</span>
         </label>
         <label className={labelCls}>
           <span>OTA</span>

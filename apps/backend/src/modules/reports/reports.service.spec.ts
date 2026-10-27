@@ -51,6 +51,24 @@ describe('ReportsService', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(prisma.property.findMany).not.toHaveBeenCalled();
   });
+  it.each(['property-a', 'property-b'])('narrows every report source to the organization owner selection %s', async (propertyId) => {
+    const owner = {
+      role: 'ORG_OWNER', property_id: 'property-a', property_ids: ['property-a', 'property-b'],
+    } as AuthenticatedUser;
+    const report = await service.getAnalytics({ property_id: propertyId, from: '2026-10-01', to: '2026-10-05' }, owner);
+    for (const model of [prisma.reservationRoom, prisma.room, prisma.channelConnection]) {
+      expect(model.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ propertyId }),
+      }));
+    }
+    expect(prisma.expense.groupBy).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ propertyId }),
+    }));
+    expect(prisma.paymentTransaction.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ billing: { reservationRoom: expect.objectContaining({ propertyId }) } }),
+    }));
+    expect(report.property_id).toBe(propertyId);
+  });
   it('returns an empty report for a new organisation owner with an assigned property', async () => {
     const owner = {
       role: 'ORG_OWNER',
@@ -165,7 +183,7 @@ describe('ReportsService', () => {
       }),
     );
     expect(report.trend.reduce((sum, point) => sum + point.previous_billed, 0)).toBe(
-      report.comparison.summary.billed_total,
+      report.comparison.summary.room_revenue,
     );
   });
   it('keeps expense categories and currencies separate and reports unknown payment entries', async () => {

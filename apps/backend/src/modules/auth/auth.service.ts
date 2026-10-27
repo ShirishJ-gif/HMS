@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ensureVillaInventory } from '../property/villa-inventory';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma, UserRole } from '@prisma/client';
@@ -15,6 +15,8 @@ import { SignupPropertyDto } from './dto/signup-property.dto';
 import { PasswordService } from './password.service';
 import { AuthenticatedUser } from './auth.guard';
 import { assertCanCreateUser, propertyIdFilter } from './property-scope';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 const refreshTokenDays = 30;
 const passwordResetMinutes = 30;
@@ -26,6 +28,63 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly passwordService: PasswordService,
   ) {}
+
+  async getProfile(currentUser: AuthenticatedUser) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: currentUser.sub },
+      include: { organization: { select: { id: true, name: true } } },
+    });
+    if (!user || !user.isActive) throw new UnauthorizedException('Account is unavailable');
+    const propertyWhere: Prisma.PropertyWhereInput = user.role === UserRole.PLATFORM_OWNER
+      ? {}
+      : user.role === UserRole.ORG_OWNER && user.organizationId
+        ? { organizationId: user.organizationId }
+        : { id: { in: user.propertyId ? [user.propertyId] : [] } };
+    const properties = await this.prisma.property.findMany({
+      where: propertyWhere,
+      select: { id: true, name: true, code: true, isActive: true },
+      orderBy: { name: 'asc' },
+    });
+    return {
+      ...this.toUserResponse(user),
+      organization: user.organization,
+      properties: properties.map(property => ({ id: property.id, name: property.name, code: property.code, is_active: property.isActive })),
+    };
+  }
+
+  async updateProfile(currentUser: AuthenticatedUser, dto: UpdateProfileDto) {
+    const profile = await this.getProfile(currentUser);
+    if (dto.default_property_id && !profile.properties.some(property => property.id === dto.default_property_id && property.is_active)) {
+      throw new ForbiddenException('Choose an active property you have access to.');
+    }
+    await this.prisma.user.update({
+      where: { id: currentUser.sub },
+      data: { name: dto.name, phone: dto.phone, defaultPropertyId: dto.default_property_id },
+    });
+    return this.getProfile(currentUser);
+  }
+
+  async changePassword(currentUser: AuthenticatedUser, dto: ChangePasswordDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: currentUser.sub } });
+    if (!user || !user.isActive) throw new UnauthorizedException('Account is unavailable');
+    if (!await this.passwordService.verify(dto.current_password, user.passwordHash)) {
+      throw new BadRequestException('Current password is incorrect.');
+    }
+    if (dto.current_password === dto.new_password) throw new BadRequestException('Choose a different new password.');
+    const passwordHash = await this.passwordService.hash(dto.new_password);
+    const updated = await this.prisma.$transaction(async tx => {
+      // A concurrent change must not be overwritten using a password that is no longer current.
+      const changed = await tx.user.updateMany({
+        where: { id: user.id, passwordHash: user.passwordHash, isActive: true },
+        data: { passwordHash, tokenVersion: { increment: 1 } },
+      });
+      if (changed.count !== 1) throw new ConflictException('Your password changed. Please sign in again.');
+      await tx.refreshSession.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
+      await tx.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } });
+      return tx.user.findUniqueOrThrow({ where: { id: user.id } });
+    });
+    return this.issueToken(updated);
+  }
 
   async bootstrap(dto: BootstrapUserDto) {
     const userCount = await this.prisma.user.count();
@@ -183,7 +242,7 @@ export class AuthService {
       include: { user: true },
     });
 
-    if (!session || session.revokedAt || session.expiresAt <= new Date() || !session.user.isActive) {
+    if (!session || session.revokedAt || session.expiresAt <= new Date() || !session.user.isActive || session.tokenVersion !== session.user.tokenVersion) {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
@@ -254,7 +313,7 @@ export class AuthService {
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: resetToken.userId },
-        data: { passwordHash: await this.passwordService.hash(dto.password) },
+        data: { passwordHash: await this.passwordService.hash(dto.password), tokenVersion: { increment: 1 } },
       }),
       this.prisma.passwordResetToken.update({
         where: { id: resetToken.id },
@@ -277,6 +336,9 @@ export class AuthService {
     propertyId: string | null;
     organizationId: string | null;
     isActive: boolean;
+    phone?: string | null;
+    defaultPropertyId?: string | null;
+    tokenVersion: number;
     createdAt: Date;
     updatedAt: Date;
   }) {
@@ -288,12 +350,14 @@ export class AuthService {
       organization_id: user.organizationId,
       property_id: user.propertyId,
       property_ids: propertyIds,
+      token_version: user.tokenVersion,
     });
     const refreshToken = this.randomToken();
     await this.prisma.refreshSession.create({
       data: {
         userId: user.id,
         tokenHash: this.hashToken(refreshToken),
+        tokenVersion: user.tokenVersion,
         expiresAt: this.daysFromNow(refreshTokenDays),
       },
     });
@@ -386,6 +450,8 @@ export class AuthService {
     email: string;
     role: UserRole;
     isActive: boolean;
+    phone?: string | null;
+    defaultPropertyId?: string | null;
     createdAt: Date;
     updatedAt: Date;
   }) {
@@ -395,6 +461,8 @@ export class AuthService {
       property_id: user.propertyId,
       name: user.name,
       email: user.email,
+      phone: user.phone ?? null,
+      default_property_id: user.defaultPropertyId ?? null,
       role: user.role,
       is_active: user.isActive,
       created_at: user.createdAt,
